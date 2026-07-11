@@ -1,0 +1,29 @@
+{
+  "name": "@omniscience/ui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shared React UI primitives. Full design system arrives in Phase 1 (Premium UI Foundation).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint \"src/**/*.tsx\" \"src/**/*.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "clean": "rimraf dist"
+  },
+  "peerDependencies": {
+    "react": "^18.3.1"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.0.1",
+    "@types/react": "^18.3.11",
+    "jsdom": "^25.0.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.2",
+    "rimraf": "^6.0.1"
+  }
+}

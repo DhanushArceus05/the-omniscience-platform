@@ -1,0 +1,23 @@
+{
+  "name": "@omniscience/config",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Environment validation and shared runtime configuration.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint \"src/**/*.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.2",
+    "rimraf": "^6.0.1"
+  }
+}
