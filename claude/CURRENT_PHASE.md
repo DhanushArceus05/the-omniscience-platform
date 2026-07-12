@@ -124,3 +124,101 @@ Focused tests were added for items 1 and 2 (`ThemeProvider.test.tsx`,
 `App.configError.test.tsx`); see the top-level polish summary for the full list. All of
 `packages/ui` (73 tests) and `apps/web` (20 tests) pass, and both packages typecheck, lint, and
 build cleanly — actually executed in this pass, not assumed.
+
+---
+
+# Phase 2 — Authentication & Users
+
+Status: **In progress** — Step 1 of 8 complete, awaiting explicit approval before Step 2.
+
+Approved decisions (from the Phase 2 implementation prompt): Prisma ORM, Argon2 password
+hashing, OTP + refresh tokens in Redis, JWT access (15m) / refresh (7d) tokens,
+`@nestjs/throttler` for rate limiting, production-ready SMTP with a console-log fallback when
+unconfigured. Implemented in 8 sequential steps, each requiring explicit sign-off before the next
+begins.
+
+## Step 1 — Prisma, PostgreSQL, Redis, configuration, and infrastructure setup (complete)
+
+- Added Prisma configuration foundation (`apps/api/prisma/schema.prisma`): datasource + generator
+  only, reusing `POSTGRES_URL` (no separate `DATABASE_URL`) — no data models yet, those are Step 2.
+  **`PrismaService`/`PrismaModule` are deferred to Step 2** (see "Step 1 fix" below) — Step 1 ships
+  only the static schema file, not a wired Prisma client.
+- Added `RedisService`/`RedisModule` (`apps/api/src/redis/`): a single shared ioredis client
+  (connect/disconnect lifecycle, error logging); no OTP/session key logic yet — that's Step 3/4.
+- Added `MailService`/`MailModule` (`apps/api/src/mail/`): generic `sendMail()` over nodemailer;
+  falls back to logging the message via the shared logger (not the raw console) when
+  `SMTP_HOST` is unset. No OTP templates yet — that's Step 3.
+- Added `ConfigModule` (`apps/api/src/config/`): validates env once and exposes it (`ENV`) plus a
+  shared pino logger (`LOGGER`) via DI tokens, so Redis/Mail (and the future Prisma/Auth modules)
+  read configuration the same validated way instead of touching `process.env` directly.
+- Extended `packages/config`'s env schema: `JWT_ACCESS_SECRET`/`JWT_REFRESH_SECRET` (required,
+  ≥32 chars), `JWT_ACCESS_TTL_SECONDS`/`JWT_REFRESH_TTL_SECONDS` (default 900/604800), and
+  `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASSWORD`/`SMTP_FROM`/`SMTP_SECURE` (optional but
+  all-or-nothing — set one and the rest become required), plus an `isSmtpConfigured()` helper.
+- `apps/api/src/app.module.ts` now imports `ConfigModule`, `RedisModule`, `MailModule` alongside
+  the existing `HealthModule` (additive only; Phase 0 health behavior unchanged).
+- `.env.example` updated with the new JWT/SMTP variables and guidance.
+
+### Step 1 fix (found by local verification)
+
+Local verification ran `pnpm --filter @omniscience/api run db:generate` and it failed:
+`prisma generate` exits non-zero against a model-less schema ("You don't have any models defined
+in your schema.prisma, so nothing will be generated"). The original Step 1 draft had required
+`db:generate` to succeed while also mandating zero models until Step 2 — a direct contradiction,
+since Prisma cannot produce a client without at least one model.
+
+Resolution (no placeholder/dummy models added):
+- `PrismaService` and `PrismaModule` (which `extends PrismaClient`) were **removed from Step 1**
+  and deferred to Step 2, since they cannot validly build/typecheck against an ungenerated
+  `@prisma/client` — generation itself is what's blocked.
+- `apps/api/src/app.module.ts` no longer imports a Prisma module.
+- `apps/api/prisma/schema.prisma` remains (the approved datasource/generator configuration) with
+  an explicit comment: running `prisma generate`/`migrate` against it is expected to fail until
+  Step 2 adds the `User` model — that's normal Prisma CLI behavior, not a defect.
+- `apps/api/package.json`'s `db:generate`/`db:migrate*`/`db:studio` scripts are left in place
+  (they'll work once Step 2 adds a model) but are **not** part of Step 1's verification commands.
+- Step 1 verification therefore covers install/build/lint/typecheck/test only; Prisma
+  client generation and migrations are verified starting in Step 2.
+
+### Step 1 fix — e2e test infrastructure
+
+Local `pnpm test` then surfaced a second, separate issue in the pre-existing Phase 0
+`apps/api/test/health.e2e-spec.ts`: it boots the real `AppModule`, and `AppModule` now pulls in
+`ConfigModule` (Step 1), which validates the full environment — including `POSTGRES_URL`,
+`MONGO_URL`, `REDIS_URL`, `QDRANT_URL`, `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET` — none of which
+are set in the test process. Bootstrap threw inside `beforeAll`, so `app` was never assigned, and
+the unguarded `afterAll(() => app.close())` then threw its own `Cannot read properties of
+undefined` on top of the original failure.
+
+Fixed without weakening any production validation and without making any env variable optional:
+- `Test.createTestingModule({ imports: [AppModule] }).overrideProvider(ENV).useValue(testEnv)` —
+  `testEnv` is a fully valid, correctly-typed `Env` object (same shape the real schema produces,
+  including 32+ character JWT secrets), just override with test values. `packages/config`'s
+  `envSchema` is never bypassed or loosened; this only swaps what `ENV` resolves to inside this
+  one test's DI container.
+- `.overrideProvider(RedisService).useValue(new FakeRedisService())` — a no-op stand-in
+  (`onModuleInit`/`onModuleDestroy` are no-ops, `getClient()` returns a stub) so this health-only
+  smoke test never dials a real Redis instance. Production continues to use the real
+  `RedisService` untouched; only the test's module graph substitutes it. (No Prisma override is
+  needed yet since `PrismaService` isn't wired into `AppModule` until Step 2.)
+- `let app: INestApplication | undefined` plus `afterAll(async () => { if (app) { await
+  app.close(); } })` — `app.close()` now only runs if `app.init()` actually succeeded.
+- The existing assertions (`GET /health` → 200 + `status: "ok"`/`service: "api"`, and
+  `GET /unknown-route` → 404 `ApiError` envelope) are unchanged.
+
+### Known limitations (Step 1)
+
+- Same environment constraint as Phase 1: no network egress to the npm registry here, so
+  `pnpm install` has **not** been run, and the new dependencies (`@prisma/client`, `prisma`,
+  `ioredis`, `nodemailer`, `@types/nodemailer`, `dotenv-cli`) are declared in `package.json` but
+  not installed. `pnpm build` / `pnpm test` / `pnpm lint` / `pnpm typecheck` have **not** been
+  executed in this environment — they must be run locally. Everything above reflects careful
+  manual code review, not a tool run.
+- `apps/api`'s Prisma CLI scripts (`db:migrate`, `db:migrate:deploy`, `db:studio`) load the repo
+  root `.env` via `dotenv-cli` since Prisma's own `.env` auto-discovery only looks in
+  `apps/api/prisma/` or `apps/api/`, not the repo root where this monorepo's single `.env` lives.
+  They cannot be run meaningfully until Step 2 adds a model (see "Step 1 fix" above).
+- `MailService`'s console-log fallback activates whenever `SMTP_HOST` is unset, in any
+  `NODE_ENV` — this is the approved behavior, but it means a production deployment that forgets
+  to set SMTP variables will silently log OTPs instead of emailing them rather than failing
+  loudly. Worth a deployment-checklist reminder in a later step.

@@ -1,2 +1,2 @@
-export { envSchema, loadEnv } from "./env";
+export { envSchema, loadEnv, isSmtpConfigured } from "./env";
 export type { Env } from "./env";

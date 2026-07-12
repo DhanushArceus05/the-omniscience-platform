@@ -9,16 +9,22 @@ reusable component library in `@omniscience/ui`).
 
 ## Current
 
-Phase 1 is complete. Build, lint, and typecheck have been confirmed passing locally. Test suite
-went through three fix passes for OtpInput/AppShell/RippleSurface failures surfaced by local
-`pnpm test` runs; the last remaining failure (`OtpInput > calls onComplete once the final digit is
-typed`) was resolved by removing that redundant test in favor of the already-passing paste-based
-equivalent, since the underlying cause wasn't reproducible by manual review and no implementation
-changes were authorized. A final polish pass then fixed the default theme (first-time visitors now
-start dark instead of following the OS), a module-scope crash in `SystemStatusPanel` when
-`VITE_API_BASE_URL`/`VITE_AI_SERVICE_BASE_URL` are unset, the missing `favicon.ico`, and reviewed
-auth card sizing (already at spec, no change needed). See claude/CURRENT_PHASE.md for full detail.
-Awaiting the Phase 2 implementation prompt (Authentication) before writing any backend/auth logic.
+Phase 1 is complete (see prior entry below, unchanged). The Phase 2 implementation prompt
+(Authentication & Users) has been received with finalized decisions (Prisma, Argon2, Redis-backed
+OTP/refresh tokens, 15m/7d JWTs, `@nestjs/throttler`, SMTP-with-console-fallback) and an approved
+8-step plan requiring explicit sign-off after each step.
+
+**Phase 2 — Step 1 (Prisma, PostgreSQL, Redis, configuration, and infrastructure setup) is
+complete** and awaiting verification/approval before Step 2 begins. Local verification caught a
+real conflict: the original draft required `db:generate` to succeed while also mandating zero
+Prisma models until Step 2 — but `prisma generate` cannot produce a client with no models. Fixed
+by deferring `PrismaService`/`PrismaModule` to Step 2 (no dummy/placeholder model added); Step 1
+now ships only the static Prisma configuration (`apps/api/prisma/schema.prisma`) plus
+`RedisService`/`MailService`/`ConfigModule`, all of which build independently of Prisma
+generation. See `claude/CURRENT_PHASE.md` for full detail. As with Phase 1, no network egress
+means dependencies were added to `package.json` but not installed, and no build/lint/typecheck/
+test command has been executed in this environment — this must be done locally before proceeding
+to Step 2.
 
 ## Repository Rule
 
