@@ -1,5 +1,8 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { BrowserRouter } from "react-router-dom";
+import { ThemeProvider } from "@omniscience/ui";
+import "@omniscience/ui/styles.css";
 import { App } from "./App";
 
 const container = document.getElementById("root");
@@ -9,6 +12,10 @@ if (!container) {
 
 createRoot(container).render(
   <StrictMode>
-    <App />
+    <ThemeProvider>
+      <BrowserRouter>
+        <App />
+      </BrowserRouter>
+    </ThemeProvider>
   </StrictMode>,
 );

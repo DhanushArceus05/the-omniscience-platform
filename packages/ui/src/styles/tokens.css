@@ -1,0 +1,178 @@
+/**
+ * Design tokens for The Omniscience Platform.
+ * Dark theme is the default (applied on :root). Light theme overrides
+ * are scoped under [data-theme="light"]. Theme switching is handled by
+ * ThemeProvider, which sets `data-theme` on <html> before first paint.
+ */
+
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* Backgrounds */
+  --omni-color-bg: #06060a;
+  --omni-color-bg-elevated: #0b0b12;
+  --omni-color-surface: #101018;
+  --omni-color-surface-hover: #16161f;
+  --omni-color-border: rgba(255, 255, 255, 0.08);
+  --omni-color-border-strong: rgba(255, 255, 255, 0.16);
+
+  /* Text */
+  --omni-color-text-primary: #f4f4f6;
+  --omni-color-text-secondary: #a4a4b3;
+  --omni-color-text-muted: #6b6b7b;
+  --omni-color-text-on-accent: #06060a;
+
+  /* Brand / accent */
+  --omni-color-accent: #7c5cff;
+  --omni-color-accent-hover: #8f72ff;
+  --omni-color-accent-muted: rgba(124, 92, 255, 0.16);
+  --omni-color-accent-2: #22d3ee;
+
+  /* Semantic */
+  --omni-color-success: #34d399;
+  --omni-color-success-bg: rgba(52, 211, 153, 0.12);
+  --omni-color-warning: #fbbf24;
+  --omni-color-warning-bg: rgba(251, 191, 36, 0.12);
+  --omni-color-danger: #f87171;
+  --omni-color-danger-bg: rgba(248, 113, 113, 0.12);
+  --omni-color-info: #60a5fa;
+  --omni-color-info-bg: rgba(96, 165, 250, 0.12);
+
+  /* Glassmorphism */
+  --omni-glass-bg: rgba(255, 255, 255, 0.05);
+  --omni-glass-bg-strong: rgba(255, 255, 255, 0.08);
+  --omni-glass-border: rgba(255, 255, 255, 0.12);
+  --omni-glass-blur: 16px;
+
+  /* Shadows */
+  --omni-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --omni-shadow-md: 0 4px 16px rgba(0, 0, 0, 0.4);
+  --omni-shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.5);
+  --omni-shadow-glow: 0 0 32px rgba(124, 92, 255, 0.35);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+
+  --omni-color-bg: #f6f6f9;
+  --omni-color-bg-elevated: #ffffff;
+  --omni-color-surface: #ffffff;
+  --omni-color-surface-hover: #f0f0f5;
+  --omni-color-border: rgba(10, 10, 20, 0.08);
+  --omni-color-border-strong: rgba(10, 10, 20, 0.16);
+
+  --omni-color-text-primary: #14141b;
+  --omni-color-text-secondary: #52525f;
+  --omni-color-text-muted: #83838f;
+  --omni-color-text-on-accent: #ffffff;
+
+  --omni-color-accent: #6d3cff;
+  --omni-color-accent-hover: #5a2ce6;
+  --omni-color-accent-muted: rgba(109, 60, 255, 0.1);
+  --omni-color-accent-2: #0891b2;
+
+  --omni-color-success: #059669;
+  --omni-color-success-bg: rgba(5, 150, 105, 0.1);
+  --omni-color-warning: #b45309;
+  --omni-color-warning-bg: rgba(180, 83, 9, 0.1);
+  --omni-color-danger: #dc2626;
+  --omni-color-danger-bg: rgba(220, 38, 38, 0.1);
+  --omni-color-info: #2563eb;
+  --omni-color-info-bg: rgba(37, 99, 235, 0.1);
+
+  --omni-glass-bg: rgba(255, 255, 255, 0.55);
+  --omni-glass-bg-strong: rgba(255, 255, 255, 0.75);
+  --omni-glass-border: rgba(10, 10, 20, 0.08);
+  --omni-glass-blur: 16px;
+
+  --omni-shadow-sm: 0 1px 2px rgba(20, 20, 27, 0.06);
+  --omni-shadow-md: 0 4px 16px rgba(20, 20, 27, 0.08);
+  --omni-shadow-lg: 0 16px 48px rgba(20, 20, 27, 0.12);
+  --omni-shadow-glow: 0 0 32px rgba(109, 60, 255, 0.2);
+}
+
+:root {
+  /* Typography */
+  --omni-font-sans:
+    "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --omni-font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --omni-text-xs: 0.75rem;
+  --omni-text-sm: 0.875rem;
+  --omni-text-md: 1rem;
+  --omni-text-lg: 1.125rem;
+  --omni-text-xl: 1.375rem;
+  --omni-text-2xl: 1.75rem;
+  --omni-text-3xl: 2.25rem;
+  --omni-text-4xl: 3rem;
+  --omni-text-5xl: 3.75rem;
+
+  --omni-font-weight-regular: 400;
+  --omni-font-weight-medium: 500;
+  --omni-font-weight-semibold: 600;
+  --omni-font-weight-bold: 700;
+
+  --omni-line-height-tight: 1.2;
+  --omni-line-height-normal: 1.5;
+  --omni-line-height-relaxed: 1.7;
+
+  /* Spacing scale */
+  --omni-space-0: 0;
+  --omni-space-1: 0.25rem;
+  --omni-space-2: 0.5rem;
+  --omni-space-3: 0.75rem;
+  --omni-space-4: 1rem;
+  --omni-space-5: 1.25rem;
+  --omni-space-6: 1.5rem;
+  --omni-space-8: 2rem;
+  --omni-space-10: 2.5rem;
+  --omni-space-12: 3rem;
+  --omni-space-16: 4rem;
+  --omni-space-20: 5rem;
+  --omni-space-24: 6rem;
+
+  /* Radius */
+  --omni-radius-sm: 6px;
+  --omni-radius-md: 10px;
+  --omni-radius-lg: 16px;
+  --omni-radius-xl: 24px;
+  --omni-radius-full: 999px;
+
+  /* Blur */
+  --omni-blur-sm: 6px;
+  --omni-blur-md: 16px;
+  --omni-blur-lg: 32px;
+
+  /* Motion */
+  --omni-duration-instant: 100ms;
+  --omni-duration-fast: 150ms;
+  --omni-duration-base: 220ms;
+  --omni-duration-slow: 360ms;
+  --omni-duration-page: 420ms;
+  --omni-ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --omni-ease-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
+  --omni-ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --omni-ease-out: cubic-bezier(0, 0, 0.2, 1);
+
+  /* Z-index */
+  --omni-z-base: 0;
+  --omni-z-background: -1;
+  --omni-z-dropdown: 100;
+  --omni-z-sticky: 200;
+  --omni-z-drawer: 300;
+  --omni-z-modal: 400;
+  --omni-z-toast: 500;
+  --omni-z-tooltip: 600;
+}
+
+/* Reduced motion: collapse all durations so transitions become instant. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --omni-duration-instant: 0ms;
+    --omni-duration-fast: 0ms;
+    --omni-duration-base: 0ms;
+    --omni-duration-slow: 0ms;
+    --omni-duration-page: 0ms;
+  }
+}

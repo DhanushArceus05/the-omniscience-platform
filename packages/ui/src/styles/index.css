@@ -1,0 +1,14 @@
+/**
+ * Single entry point for the design system's CSS.
+ * Consumers import this once, e.g.:
+ *
+ *   import "@omniscience/ui/styles.css";
+ *
+ * Import order matters: tokens must load before anything that
+ * references the custom properties they define.
+ */
+@import "./tokens.css";
+@import "./base.css";
+@import "./motion.css";
+@import "./background.css";
+@import "./components.css";

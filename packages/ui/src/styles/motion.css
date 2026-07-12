@@ -1,0 +1,183 @@
+/**
+ * Motion system: keyframes + utility classes consumed by the
+ * components in ../motion. Kept as plain CSS (no animation library)
+ * so the design system stays dependency-free.
+ */
+
+@keyframes omni-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes omni-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes omni-slide-down {
+  from {
+    opacity: 0;
+    transform: translateY(-16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes omni-slide-left {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes omni-slide-right {
+  from {
+    opacity: 0;
+    transform: translateX(-16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes omni-scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes omni-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes omni-ripple {
+  from {
+    opacity: 0.35;
+    transform: scale(0);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1);
+  }
+}
+
+@keyframes omni-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes omni-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@keyframes omni-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.omni-motion-fade {
+  animation: omni-fade-in var(--omni-duration-slow) var(--omni-ease-standard) both;
+}
+
+.omni-motion-slide-up {
+  animation: omni-slide-up var(--omni-duration-slow) var(--omni-ease-emphasized) both;
+}
+
+.omni-motion-slide-down {
+  animation: omni-slide-down var(--omni-duration-slow) var(--omni-ease-emphasized) both;
+}
+
+.omni-motion-slide-left {
+  animation: omni-slide-left var(--omni-duration-slow) var(--omni-ease-emphasized) both;
+}
+
+.omni-motion-slide-right {
+  animation: omni-slide-right var(--omni-duration-slow) var(--omni-ease-emphasized) both;
+}
+
+.omni-motion-scale {
+  animation: omni-scale-in var(--omni-duration-base) var(--omni-ease-emphasized) both;
+}
+
+.omni-motion-float {
+  animation: omni-float 4s var(--omni-ease-standard) infinite;
+}
+
+.omni-motion-page-enter {
+  animation: omni-fade-in var(--omni-duration-page) var(--omni-ease-standard) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .omni-motion-float {
+    animation: none;
+  }
+}
+
+/* Magnetic hover: transform is applied inline via JS transform; this
+   class only supplies the smoothing transition. */
+.omni-magnetic {
+  transition: transform var(--omni-duration-fast) var(--omni-ease-out);
+  will-change: transform;
+}
+
+/* Ripple surface: a positioned container that hosts expanding ripple
+   circles spawned on pointer down. */
+.omni-ripple-surface {
+  position: relative;
+  overflow: hidden;
+}
+
+.omni-ripple-circle {
+  position: absolute;
+  border-radius: 50%;
+  background: currentColor;
+  pointer-events: none;
+  animation: omni-ripple 600ms var(--omni-ease-out) forwards;
+}
+
+.omni-glass-transition {
+  transition:
+    background-color var(--omni-duration-base) var(--omni-ease-standard),
+    backdrop-filter var(--omni-duration-base) var(--omni-ease-standard),
+    border-color var(--omni-duration-base) var(--omni-ease-standard),
+    box-shadow var(--omni-duration-base) var(--omni-ease-standard);
+}

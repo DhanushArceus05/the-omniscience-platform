@@ -1,0 +1,148 @@
+.omni-app-shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.omni-app-sidebar {
+  width: 240px;
+  flex-shrink: 0;
+  padding: var(--omni-space-4);
+  background: var(--omni-glass-bg);
+  border-right: 1px solid var(--omni-color-border);
+  backdrop-filter: blur(var(--omni-glass-blur));
+  -webkit-backdrop-filter: blur(var(--omni-glass-blur));
+}
+
+.omni-app-sidebar__link {
+  display: flex;
+  align-items: center;
+  gap: var(--omni-space-2);
+  padding: var(--omni-space-2) var(--omni-space-3);
+  border-radius: var(--omni-radius-md);
+  color: var(--omni-color-text-secondary);
+  text-decoration: none;
+  font-size: var(--omni-text-sm);
+  transition: background-color var(--omni-duration-fast) var(--omni-ease-standard), color var(--omni-duration-fast) var(--omni-ease-standard);
+}
+
+.omni-app-sidebar__link:hover {
+  background: var(--omni-color-surface-hover);
+  color: var(--omni-color-text-primary);
+}
+
+.omni-app-sidebar__link--active {
+  background: var(--omni-color-accent-muted);
+  color: var(--omni-color-accent);
+}
+
+.omni-app-shell__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.omni-app-topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--omni-space-4);
+  padding: var(--omni-space-3) var(--omni-space-6);
+  border-bottom: 1px solid var(--omni-color-border);
+  background: var(--omni-color-bg-elevated);
+  position: sticky;
+  top: 0;
+  z-index: var(--omni-z-sticky);
+}
+
+.omni-app-topbar__menu-button {
+  display: none;
+  all: unset;
+  cursor: pointer;
+  padding: var(--omni-space-2);
+  border-radius: var(--omni-radius-sm);
+}
+
+.omni-app-topbar__breadcrumbs {
+  flex-shrink: 0;
+}
+
+.omni-app-topbar__search {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+}
+
+.omni-app-topbar__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--omni-space-2);
+  flex-shrink: 0;
+}
+
+.omni-app-shell__main {
+  flex: 1;
+  padding: var(--omni-space-6);
+}
+
+.omni-app-shell__scrim {
+  display: none;
+}
+
+/* Tablet and below: collapse the sidebar into an off-canvas drawer. */
+@media (max-width: 1024px) {
+  .omni-app-sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    transform: translateX(-100%);
+    z-index: var(--omni-z-drawer);
+    transition: transform var(--omni-duration-base) var(--omni-ease-emphasized);
+    box-shadow: var(--omni-shadow-lg);
+  }
+
+  .omni-app-sidebar--open {
+    transform: translateX(0);
+  }
+
+  .omni-app-topbar__menu-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .omni-app-topbar__search {
+    display: none;
+  }
+
+  .omni-app-shell__scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(4, 4, 10, 0.5);
+    border: none;
+    z-index: calc(var(--omni-z-drawer) - 1);
+  }
+}
+
+@media (max-width: 640px) {
+  .omni-app-topbar {
+    padding-inline: var(--omni-space-4);
+    gap: var(--omni-space-2);
+  }
+
+  .omni-app-shell__main {
+    padding: var(--omni-space-4);
+  }
+
+  .omni-app-topbar__breadcrumbs {
+    display: none;
+  }
+}
+
+/* Ultra-wide: cap the main content so lines don't stretch forever. */
+@media (min-width: 1920px) {
+  .omni-app-shell__main {
+    max-width: 1600px;
+    margin-inline: auto;
+    width: 100%;
+  }
+}

@@ -3,8 +3,29 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="dark light" />
     <title>The Omniscience Platform</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="alternate icon" href="/favicon.ico" />
+    <script>
+      (function () {
+        try {
+          var key = "omniscience-theme";
+          var stored = localStorage.getItem(key);
+          var resolved;
+          if (stored === "light" || stored === "dark") {
+            resolved = stored;
+          } else if (stored === "system") {
+            resolved = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+          } else {
+            resolved = "dark";
+          }
+          document.documentElement.setAttribute("data-theme", resolved);
+        } catch (e) {
+          document.documentElement.setAttribute("data-theme", "dark");
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

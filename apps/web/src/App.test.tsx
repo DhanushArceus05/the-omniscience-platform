@@ -1,86 +1,81 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-
-const getApiHealth = vi.fn();
-const getAiServiceHealth = vi.fn();
+import { MemoryRouter } from "react-router-dom";
+import { ThemeProvider } from "@omniscience/ui";
+import { App } from "./App";
 
 vi.mock("@omniscience/sdk", () => ({
   OmniscienceClient: vi.fn().mockImplementation(() => ({
-    getApiHealth,
-    getAiServiceHealth,
+    getApiHealth: vi.fn().mockResolvedValue({
+      status: "ok",
+      service: "api",
+      version: "0.1.0",
+      timestamp: new Date().toISOString(),
+      uptimeSeconds: 1,
+    }),
+    getAiServiceHealth: vi.fn().mockResolvedValue({
+      status: "ok",
+      service: "ai-service",
+      version: "0.1.0",
+      timestamp: new Date().toISOString(),
+      uptimeSeconds: 1,
+    }),
   })),
 }));
 
-async function renderApp() {
-  const { App } = await import("./App");
-  render(<App />);
+function renderAt(path: string) {
+  return render(
+    <ThemeProvider>
+      <MemoryRouter initialEntries={[path]}>
+        <App />
+      </MemoryRouter>
+    </ThemeProvider>,
+  );
 }
 
-describe("App", () => {
-  afterEach(() => {
-    vi.resetModules();
-    getApiHealth.mockReset();
-    getAiServiceHealth.mockReset();
+afterEach(() => {
+  cleanup();
+});
+
+describe("App routing", () => {
+  it("renders the landing page at /", () => {
+    renderAt("/");
+    expect(screen.getByText("The full spectrum of AI, orchestrated in one platform.")).toBeTruthy();
   });
 
-  it("renders the platform title", async () => {
-    getApiHealth.mockResolvedValue({
-      status: "ok",
-      service: "api",
-      version: "0.1.0",
-      timestamp: new Date().toISOString(),
-      uptimeSeconds: 1,
-    });
-    getAiServiceHealth.mockResolvedValue({
-      status: "ok",
-      service: "ai-service",
-      version: "0.1.0",
-      timestamp: new Date().toISOString(),
-      uptimeSeconds: 1,
-    });
-
-    await renderApp();
-    expect(screen.getByText("The Omniscience Platform")).toBeTruthy();
+  it("renders the login screen at /login", () => {
+    renderAt("/login");
+    expect(screen.getByRole("heading", { name: "Welcome back" })).toBeTruthy();
   });
 
-  it("shows ok status badges once both health checks succeed", async () => {
-    getApiHealth.mockResolvedValue({
-      status: "ok",
-      service: "api",
-      version: "0.1.0",
-      timestamp: new Date().toISOString(),
-      uptimeSeconds: 1,
-    });
-    getAiServiceHealth.mockResolvedValue({
-      status: "ok",
-      service: "ai-service",
-      version: "0.1.0",
-      timestamp: new Date().toISOString(),
-      uptimeSeconds: 1,
-    });
-
-    await renderApp();
-
-    await waitFor(() => {
-      expect(screen.getByText("API: ok")).toBeTruthy();
-      expect(screen.getByText("AI Service: ok")).toBeTruthy();
-    });
+  it("renders the register screen at /register", () => {
+    renderAt("/register");
+    expect(screen.getByRole("heading", { name: "Create your account" })).toBeTruthy();
   });
 
-  it("shows an unreachable badge when a health check fails", async () => {
-    getApiHealth.mockRejectedValue(new Error("network error"));
-    getAiServiceHealth.mockResolvedValue({
-      status: "ok",
-      service: "ai-service",
-      version: "0.1.0",
-      timestamp: new Date().toISOString(),
-      uptimeSeconds: 1,
-    });
+  it("renders the OTP screen at /verify-otp", () => {
+    renderAt("/verify-otp");
+    expect(screen.getByRole("heading", { name: "Verify your email" })).toBeTruthy();
+    expect(screen.getAllByRole("textbox")).toHaveLength(6);
+  });
 
-    await renderApp();
+  it("renders the forgot-password screen", () => {
+    renderAt("/forgot-password");
+    expect(screen.getByRole("heading", { name: "Forgot your password?" })).toBeTruthy();
+  });
 
-    await waitFor(() => {
-      expect(screen.getByText("API: unreachable")).toBeTruthy();
-    });
+  it("renders the reset-password screen", () => {
+    renderAt("/reset-password");
+    expect(screen.getByRole("heading", { name: "Choose a new password" })).toBeTruthy();
+  });
+
+  it("renders the app shell preview at /app", () => {
+    renderAt("/app");
+    expect(screen.getByText("Dashboard arrives in Phase 3")).toBeTruthy();
+  });
+
+  it("renders the not-found page for an unknown route", () => {
+    renderAt("/does-not-exist");
+    expect(screen.getByText("Page not found")).toBeTruthy();
   });
 });

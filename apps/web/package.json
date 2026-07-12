@@ -1,8 +1,8 @@
 {
   "name": "@omniscience/web",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "React + Vite web app — Phase 0 Foundation shell.",
+  "description": "React + Vite web app — Phase 1 Premium UI Foundation.",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -17,7 +17,8 @@
     "@omniscience/types": "workspace:*",
     "@omniscience/ui": "workspace:*",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.27.0"
   },
   "devDependencies": {
     "@testing-library/react": "^16.0.1",
