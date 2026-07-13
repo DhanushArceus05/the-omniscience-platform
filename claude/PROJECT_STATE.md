@@ -9,22 +9,23 @@ reusable component library in `@omniscience/ui`).
 
 ## Current
 
-Phase 1 is complete (see prior entry below, unchanged). The Phase 2 implementation prompt
-(Authentication & Users) has been received with finalized decisions (Prisma, Argon2, Redis-backed
-OTP/refresh tokens, 15m/7d JWTs, `@nestjs/throttler`, SMTP-with-console-fallback) and an approved
-8-step plan requiring explicit sign-off after each step.
+Phase 1 is complete (see prior entry below, unchanged). Phase 2 (Authentication & Users) is
+underway with an approved 8-step plan requiring explicit sign-off after each step.
 
-**Phase 2 — Step 1 (Prisma, PostgreSQL, Redis, configuration, and infrastructure setup) is
-complete** and awaiting verification/approval before Step 2 begins. Local verification caught a
-real conflict: the original draft required `db:generate` to succeed while also mandating zero
-Prisma models until Step 2 — but `prisma generate` cannot produce a client with no models. Fixed
-by deferring `PrismaService`/`PrismaModule` to Step 2 (no dummy/placeholder model added); Step 1
-now ships only the static Prisma configuration (`apps/api/prisma/schema.prisma`) plus
-`RedisService`/`MailService`/`ConfigModule`, all of which build independently of Prisma
-generation. See `claude/CURRENT_PHASE.md` for full detail. As with Phase 1, no network egress
-means dependencies were added to `package.json` but not installed, and no build/lint/typecheck/
-test command has been executed in this environment — this must be done locally before proceeding
-to Step 2.
+- **Step 1** (Prisma/PostgreSQL/Redis/configuration infrastructure): complete and verified
+  locally (install/build/lint/typecheck/test all passed after two local-verification fix rounds —
+  a Prisma-generate-vs-zero-models conflict resolved by deferring `PrismaService` to Step 2, and
+  a nodemailer mock typing error in a test file). Committed and pushed.
+- **Step 2** (User model, auth module foundation, password hashing, and validation): **complete**,
+  awaiting local verification and approval before Step 3. Adds the `User` Prisma model + first
+  migration, restores `PrismaService`/`PrismaModule` (deferred from Step 1), an `AuthModule`
+  foundation with an Argon2id `PasswordHasherService`, shared Zod validation schemas
+  (`packages/schemas/src/auth.ts`), and a generic `ZodValidationPipe` — none wired to any
+  endpoint yet. See `claude/CURRENT_PHASE.md` for full detail, including that the first migration
+  was hand-authored (no live Postgres/CLI available here) and should be verified against a real
+  `prisma migrate dev` run locally. As before, no network egress means no install/build/lint/
+  typecheck/test command has been executed in this environment — must be done locally before
+  proceeding to Step 3.
 
 ## Repository Rule
 

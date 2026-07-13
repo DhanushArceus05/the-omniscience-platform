@@ -1,19 +1,6 @@
 // The Omniscience Platform — apps/api Prisma schema
 //
-// Phase 2 (Authentication & Users) — Step 1: configuration foundation only.
-// This file intentionally defines no models yet. Data models (starting
-// with User) are introduced in Phase 2 Step 2 per the approved
-// step-by-step plan, so that Step 1 can be reviewed and verified purely
-// as configuration before any schema decisions are locked in.
-//
-// IMPORTANT: `prisma generate` and `prisma migrate` both require at least
-// one model and will exit non-zero against this file as-is — that is
-// expected Prisma CLI behavior, not a bug. Do not run `db:generate` /
-// `db:migrate` (apps/api/package.json) until Step 2 adds the User model;
-// Step 1's verification commands intentionally do not include them (see
-// claude/CURRENT_PHASE.md). `PrismaService`/`PrismaModule` are likewise
-// deferred to Step 2 for the same reason — they cannot be built against
-// an ungenerated `@prisma/client`.
+// Phase 2 (Authentication & Users) — Step 2: first real model.
 //
 // The datasource intentionally reuses POSTGRES_URL (not a separate
 // DATABASE_URL) to keep a single source of truth for the Postgres
@@ -27,4 +14,34 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("POSTGRES_URL")
+}
+
+/// Authentication foundation user record (Phase 2 Step 2).
+///
+/// - `id` uses Prisma's `cuid()` (string, not an auto-incrementing
+///   integer) per docs/05_Database_Design.md's "UUIDs" rule — cuid is a
+///   URL-safe, sortable, collision-resistant string ID in the same
+///   family as UUIDs.
+/// - `email` is normalized (trimmed + lowercased) at the application
+///   layer before every write, via the shared `emailSchema` in
+///   `@omniscience/schemas`, so a plain case-sensitive unique index is
+///   sufficient without a Postgres extension (e.g. `citext`).
+/// - `name` mirrors the "Full name" field already present on the Phase 1
+///   RegisterPage UI.
+/// - `emailVerifiedAt` is null until the Step 3 OTP verification flow
+///   sets it; its presence (not a boolean) also records *when*
+///   verification happened.
+/// - No OTP, refresh-token, workspace, billing, or profile fields here —
+///   those are out of Step 2's approved scope (OTP/refresh tokens live
+///   in Redis per the Phase 2 decisions, not Postgres).
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  passwordHash    String
+  name            String
+  emailVerifiedAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@map("users")
 }

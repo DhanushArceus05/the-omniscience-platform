@@ -50,4 +50,31 @@ describe("AllExceptionsFilter", () => {
 
     expect(logger.error).toHaveBeenCalled();
   });
+
+  it("surfaces structured `details` when the exception response includes them (Phase 2 validation)", () => {
+    const filter = new AllExceptionsFilter(logger);
+    const { host, json, status } = createMockHost();
+
+    filter.catch(
+      new HttpException(
+        {
+          code: "VALIDATION_ERROR",
+          message: "Request validation failed",
+          details: [{ path: "email", message: "Enter a valid email address" }],
+        },
+        HttpStatus.BAD_REQUEST,
+      ),
+      host,
+    );
+
+    expect(status).toHaveBeenCalledWith(HttpStatus.BAD_REQUEST);
+    expect(json).toHaveBeenCalledWith({
+      success: false,
+      error: {
+        code: "VALIDATION_ERROR",
+        message: "Request validation failed",
+        details: [{ path: "email", message: "Enter a valid email address" }],
+      },
+    });
+  });
 });

@@ -21,7 +21,25 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     const message = isHttpException ? exception.message : "Internal server error";
 
-    const code = isHttpException ? (HttpStatus[status] ?? "HTTP_ERROR") : "INTERNAL_ERROR";
+    // Some exceptions (e.g. ZodValidationPipe's BadRequestException) carry a
+    // structured body with their own stable `code` (and per-field
+    // `details`) — prefer that over the generic HTTP status name so
+    // clients can distinguish e.g. "VALIDATION_ERROR" from any other 400.
+    // Every exception without a structured body keeps the exact previous
+    // behavior (code derived from the HTTP status name).
+    const httpResponseBody = isHttpException ? exception.getResponse() : undefined;
+    const hasStructuredBody = httpResponseBody !== null && typeof httpResponseBody === "object";
+
+    const customCode =
+      hasStructuredBody && typeof (httpResponseBody as { code?: unknown }).code === "string"
+        ? (httpResponseBody as { code: string }).code
+        : undefined;
+    const code =
+      customCode ?? (isHttpException ? (HttpStatus[status] ?? "HTTP_ERROR") : "INTERNAL_ERROR");
+
+    const details = hasStructuredBody
+      ? (httpResponseBody as { details?: unknown }).details
+      : undefined;
 
     this.logger.error(
       {
@@ -34,7 +52,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     const body: ApiError = {
       success: false,
-      error: { code, message },
+      error: details !== undefined ? { code, message, details } : { code, message },
     };
 
     response.status(status).json(body);

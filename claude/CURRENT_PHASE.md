@@ -222,3 +222,61 @@ Fixed without weakening any production validation and without making any env var
   `NODE_ENV` — this is the approved behavior, but it means a production deployment that forgets
   to set SMTP variables will silently log OTPs instead of emailing them rather than failing
   loudly. Worth a deployment-checklist reminder in a later step.
+
+## Step 2 — User model, auth module foundation, password hashing, and validation (complete)
+
+- Added the `User` model to `apps/api/prisma/schema.prisma`: `id` (`cuid()`, string — not an
+  auto-incrementing integer), `email` (`@unique`), `passwordHash`, `name` (matches the Phase 1
+  RegisterPage "Full name" field), `emailVerifiedAt` (nullable `DateTime`, set by Step 3's OTP
+  flow), `createdAt`/`updatedAt`. No OTP, refresh-token, workspace, billing, or profile fields —
+  out of Step 2's approved scope.
+- Added the first migration: `apps/api/prisma/migrations/20260712000000_create_users_table/` +
+  `migrations/migration_lock.toml`. **Hand-authored**, not CLI-generated — see "Known
+  limitations" below.
+- Restored `PrismaService`/`PrismaModule` (deferred in Step 1 because `prisma generate` requires
+  at least one model) — unchanged from the Step 1 draft otherwise: connect/disconnect wired to
+  Nest's module lifecycle, warn/error events routed through the shared logger.
+- Added `apps/api/src/auth/`: `AuthModule` (wires only `PasswordHasherService` — no controller,
+  since there's nothing to expose until Step 3/4) and `PasswordHasherService` (Argon2id `hash()`/
+  `verify()`, tuned parameters centralized in one place, never logs plaintext or hashes,
+  `verify()` normalizes a malformed/foreign hash to `false` instead of throwing).
+- Added `packages/schemas/src/auth.ts`: shared `emailSchema` (trims + lowercases, so `User.email`'s
+  plain `@unique` index is sufficient without a Postgres `citext` extension), `passwordSchema`
+  (10–128 chars, requires lower/upper/digit/special), `displayNameSchema` (2–100 chars, trimmed) —
+  single source of truth for both `apps/api` and (in a later step) `apps/web`.
+- Added `apps/api/src/common/pipes/zod-validation.pipe.ts`: a generic, reusable Nest pipe that
+  validates any request payload against a shared Zod schema, throwing a structured
+  `BadRequestException` (`code`, `message`, per-field `details` — never the offending value) on
+  failure. Not wired to any endpoint yet (Step 3/4 will use it with `@Body(new
+  ZodValidationPipe(someSchema))`).
+- Extended `AllExceptionsFilter` (Phase 0 file) additively: it now prefers a structured
+  exception body's own `code`/`details` (e.g. `ZodValidationPipe`'s `"VALIDATION_ERROR"`) over the
+  generic HTTP-status-derived code, when present. Every exception without a structured body
+  (all of Phase 0/1's) keeps the exact previous behavior — covered by the pre-existing tests,
+  which still pass unmodified, plus one new test for the structured case.
+- `apps/api/src/app.module.ts`: re-added `PrismaModule`, added `AuthModule` (additive only).
+- `apps/api/test/health.e2e-spec.ts`: added a `FakePrismaService` override alongside the existing
+  `FakeRedisService` one, so this health-only smoke test still doesn't require a live Postgres
+  now that `PrismaModule` is back in `AppModule`.
+- `apps/api/package.json`: added `argon2` and `@omniscience/schemas` dependencies.
+
+### Known limitations (Step 2)
+
+- Same environment constraint as Steps 0/1: no network egress here, so `pnpm install` has not
+  been run and none of `pnpm build`/`lint`/`typecheck`/`test` have been executed in this
+  environment. Must be run and confirmed locally.
+- **The migration SQL was hand-authored, not produced by running `prisma migrate dev`** — there's
+  no live Postgres or installed CLI available here. It was written to match exactly what Prisma
+  generates for this schema (verified by careful manual review of Prisma's standard
+  `CREATE TABLE`/`CREATE UNIQUE INDEX` output shape), but it has not been applied against a real
+  database and its accuracy has not been machine-verified. Please run
+  `pnpm --filter @omniscience/api run db:migrate` locally: Prisma should recognize it as already
+  matching the current schema; if Prisma reports any drift or checksum mismatch instead, delete
+  this migration folder and let `prisma migrate dev --name create_users_table` generate the
+  authoritative one, then let me know so the checked-in migration can be replaced.
+- `argon2` requires a native binding that must be compiled/installed via `pnpm install`; not
+  verified to build successfully in this environment for the same no-network reason.
+- No repository/service yet reads or writes a `User` row — `PrismaService` and the `User` model
+  exist, but nothing calls `prisma.user.*` until Step 3 (registration) needs it.
+- `ZodValidationPipe` and the shared auth schemas are not wired to any controller yet — by
+  design, per Step 2's scope boundaries.

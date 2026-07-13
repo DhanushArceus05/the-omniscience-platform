@@ -9,9 +9,10 @@ import { LOGGER } from "../config/config.constants";
  * cleanly on shutdown (main.ts already calls `app.enableShutdownHooks()`
  * from Phase 0, so `onModuleDestroy` is guaranteed to run).
  *
- * No data models exist yet (Phase 2 Step 1 is infrastructure-only; models
- * arrive in Step 2), so this service currently has no query methods
- * beyond what `PrismaClient` provides directly.
+ * Restored in Phase 2 Step 2 now that the `User` model exists and
+ * `prisma generate` can produce a real client — Step 1 deliberately
+ * shipped no Prisma client wiring because `prisma generate` fails with
+ * zero models (see claude/CURRENT_PHASE.md, Step 1 fix).
  */
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {

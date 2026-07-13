@@ -7,26 +7,27 @@ import request from "supertest";
 import { AppModule } from "../src/app.module";
 import { AllExceptionsFilter } from "../src/common/filters/all-exceptions.filter";
 import { ENV } from "../src/config/config.constants";
+import { PrismaService } from "../src/prisma/prisma.service";
 import { RedisService } from "../src/redis/redis.service";
 
 /**
  * This is a health-endpoint smoke test only. It boots the real
  * `AppModule` (so it still exercises the actual wiring: ConfigModule,
- * RedisModule, MailModule, HealthModule), but it must not require a real
- * Postgres/Redis/Mongo/Qdrant instance or real secrets to run in CI/local
- * `pnpm test`.
+ * PrismaModule, RedisModule, MailModule, AuthModule, HealthModule), but
+ * it must not require a real Postgres/Redis/Mongo/Qdrant instance or
+ * real secrets to run in CI/local `pnpm test`.
  *
  * `packages/config`'s environment validation is NOT weakened or bypassed:
  * `ENV` is overridden with a fully valid, correctly-shaped test `Env`
  * object (same schema, same required fields, just test values) rather
  * than making any variable optional.
  *
- * `RedisService` is the only provider in `AppModule` that opens a real
- * network connection during `onModuleInit` (there is no Prisma wiring
- * yet — see claude/CURRENT_PHASE.md Step 1). It's overridden with a
- * no-op stub so this suite never dials an actual Redis server. This does
- * not change application behavior: production still uses the real
- * `RedisService` untouched — only this test's DI container substitutes it.
+ * `PrismaService` and `RedisService` are the only providers in
+ * `AppModule` that open a real network connection during
+ * `onModuleInit`. Both are overridden with no-op stubs so this suite
+ * never dials an actual Postgres or Redis server. This does not change
+ * application behavior: production still uses the real services
+ * untouched — only this test's DI container substitutes them.
  */
 const testEnv: Env = {
   NODE_ENV: "test",
@@ -60,6 +61,17 @@ class FakeRedisService {
   }
 }
 
+class FakePrismaService {
+  async onModuleInit(): Promise<void> {
+    // no-op: this e2e suite is a health-only smoke test and must not
+    // require a real Postgres instance to be running.
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    // no-op
+  }
+}
+
 describe("AppModule (e2e)", () => {
   let app: INestApplication | undefined;
 
@@ -71,6 +83,8 @@ describe("AppModule (e2e)", () => {
       .useValue(testEnv)
       .overrideProvider(RedisService)
       .useValue(new FakeRedisService())
+      .overrideProvider(PrismaService)
+      .useValue(new FakePrismaService())
       .compile();
 
     app = moduleFixture.createNestApplication();
