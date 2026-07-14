@@ -21,15 +21,22 @@ underway with an approved 8-step plan requiring explicit sign-off after each ste
   `PasswordHasherService`'s `argon2.Options & { type: argon2.ArgonType }` failed because installed
   `argon2` v0.41.x doesn't export `ArgonType`; changed to plain `argon2.Options` (preserved as-is).
 - **Step 3** (registration, pending-registration flow, OTP generation, email delivery,
-  verification, and resend OTP): implementation complete. A senior-engineer review found three
-  production blockers (stale lockfile, plaintext-OTP-in-production risk, Redis read-modify-write
-  races); **all three are now fixed and locally verified** — `pnpm install --frozen-lockfile`,
-  `pnpm build`/`lint`/`typecheck`/`test` all pass (including new tests against a real Redis
-  instance proving the atomic-Redis fix under genuine concurrency). GitHub Actions has not run
-  yet for this change — the workflow was updated to add a `redis` service container and needs to
-  execute on your end. See `claude/CURRENT_PHASE.md` for full detail, architectural decisions, and
-  known limitations. No login/JWT issuance yet (Step 4, not started — awaiting your approval to
-  proceed).
+  verification, and resend OTP): implementation complete, all three production-readiness blockers
+  found by senior-engineer review (stale lockfile, plaintext-OTP-in-production risk, Redis
+  read-modify-write races) fixed and locally verified. Per your message, you've since verified
+  Step 3 yourself (Docker infra, Prisma migration, `pnpm build`/`lint`/`typecheck`/`test`,
+  committed, pushed, GitHub Actions green).
+- **Step 4** (login, JWT access/refresh token issuance, refresh, logout, and `/auth/me`):
+  implementation complete, **locally verified in this session** — `pnpm build`/`lint`/`typecheck`/
+  `test` all pass (`@omniscience/api`: 21/21 suites, 116/116 tests, including 2 tests against a
+  real Redis instance proving refresh-token rotation is genuinely single-use under concurrency;
+  full monorepo 15/15 turbo tasks green). GitHub Actions has not run yet for this change — needs to
+  execute on your end. See `claude/CURRENT_PHASE.md` for full detail, architectural decisions,
+  security notes, and known limitations (notably: no refresh-token-family reuse detection, no
+  per-account login lockout, `EMAIL_NOT_VERIFIED` currently unreachable through the public API).
+  No forgot-password/reset, user-profile, or session-management endpoints yet (later steps, not
+  started — awaiting your approval to proceed). No frontend wiring — `LoginPage.tsx`/
+  `RegisterPage.tsx` remain UI-only previews.
 
 ## Repository Rule
 

@@ -12,4 +12,12 @@ export type {
   VerifyOtpResponse,
   ResendOtpRequest,
   ResendOtpResponse,
+  AuthenticatedUser,
+  LoginRequest,
+  LoginResponse,
+  RefreshRequest,
+  RefreshResponse,
+  LogoutRequest,
+  LogoutResponse,
+  MeResponse,
 } from "./auth";

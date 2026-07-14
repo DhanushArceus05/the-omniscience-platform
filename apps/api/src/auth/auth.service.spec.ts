@@ -1,10 +1,21 @@
-import { ConflictException, GoneException, HttpException, HttpStatus, NotFoundException, BadRequestException } from "@nestjs/common";
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  GoneException,
+  HttpException,
+  HttpStatus,
+  NotFoundException,
+  UnauthorizedException,
+} from "@nestjs/common";
 import type { Env } from "@omniscience/config";
 import type { Logger } from "pino";
+import { AccessTokenService } from "./access-token.service";
 import { AuthService, type PendingRegistrationRecord } from "./auth.service";
 import { OtpService } from "./otp.service";
 import { PasswordHasherService } from "./password-hasher.service";
 import { PendingRegistrationStore } from "./pending-registration.store";
+import { RefreshTokenStore } from "./refresh-token.store";
 import { MailService } from "../mail/mail.service";
 import { PrismaService } from "../prisma/prisma.service";
 
@@ -36,7 +47,17 @@ describe("AuthService", () => {
 
   const mail = { sendMail: jest.fn(), isConfigured: () => false } as unknown as MailService;
 
-  let service: AuthService;
+  const accessTokens = {
+    sign: jest.fn(),
+    verify: jest.fn(),
+    expiresInSeconds: 900,
+  } as unknown as AccessTokenService;
+
+  const refreshTokens = {
+    issue: jest.fn(),
+    consume: jest.fn(),
+    revoke: jest.fn(),
+  } as unknown as RefreshTokenStore;
 
   const buildRecord = (overrides: Partial<PendingRegistrationRecord> = {}): PendingRegistrationRecord => ({
     name: "Arceus",
@@ -48,10 +69,31 @@ describe("AuthService", () => {
     ...overrides,
   });
 
+  const buildUser = (overrides: Record<string, unknown> = {}) => ({
+    id: "user_1",
+    email: "user@example.com",
+    passwordHash: "hashed-password",
+    name: "Arceus",
+    emailVerifiedAt: new Date(),
+    ...overrides,
+  });
+
+  let service: AuthService;
+
   beforeEach(() => {
     jest.clearAllMocks();
     (pendingRegistrations.claimSend as jest.Mock).mockResolvedValue({ status: "OK" });
-    service = new AuthService(env, logger, prisma, passwordHasher, otpService, pendingRegistrations, mail);
+    service = new AuthService(
+      env,
+      logger,
+      prisma,
+      passwordHasher,
+      otpService,
+      pendingRegistrations,
+      mail,
+      accessTokens,
+      refreshTokens,
+    );
   });
 
   describe("register", () => {
@@ -245,6 +287,132 @@ describe("AuthService", () => {
       await expect(promise).rejects.toBeInstanceOf(HttpException);
       await expect(promise).rejects.toMatchObject({ status: HttpStatus.TOO_MANY_REQUESTS });
       expect(mail.sendMail).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("login", () => {
+    it("issues an access token and a refresh token for a verified user with the correct password", async () => {
+      const user = buildUser();
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(user);
+      (passwordHasher.verify as jest.Mock).mockResolvedValue(true);
+      (accessTokens.sign as jest.Mock).mockResolvedValue("signed.jwt.token");
+      (refreshTokens.issue as jest.Mock).mockResolvedValue({
+        token: "token-id.secret",
+        expiresInSeconds: 604800,
+      });
+
+      const result = await service.login("user@example.com", "correct-password");
+
+      expect(passwordHasher.verify).toHaveBeenCalledWith(user.passwordHash, "correct-password");
+      expect(accessTokens.sign).toHaveBeenCalledWith({ sub: user.id, email: user.email });
+      expect(refreshTokens.issue).toHaveBeenCalledWith(user.id);
+      expect(result).toEqual({
+        accessToken: "signed.jwt.token",
+        accessTokenExpiresInSeconds: 900,
+        refreshToken: "token-id.secret",
+        refreshTokenExpiresInSeconds: 604800,
+        user: { id: user.id, email: user.email, name: user.name },
+      });
+    });
+
+    it("throws UnauthorizedException for an unknown email, still calling verify against a dummy hash", async () => {
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(null);
+      (passwordHasher.verify as jest.Mock).mockResolvedValue(false);
+
+      await expect(service.login("nobody@example.com", "whatever")).rejects.toThrow(
+        UnauthorizedException,
+      );
+      // Verify is still called (against a dummy hash) so a nonexistent
+      // account doesn't respond measurably faster than a wrong password.
+      expect(passwordHasher.verify).toHaveBeenCalledWith(expect.any(String), "whatever");
+      expect(refreshTokens.issue).not.toHaveBeenCalled();
+    });
+
+    it("throws UnauthorizedException for a wrong password", async () => {
+      const user = buildUser();
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(user);
+      (passwordHasher.verify as jest.Mock).mockResolvedValue(false);
+
+      await expect(service.login("user@example.com", "wrong-password")).rejects.toThrow(
+        UnauthorizedException,
+      );
+      expect(refreshTokens.issue).not.toHaveBeenCalled();
+    });
+
+    it("throws ForbiddenException when the account's email isn't verified yet", async () => {
+      const user = buildUser({ emailVerifiedAt: null });
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(user);
+      (passwordHasher.verify as jest.Mock).mockResolvedValue(true);
+
+      await expect(service.login("user@example.com", "correct-password")).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(refreshTokens.issue).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("refresh", () => {
+    it("rotates the refresh token and issues a new access token", async () => {
+      (refreshTokens.consume as jest.Mock).mockResolvedValue({ status: "OK", userId: "user_1" });
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(buildUser());
+      (accessTokens.sign as jest.Mock).mockResolvedValue("new.jwt.token");
+      (refreshTokens.issue as jest.Mock).mockResolvedValue({
+        token: "new-token-id.new-secret",
+        expiresInSeconds: 604800,
+      });
+
+      const result = await service.refresh("old-token-id.old-secret");
+
+      expect(refreshTokens.consume).toHaveBeenCalledWith("old-token-id.old-secret");
+      expect(refreshTokens.issue).toHaveBeenCalledWith("user_1");
+      expect(result).toEqual({
+        accessToken: "new.jwt.token",
+        accessTokenExpiresInSeconds: 900,
+        refreshToken: "new-token-id.new-secret",
+        refreshTokenExpiresInSeconds: 604800,
+      });
+    });
+
+    it("throws UnauthorizedException when the token is unknown, already used, or expired", async () => {
+      (refreshTokens.consume as jest.Mock).mockResolvedValue({ status: "NOT_FOUND" });
+
+      await expect(service.refresh("bogus-token")).rejects.toThrow(UnauthorizedException);
+      expect(prisma.user.findUnique).not.toHaveBeenCalled();
+      expect(refreshTokens.issue).not.toHaveBeenCalled();
+    });
+
+    it("throws UnauthorizedException when the token's user no longer exists", async () => {
+      (refreshTokens.consume as jest.Mock).mockResolvedValue({ status: "OK", userId: "user_1" });
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(null);
+
+      await expect(service.refresh("token-id.secret")).rejects.toThrow(UnauthorizedException);
+      expect(refreshTokens.issue).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("logout", () => {
+    it("revokes the refresh token and always reports success", async () => {
+      const result = await service.logout("token-id.secret");
+
+      expect(refreshTokens.revoke).toHaveBeenCalledWith("token-id.secret");
+      expect(result).toEqual({ loggedOut: true });
+    });
+  });
+
+  describe("getCurrentUser", () => {
+    it("returns the user's public identity", async () => {
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(buildUser());
+
+      const result = await service.getCurrentUser("user_1");
+
+      expect(prisma.user.findUnique).toHaveBeenCalledWith({ where: { id: "user_1" } });
+      expect(result).toEqual({ id: "user_1", email: "user@example.com", name: "Arceus" });
+    });
+
+    it("throws UnauthorizedException when the user no longer exists", async () => {
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(null);
+
+      await expect(service.getCurrentUser("user_1")).rejects.toThrow(UnauthorizedException);
     });
   });
 });

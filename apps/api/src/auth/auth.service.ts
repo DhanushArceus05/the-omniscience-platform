@@ -1,19 +1,30 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   GoneException,
   HttpException,
   HttpStatus,
   Inject,
   Injectable,
   NotFoundException,
+  UnauthorizedException,
 } from "@nestjs/common";
 import type { Env } from "@omniscience/config";
-import type { RegisterResponse, ResendOtpResponse, VerifyOtpResponse } from "@omniscience/types";
+import type {
+  LoginResponse,
+  LogoutResponse,
+  MeResponse,
+  RefreshResponse,
+  RegisterResponse,
+  ResendOtpResponse,
+  VerifyOtpResponse,
+} from "@omniscience/types";
 import type { Logger } from "pino";
 import { ENV, LOGGER } from "../config/config.constants";
 import { MailService } from "../mail/mail.service";
 import { PrismaService } from "../prisma/prisma.service";
+import { AccessTokenService } from "./access-token.service";
 import { OtpService } from "./otp.service";
 import { PasswordHasherService } from "./password-hasher.service";
 import {
@@ -22,6 +33,7 @@ import {
   type PendingRegistrationRecord,
   type RecordFailedAttemptResult,
 } from "./pending-registration.store";
+import { RefreshTokenStore } from "./refresh-token.store";
 
 export interface RegisterInput {
   email: string;
@@ -33,14 +45,26 @@ export interface RegisterInput {
 const PRISMA_UNIQUE_CONSTRAINT_ERROR_CODE = "P2002";
 
 /**
+ * A syntactically valid Argon2id hash of an arbitrary, unrelated
+ * password (never a real user's), generated once with the same
+ * parameters `PasswordHasherService` uses. `login()` verifies against
+ * this when no account exists for the given email, so the KDF still runs
+ * either way — an account-not-found response and a wrong-password
+ * response take roughly the same amount of time, which is what actually
+ * prevents email enumeration via a timing side channel (returning the
+ * same generic error message alone is not enough if one path is
+ * measurably faster than the other).
+ */
+const DUMMY_HASH =
+  "$argon2id$v=19$m=19456,t=3,p=1$y+ThfWzgfsiLEbHm3WSNgA$ObL+tfjlWhmE7vuv780S3rbATvnVTGZHmB+TGBqtGNw";
+
+/**
  * Orchestrates the approved authentication foundation flow:
  * email/password registration → pending registration (Redis) → 6-digit
  * OTP email → verification → real `User` row created in Postgres only
- * once verified.
- *
- * Deliberately does NOT issue any JWT/session here — that's Step 4
- * (login). A verified registration currently just means the account now
- * exists; the person still has to log in afterward.
+ * once verified (Step 3); then login → JWT access token + Redis-backed
+ * refresh token → refresh (rotates both) → logout (revokes the refresh
+ * token) (Step 4).
  */
 @Injectable()
 export class AuthService {
@@ -52,6 +76,8 @@ export class AuthService {
     private readonly otpService: OtpService,
     private readonly pendingRegistrations: PendingRegistrationStore,
     private readonly mail: MailService,
+    private readonly accessTokens: AccessTokenService,
+    private readonly refreshTokens: RefreshTokenStore,
   ) {}
 
   async register(input: RegisterInput): Promise<RegisterResponse> {
@@ -189,6 +215,104 @@ export class AuthService {
     this.logger.info({ email }, "otp resent");
 
     return { email, otpExpiresInSeconds: this.env.OTP_TTL_SECONDS };
+  }
+
+  async login(email: string, password: string): Promise<LoginResponse> {
+    const user = await this.prisma.user.findUnique({ where: { email } });
+
+    // Same generic error for "no such account" and "wrong password" —
+    // distinguishing them would let a caller enumerate registered
+    // emails. `passwordHasher.verify` is still called (against
+    // `DUMMY_HASH` when there's no real user) in both branches so the
+    // response time doesn't itself leak which case occurred.
+    const isValid = await this.passwordHasher.verify(user?.passwordHash ?? DUMMY_HASH, password);
+    if (!user || !isValid) {
+      throw new UnauthorizedException({
+        code: "INVALID_CREDENTIALS",
+        message: "Incorrect email or password.",
+      });
+    }
+
+    if (!user.emailVerifiedAt) {
+      throw new ForbiddenException({
+        code: "EMAIL_NOT_VERIFIED",
+        message: "Please verify your email before signing in.",
+      });
+    }
+
+    const [accessToken, refreshToken] = await Promise.all([
+      this.accessTokens.sign({ sub: user.id, email: user.email }),
+      this.refreshTokens.issue(user.id),
+    ]);
+
+    this.logger.info({ userId: user.id }, "login succeeded");
+
+    return {
+      accessToken,
+      accessTokenExpiresInSeconds: this.accessTokens.expiresInSeconds,
+      refreshToken: refreshToken.token,
+      refreshTokenExpiresInSeconds: refreshToken.expiresInSeconds,
+      user: { id: user.id, email: user.email, name: user.name },
+    };
+  }
+
+  async refresh(refreshToken: string): Promise<RefreshResponse> {
+    // `consume()` is single-use and atomic (Redis `GETDEL`): the
+    // presented token can never be exchanged a second time, whether this
+    // call succeeds or fails below — a stolen-then-replayed token, or two
+    // concurrent refresh calls racing on the same token, can never both
+    // produce a valid result.
+    const result = await this.refreshTokens.consume(refreshToken);
+    if (result.status === "NOT_FOUND") {
+      throw new UnauthorizedException({
+        code: "REFRESH_TOKEN_INVALID",
+        message: "This session has expired or is no longer valid. Please sign in again.",
+      });
+    }
+
+    const user = await this.prisma.user.findUnique({ where: { id: result.userId } });
+    if (!user) {
+      // The account was deleted after this refresh token was issued.
+      throw new UnauthorizedException({
+        code: "REFRESH_TOKEN_INVALID",
+        message: "This session has expired or is no longer valid. Please sign in again.",
+      });
+    }
+
+    const [accessToken, newRefreshToken] = await Promise.all([
+      this.accessTokens.sign({ sub: user.id, email: user.email }),
+      this.refreshTokens.issue(user.id),
+    ]);
+
+    return {
+      accessToken,
+      accessTokenExpiresInSeconds: this.accessTokens.expiresInSeconds,
+      refreshToken: newRefreshToken.token,
+      refreshTokenExpiresInSeconds: newRefreshToken.expiresInSeconds,
+    };
+  }
+
+  async logout(refreshToken: string): Promise<LogoutResponse> {
+    // Always succeeds — revoking an already-invalid token is a no-op
+    // (see `RefreshTokenStore.revoke`), so logout never leaks whether the
+    // token it was given was valid. The corresponding access token (if
+    // any) simply expires naturally within `JWT_ACCESS_TTL_SECONDS`; it
+    // isn't (and can't be, being stateless) revoked immediately — an
+    // accepted tradeoff for a 15-minute-default access token, called out
+    // in known limitations.
+    await this.refreshTokens.revoke(refreshToken);
+    return { loggedOut: true };
+  }
+
+  async getCurrentUser(userId: string): Promise<MeResponse> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new UnauthorizedException({
+        code: "UNAUTHORIZED",
+        message: "A valid access token is required.",
+      });
+    }
+    return { id: user.id, email: user.email, name: user.name };
   }
 
   private async issueOtp(): Promise<{

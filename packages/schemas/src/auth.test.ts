@@ -2,8 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   displayNameSchema,
   emailSchema,
+  loginPasswordSchema,
+  loginRequestSchema,
+  logoutRequestSchema,
   otpCodeSchema,
   passwordSchema,
+  refreshRequestSchema,
+  refreshTokenSchema,
   registerRequestSchema,
   resendOtpRequestSchema,
   verifyOtpRequestSchema,
@@ -123,5 +128,67 @@ describe("resendOtpRequestSchema", () => {
 
   it("rejects a missing email", () => {
     expect(() => resendOtpRequestSchema.parse({})).toThrow();
+  });
+});
+
+describe("loginPasswordSchema", () => {
+  it("accepts a password that would fail the strong-password policy", () => {
+    // Login must never lock out an account created under an older/looser
+    // policy, so it only requires a non-empty string.
+    expect(loginPasswordSchema.parse("weak")).toBe("weak");
+  });
+
+  it("rejects an empty password", () => {
+    expect(() => loginPasswordSchema.parse("")).toThrow();
+  });
+
+  it("rejects a password longer than 128 characters", () => {
+    expect(() => loginPasswordSchema.parse("a".repeat(129))).toThrow();
+  });
+});
+
+describe("loginRequestSchema", () => {
+  it("accepts a valid payload and normalizes email", () => {
+    expect(loginRequestSchema.parse({ email: "User@Example.com", password: "anything" })).toEqual(
+      { email: "user@example.com", password: "anything" },
+    );
+  });
+
+  it("rejects a missing password", () => {
+    expect(() => loginRequestSchema.parse({ email: "user@example.com" })).toThrow();
+  });
+});
+
+describe("refreshTokenSchema", () => {
+  it("accepts a non-empty token", () => {
+    expect(refreshTokenSchema.parse("abc.def")).toBe("abc.def");
+  });
+
+  it("rejects an empty token", () => {
+    expect(() => refreshTokenSchema.parse("")).toThrow();
+  });
+});
+
+describe("refreshRequestSchema", () => {
+  it("accepts a valid payload", () => {
+    expect(refreshRequestSchema.parse({ refreshToken: "abc.def" })).toEqual({
+      refreshToken: "abc.def",
+    });
+  });
+
+  it("rejects a missing refreshToken", () => {
+    expect(() => refreshRequestSchema.parse({})).toThrow();
+  });
+});
+
+describe("logoutRequestSchema", () => {
+  it("accepts a valid payload", () => {
+    expect(logoutRequestSchema.parse({ refreshToken: "abc.def" })).toEqual({
+      refreshToken: "abc.def",
+    });
+  });
+
+  it("rejects a missing refreshToken", () => {
+    expect(() => logoutRequestSchema.parse({})).toThrow();
   });
 });

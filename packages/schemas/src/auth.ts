@@ -89,3 +89,36 @@ export type OtpCode = z.infer<typeof otpCodeSchema>;
 export type RegisterRequestSchema = z.infer<typeof registerRequestSchema>;
 export type VerifyOtpRequestSchema = z.infer<typeof verifyOtpRequestSchema>;
 export type ResendOtpRequestSchema = z.infer<typeof resendOtpRequestSchema>;
+
+/**
+ * Phase 2 Step 4 — login, refresh, and logout request schemas.
+ *
+ * `loginPasswordSchema` is deliberately NOT `passwordSchema`: login must
+ * accept whatever password an existing account was created with, even if
+ * the strength policy above is tightened later. Policy is enforced only
+ * at creation time (registration); login only needs "a non-empty string
+ * up to a sane length", so a policy change can never lock out existing
+ * users. `refreshToken` is validated as a non-empty string only —
+ * `RefreshTokenStore` itself is the source of truth for whether a given
+ * token is well-formed/valid.
+ */
+export const loginPasswordSchema = z.string().min(1, "Password is required").max(128);
+
+export const loginRequestSchema = z.object({
+  email: emailSchema,
+  password: loginPasswordSchema,
+});
+
+export const refreshTokenSchema = z.string().min(1, "Refresh token is required");
+
+export const refreshRequestSchema = z.object({
+  refreshToken: refreshTokenSchema,
+});
+
+export const logoutRequestSchema = z.object({
+  refreshToken: refreshTokenSchema,
+});
+
+export type LoginRequestSchema = z.infer<typeof loginRequestSchema>;
+export type RefreshRequestSchema = z.infer<typeof refreshRequestSchema>;
+export type LogoutRequestSchema = z.infer<typeof logoutRequestSchema>;

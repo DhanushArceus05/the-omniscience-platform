@@ -551,3 +551,203 @@ confirmed green, per your locked workflow.
 - `ThrottlerModule` in-memory storage limitation from the original Step 3 entry above still stands
   — unrelated to these three blockers, unchanged.
 - No login endpoint exists yet (Step 4, not started).
+
+# Step 4 — Login, JWT access/refresh tokens, refresh, logout, and `/auth/me` (complete)
+
+Scope determined from `docs/02_SRS.md`'s Authentication requirement ("… normal login after
+verification … JWT access/refresh tokens …"), the approved Phase 2 decisions recorded above
+("JWT access (15m)/refresh (7d) tokens", "OTP + refresh tokens in Redis"), and
+`packages/types/src/auth.ts`'s Step 3 docstring ("JWT issuance (login) is Step 4"). Confirmed via
+`packages/config/src/env.ts` that `JWT_ACCESS_SECRET`/`JWT_ACCESS_TTL_SECONDS`/
+`JWT_REFRESH_TTL_SECONDS` were already provisioned in Step 1 specifically for this step.
+`apps/web/src/pages/LoginPage.tsx` and `RegisterPage.tsx` remain UI-only previews — Step 3 set the
+precedent that a step builds the backend without wiring the existing Phase 1 frontend pages to it,
+so Step 4 follows the same precedent. No frontend wiring in this step.
+
+Strict scope (per the task that requested Step 4): login, JWT issuance, refresh, logout. Forgot
+password, password reset, full user-profile management, and session/device management are
+explicitly deferred to a later step.
+
+## What was added
+
+- **`POST /auth/login`** — `{ email, password }` → `{ accessToken, accessTokenExpiresInSeconds,
+  refreshToken, refreshTokenExpiresInSeconds, user: { id, email, name } }`. Rejects with
+  `401 INVALID_CREDENTIALS` for either an unknown email or a wrong password (same generic error
+  and message for both, so a caller can't enumerate registered emails), or `403
+  EMAIL_NOT_VERIFIED` if the account exists but `emailVerifiedAt` is null (currently unreachable
+  through the public API — see known limitations — but real defense-in-depth against a future
+  account-creation path that could produce an unverified `User` row).
+- **`POST /auth/refresh`** — `{ refreshToken }` → same shape as login minus `user`. The refresh
+  token is single-use: this call atomically consumes it and issues a brand-new access token *and*
+  a brand-new refresh token (rotation). Presenting an already-used, unknown, or expired token
+  returns `401 REFRESH_TOKEN_INVALID`.
+- **`POST /auth/logout`** — `{ refreshToken }` → `{ loggedOut: true }`. Revokes the refresh token
+  so it can never be used again. Always succeeds (idempotent — revoking an already-invalid token
+  is a no-op), so it never leaks whether the token it was given was valid.
+- **`GET /auth/me`** — behind `JwtAuthGuard` (`Authorization: Bearer <accessToken>`) → the caller's
+  `{ id, email, name }`. The only protected route in the codebase so far; exists to prove the guard
+  works end-to-end and give the frontend a cheap "am I still logged in" check, not as general
+  profile management.
+
+## Architecture
+
+- **`AccessTokenService`** (`apps/api/src/auth/access-token.service.ts`) — the only place that
+  touches `@nestjs/jwt` directly (one focused service per primitive, matching
+  `PasswordHasherService`/`OtpService`'s existing convention). `AuthModule` registers `JwtModule`
+  via `JwtModule.registerAsync({ inject: [ENV], useFactory: ... })` so the secret/TTL come from the
+  already-validated `Env`, never `process.env` directly. `verify()` never throws — malformed,
+  expired, or wrong-signature tokens all just return `null`, which `JwtAuthGuard` turns into a
+  generic `401`.
+- **`RefreshTokenStore`** (`apps/api/src/auth/refresh-token.store.ts`) — refresh tokens live only
+  in Redis, never Postgres (same approved-decision pattern as OTPs in Step 3). A token is
+  `${tokenId}.${secret}`: `tokenId` is a `randomUUID()` used as the Redis key (safe to expose —
+  carries no secrecy on its own), `secret` is a separate high-entropy random value whose Argon2id
+  hash (via the existing `PasswordHasherService` — reused rather than adding a second hashing
+  primitive, same reasoning as OTP hashing) is the only thing ever stored. `issue()` writes a new
+  record with a fresh TTL; `consume()` is single-use and atomic via Redis `GETDEL` (read-and-delete
+  as one command, wrapped in a tiny Lua script tagged with a `-- SCRIPT: refresh-token-consume`
+  marker, following the same atomic-Redis-op pattern the Step 3 blocker fix established for
+  `PendingRegistrationStore` — see that file's docstring); `revoke()` is a plain `DEL`, idempotent
+  by design.
+- **`JwtAuthGuard`** (`apps/api/src/auth/jwt-auth.guard.ts`) — hand-rolled rather than pulling in
+  `@nestjs/passport` + `passport-jwt`: the check is "extract Bearer token, verify, attach payload",
+  a single step that doesn't justify a dependency and its strategy-registration boilerplate —
+  consistent with `ZodValidationPipe` already being hand-rolled instead of `nestjs-zod`. Always
+  throws the same generic `401 UNAUTHORIZED` regardless of *why* the token failed. Exported from
+  `AuthModule` (alongside `AccessTokenService`) so a future module can protect its own routes with
+  the same guard without re-implementing JWT verification.
+- **`CurrentUser`** (`apps/api/src/auth/current-user.decorator.ts`) — thin `createParamDecorator`
+  pulling `request.user` (set by `JwtAuthGuard`) into a controller method parameter.
+- **`AuthService.login/refresh/logout/getCurrentUser`** — `login()` calls
+  `passwordHasher.verify()` against `DUMMY_HASH` (a precomputed, syntactically valid Argon2id hash
+  of an unrelated password) when no account exists for the given email, so a nonexistent-account
+  response and a wrong-password response take roughly the same amount of time — returning the same
+  generic error message alone doesn't prevent email enumeration if one path is measurably faster.
+  `refresh()` re-checks the user still exists after consuming the token (an account could have been
+  deleted after the token was issued) before issuing new tokens. All four methods return/throw
+  through the same `ApiSuccess`/structured-exception contract Step 3 established.
+
+## Security notes
+
+- Access tokens are stateless JWTs and therefore cannot be revoked before they expire — `logout()`
+  only revokes the refresh token. With the default 15-minute `JWT_ACCESS_TTL_SECONDS`, a logged-out
+  access token remains technically valid for up to 15 more minutes. This is a standard, accepted
+  tradeoff for short-lived access tokens (see known limitations) rather than an oversight.
+  `JWT_REFRESH_SECRET` (provisioned in Step 1) is intentionally **not used** by this step — refresh
+  tokens are opaque, Redis-backed, single-use secrets rather than JWTs, so there's nothing for it
+  to sign; it remains reserved/validated in `packages/config` in case a future phase needs a signed
+  refresh-token format.
+- Refresh-token rotation (Blocker-3-style atomicity): `consume()`'s `GETDEL` means a refresh token
+  can be exchanged exactly once, even under concurrent requests for the same token — proven against
+  a real Redis instance in `refresh-token.store.concurrency.spec.ts`, not just asserted.
+- No reuse-detection "token family" revocation: if a refresh token is stolen and used by an
+  attacker before the legitimate client rotates it, only that one exchange is prevented on replay —
+  the attacker's newly-rotated token is still valid, and the legitimate client's next refresh
+  attempt with the now-stale token will itself fail with `REFRESH_TOKEN_INVALID` (indistinguishable
+  from an ordinary expired/already-used token). Full OAuth-style family-wide revocation-on-reuse
+  was judged out of scope for this step (see known limitations) but is a natural Step-4.x/Step-5
+  hardening candidate.
+- `login()`'s `EMAIL_NOT_VERIFIED` check is currently unreachable through the public API (see known
+  limitations) but is kept as defense-in-depth, exercised directly in `auth.service.spec.ts`.
+
+## Dependencies changed
+
+- `apps/api/package.json` — added `@nestjs/jwt@^10.2.0` (the only new dependency; wraps
+  `jsonwebtoken`, already a transitive dependency of the NestJS ecosystem). No `@nestjs/passport`/
+  `passport-jwt` — see `JwtAuthGuard` above for why.
+- `pnpm-lock.yaml` — regenerated via `pnpm install` (never hand-edited).
+
+## Tests added
+
+- **`access-token.service.spec.ts`** — sign→verify round-trip; malformed, wrong-secret, and
+  expired tokens all resolve to `null` rather than throwing; TTL is exposed correctly.
+- **`jwt-auth.guard.spec.ts`** — allows a valid Bearer token and attaches `req.user`; rejects a
+  missing header, a non-Bearer scheme, an empty Bearer value, and a token that fails verification —
+  all as the same generic `401`.
+- **`refresh-token.store.spec.ts`** — unit tests against a mocked `ioredis.eval`/`set`/`del`:
+  `issue()` stores a hashed secret (never the raw secret) with the right TTL; `consume()` parses
+  the token, calls the atomic script, verifies the secret hash, and returns `NOT_FOUND` for a
+  missing record, a hash mismatch, or a malformed token (without even calling Redis for the last
+  case); `revoke()` deletes by `tokenId` and no-ops for a malformed token.
+- **`refresh-token.store.concurrency.spec.ts`** (real Redis, same pattern as
+  `pending-registration.store.concurrency.spec.ts`) — 20 concurrent `consume()` calls for the same
+  token: exactly 1 succeeds, the other 19 (including a direct two-call replay test) get
+  `NOT_FOUND` — proving the `GETDEL`-based single-use guarantee under genuine contention, not just
+  asserting it.
+- **`auth.service.spec.ts`** (extended) — `login()` covers success, unknown email (asserting
+  `verify()` is still called against a dummy hash), wrong password, and unverified email;
+  `refresh()` covers rotation success, an invalid/unknown token, and a token whose user no longer
+  exists; `logout()` always reports success; `getCurrentUser()` covers found and
+  no-longer-exists.
+- **`auth.controller.spec.ts`** (extended) — one delegation test per new endpoint, asserting the
+  `ApiSuccess` envelope; `JwtAuthGuard` is overridden with a stub so these tests exercise the
+  controller method directly without needing a real token.
+- **`auth.module.spec.ts`** (extended) — asserts `AccessTokenService`, `RefreshTokenStore`, and
+  `JwtAuthGuard` all resolve from the compiled module alongside the existing Step 2/3 providers.
+- **`test/auth-registration.e2e-spec.ts`** (extended, real HTTP via supertest) — full
+  login→/auth/me→refresh(rotation, including a same-token replay rejection)→logout(then a
+  refresh-with-the-revoked-token rejection) flow reusing the user registered/verified by the file's
+  first test; plus wrong-password, unknown-email, unverified-email (see known limitations for what
+  this actually proves), missing-Authorization-header, garbage-bearer-token, and malformed-login-
+  payload rejections. The in-memory fake Redis client gained a third `EVAL` case (dispatched on the
+  `-- SCRIPT: refresh-token-consume` marker) implementing plain read-and-delete — sufficient for a
+  single-request-at-a-time HTTP test; the fake Prisma's `findUnique` was extended to also match by
+  `id` (Step 4 looks users up by `id` from the token's `sub` claim, where Step 3 only ever looked up
+  by `email`).
+
+## Commands actually executed (this session)
+
+```
+npm install -g pnpm@9.12.0                                     # pnpm was not yet on PATH
+pnpm install --no-frozen-lockfile        # regenerates pnpm-lock.yaml for @nestjs/jwt
+redis-server --daemonize yes --port 6379 --save "" --appendonly no
+pnpm build                               # turbo build, all 9 packages — succeeded
+pnpm lint                                # turbo lint,  all 9 packages — succeeded
+pnpm typecheck                           # turbo typecheck, all 9 packages — succeeded
+REDIS_URL=redis://localhost:6379 pnpm test   # turbo test, all 9 packages — succeeded
+                                              # (@omniscience/api: 21 suites / 116 tests passed,
+                                              # including the 2 real-Redis refresh-token
+                                              # concurrency tests)
+```
+
+`prisma generate`'s query-engine download (`binaries.prisma.sh`) is not reachable from this
+sandbox's network egress allowlist. To still get a genuine `tsc`/`jest` run against a realistic
+`PrismaClient` shape rather than skipping verification, a local-only stub matching the exact
+`User`-model surface `PrismaService`/`AuthService` use (`findUnique`, `create`, `$connect`,
+`$disconnect`, `$on`) was placed at the pnpm-store path `@prisma/client` resolves to
+(`node_modules/.pnpm/@prisma+client@5.22.0_.../node_modules/.prisma/client/`), clearly marked as a
+sandbox-only artifact and excluded from the delivered ZIP. This is a verification aid only, not a
+code change — your local `pnpm install` (with real internet access) produces the real generated
+client and is unaffected by any of this.
+
+## Honest build/test status
+
+Build ✅ · Lint ✅ · Typecheck ✅ · Test ✅ (`@omniscience/api`: 21/21 suites, 116/116 tests,
+including 2 tests against a real Redis instance for refresh-token rotation; full monorepo
+`pnpm build`/`lint`/`typecheck`/`test` all green via `turbo`, 15/15 tasks). GitHub Actions has
+**not** run yet for this change — needs to execute on your end to be confirmed green, per your
+locked workflow.
+
+## Known limitations (Step 4)
+
+- **No refresh-token-family reuse detection.** A stolen-and-replayed refresh token is only
+  rejected on its *second* use (once the legitimate client or the attacker has already rotated it
+  once) — see Security notes above. Real-world impact is limited by the 7-day TTL and single-use
+  rotation, but full family-wide revocation-on-reuse (OAuth-style) is not implemented.
+- **Access tokens can't be revoked early.** `logout()` only revokes the refresh token; a stolen
+  access token remains valid until its own (short, 15-minute-default) expiry. Standard tradeoff for
+  stateless JWTs, not a bug.
+- **`EMAIL_NOT_VERIFIED` is currently unreachable through the public API.** Every `User` row today
+  is created by `verifyOtp()` with `emailVerifiedAt` already set — there's no route yet that
+  produces an unverified `User` row. The check is still correct and tested directly at the unit
+  level; the e2e spec documents (in its test name and a comment) that a merely-pending
+  registration is indistinguishable from an unknown email at the login endpoint, and asserts the
+  actually-reachable behavior (`INVALID_CREDENTIALS`) instead.
+- **No per-account login lockout.** Only the existing per-IP `@Throttle` rate limiting (in-memory,
+  same limitation already logged in Step 3) guards `/auth/login` and `/auth/refresh` against
+  brute-force/credential-stuffing; there is no additional per-account attempt counter or lockout
+  (not required by the approved scope for this step).
+- **`JWT_REFRESH_SECRET` is provisioned but unused** by design — see Security notes above.
+- No forgot-password/password-reset, user-profile, or session/device-management endpoints yet
+  (later steps). No frontend wiring — `LoginPage.tsx`/`RegisterPage.tsx` remain UI-only previews,
+  matching the precedent Step 3 set.
