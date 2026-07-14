@@ -47,7 +47,10 @@ describe("MailService", () => {
 
     it("logs the message instead of sending, and never throws", async () => {
       const logger = makeLogger();
-      const service = await build({ SMTP_HOST: undefined } as Partial<Env>, logger);
+      const service = await build(
+        { SMTP_HOST: undefined, NODE_ENV: "development" } as Partial<Env>,
+        logger,
+      );
 
       await expect(
         service.sendMail({ to: "user@example.com", subject: "Your OTP", text: "123456" }),
@@ -56,8 +59,31 @@ describe("MailService", () => {
       expect(sendMail).not.toHaveBeenCalled();
       expect(logger.warn).toHaveBeenCalledWith(
         expect.objectContaining({ to: "user@example.com", subject: "Your OTP", body: "123456" }),
-        expect.stringContaining("development fallback"),
+        expect.stringContaining("development/test fallback"),
       );
+    });
+  });
+
+  describe("when SMTP is not configured in production", () => {
+    it("refuses to send and never logs the plaintext body or OTP", async () => {
+      const warn = jest.fn();
+      const error = jest.fn();
+      const logger = { info: jest.fn(), warn, error } as unknown as Logger;
+      const service = await build(
+        { SMTP_HOST: undefined, NODE_ENV: "production" } as Partial<Env>,
+        logger,
+      );
+
+      await expect(
+        service.sendMail({ to: "user@example.com", subject: "Your OTP", text: "654321" }),
+      ).rejects.toThrow(/SMTP is not configured/);
+
+      expect(sendMail).not.toHaveBeenCalled();
+
+      // Assert across every logger call (warn from the constructor, error
+      // from sendMail) that the plaintext OTP never appears anywhere.
+      const allLoggedArgs = [...warn.mock.calls, ...error.mock.calls].flat();
+      expect(JSON.stringify(allLoggedArgs)).not.toContain("654321");
     });
   });
 

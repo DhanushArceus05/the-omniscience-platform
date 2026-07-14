@@ -14,6 +14,24 @@ jobs:
   node:
     name: Node — install, lint, typecheck, test, build
     runs-on: ubuntu-latest
+    # A real Redis instance is required for
+    # `pending-registration.store.concurrency.spec.ts`, which proves the
+    # Phase 2 Step 3 atomic Redis fix (Lua-scripted claim/attempt
+    # operations) under genuine concurrent load — a mocked `ioredis`
+    # cannot exercise real atomicity. Every other test in this repo runs
+    # without external services.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      REDIS_URL: redis://localhost:6379
     steps:
       - uses: actions/checkout@v4
 

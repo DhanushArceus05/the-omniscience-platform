@@ -58,3 +58,34 @@ export const displayNameSchema = z
 export type Email = z.infer<typeof emailSchema>;
 export type Password = z.infer<typeof passwordSchema>;
 export type DisplayName = z.infer<typeof displayNameSchema>;
+
+/**
+ * Phase 2 Step 3 — composed request schemas for the registration + OTP
+ * verification endpoints. Built entirely from the field-level schemas
+ * above, so a rule change to (e.g.) password strength only needs to
+ * happen in one place.
+ */
+export const otpCodeSchema = z
+  .string()
+  .trim()
+  .regex(/^\d{6}$/, "Enter the 6-digit verification code");
+
+export const registerRequestSchema = z.object({
+  email: emailSchema,
+  password: passwordSchema,
+  name: displayNameSchema,
+});
+
+export const verifyOtpRequestSchema = z.object({
+  email: emailSchema,
+  otp: otpCodeSchema,
+});
+
+export const resendOtpRequestSchema = z.object({
+  email: emailSchema,
+});
+
+export type OtpCode = z.infer<typeof otpCodeSchema>;
+export type RegisterRequestSchema = z.infer<typeof registerRequestSchema>;
+export type VerifyOtpRequestSchema = z.infer<typeof verifyOtpRequestSchema>;
+export type ResendOtpRequestSchema = z.infer<typeof resendOtpRequestSchema>;

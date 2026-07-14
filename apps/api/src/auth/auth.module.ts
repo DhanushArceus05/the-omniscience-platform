@@ -1,20 +1,28 @@
 import { Module } from "@nestjs/common";
+import { AuthController } from "./auth.controller";
+import { AuthService } from "./auth.service";
+import { OtpService } from "./otp.service";
 import { PasswordHasherService } from "./password-hasher.service";
+import { PendingRegistrationStore } from "./pending-registration.store";
 
 /**
- * Authentication module foundation (Phase 2 Step 2).
+ * Authentication module.
  *
- * Only wires what Step 2 actually needs: `PasswordHasherService`. No
- * controller is declared yet — there's nothing to expose until Step 3
- * (registration/OTP) and Step 4 (login/JWT) add real endpoints. Adding an
- * empty controller now would just be placeholder code with no behavior.
+ * Step 2 foundation: `PasswordHasherService`.
+ * Step 3 (this step): `OtpService` (code generation),
+ * `PendingRegistrationStore` (Redis-backed pending registrations),
+ * `AuthService` (orchestration), and `AuthController` — the first real
+ * endpoints in this module: `POST /auth/register`,
+ * `POST /auth/verify-otp`, `POST /auth/resend-otp`.
  *
- * `PrismaService` is available to this module (and any future
- * `AuthService`) without an explicit import, since `PrismaModule` is
- * `@Global()`.
+ * `PrismaService`, `RedisService`, and `MailService` are available here
+ * without an explicit import since their modules are all `@Global()`.
+ *
+ * No login/JWT/forgot-password endpoints yet — Step 4/5.
  */
 @Module({
-  providers: [PasswordHasherService],
+  controllers: [AuthController],
+  providers: [PasswordHasherService, OtpService, PendingRegistrationStore, AuthService],
   exports: [PasswordHasherService],
 })
 export class AuthModule {}

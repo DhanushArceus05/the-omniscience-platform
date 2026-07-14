@@ -14,18 +14,19 @@ export interface SendMailInput {
 /**
  * Generic transactional-mail sender.
  *
- * Production: uses SMTP via nodemailer once every `SMTP_*` variable is
- * set (validated as all-or-nothing in `packages/config`).
+ * Production: SMTP is mandatory — `packages/config`'s environment
+ * validation already fails startup if any `SMTP_*` variable is unset in
+ * production, so `this.transporter` is guaranteed to be set here. The
+ * `!this.transporter` branch below is defense-in-depth only: if it is
+ * ever somehow reached in production, this service fails loudly instead
+ * of logging a plaintext OTP/email body.
  *
- * Development / unconfigured: instead of throwing (which would block
- * registration/password-reset entirely in local dev), the message is
- * logged through the shared structured logger at `warn` level so it's
- * impossible to miss, and clearly marked as a fallback — never a fake or
- * hardcoded OTP, just the real generated message that would have been
- * emailed. This fallback is intentional per the approved Phase 2
- * decisions and applies regardless of `NODE_ENV`; operators who deploy to
- * production without configuring SMTP are still responsible for that
- * choice, but the app never fails a request silently either way.
+ * Development / test: if SMTP is unconfigured, the message is logged
+ * through the shared structured logger at `warn` level instead of being
+ * sent, so it's impossible to miss and a developer can read the real OTP
+ * without a working SMTP server. This fallback is intentionally disabled
+ * outside development/test — see the Phase 2 Step 3 blocker fix in
+ * `claude/CURRENT_PHASE.md`.
  *
  * No OTP-specific templates live here — this service only knows how to
  * send an already-composed message. Step 3 builds the OTP email content
@@ -59,9 +60,22 @@ export class MailService {
 
   async sendMail(input: SendMailInput): Promise<void> {
     if (!this.transporter) {
+      if (this.env.NODE_ENV === "production") {
+        // Unreachable in practice: environment validation already requires
+        // SMTP_* in production. Kept as a hard failure (never a plaintext
+        // log) in case that invariant is ever broken by a future change.
+        this.logger.error(
+          { to: input.to, subject: input.subject },
+          "refusing to send: SMTP is not configured in production",
+        );
+        throw new Error(
+          "MailService: SMTP is not configured. Emails cannot be sent in production.",
+        );
+      }
+
       this.logger.warn(
         { to: input.to, subject: input.subject, body: input.text },
-        "SMTP not configured — logging email instead of sending (development fallback)",
+        "SMTP not configured — logging email instead of sending (development/test fallback)",
       );
       return;
     }

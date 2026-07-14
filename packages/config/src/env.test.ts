@@ -75,6 +75,27 @@ describe("loadEnv", () => {
     });
   });
 
+  describe("Phase 2 — OTP", () => {
+    it("applies the approved OTP defaults (10m TTL, 5 attempts, 60s cooldown)", () => {
+      const env = loadEnv(validEnv);
+      expect(env.OTP_TTL_SECONDS).toBe(600);
+      expect(env.OTP_MAX_ATTEMPTS).toBe(5);
+      expect(env.OTP_RESEND_COOLDOWN_SECONDS).toBe(60);
+    });
+
+    it("allows overriding the OTP defaults", () => {
+      const env = loadEnv({
+        ...validEnv,
+        OTP_TTL_SECONDS: "120",
+        OTP_MAX_ATTEMPTS: "3",
+        OTP_RESEND_COOLDOWN_SECONDS: "30",
+      } as unknown as NodeJS.ProcessEnv);
+      expect(env.OTP_TTL_SECONDS).toBe(120);
+      expect(env.OTP_MAX_ATTEMPTS).toBe(3);
+      expect(env.OTP_RESEND_COOLDOWN_SECONDS).toBe(30);
+    });
+  });
+
   describe("Phase 2 — SMTP", () => {
     it("is not configured when no SMTP_* variable is set", () => {
       const env = loadEnv(validEnv);
@@ -102,6 +123,34 @@ describe("loadEnv", () => {
         // SMTP_PORT/USER/PASSWORD/FROM intentionally omitted
       } as unknown as NodeJS.ProcessEnv;
       expect(() => loadEnv(broken)).toThrowError(/SMTP_PORT/);
+    });
+
+    it("allows an unconfigured SMTP fallback in development", () => {
+      const env = loadEnv({ ...validEnv, NODE_ENV: "development" } as unknown as NodeJS.ProcessEnv);
+      expect(isSmtpConfigured(env)).toBe(false);
+    });
+
+    it("allows an unconfigured SMTP fallback in test", () => {
+      const env = loadEnv({ ...validEnv, NODE_ENV: "test" } as unknown as NodeJS.ProcessEnv);
+      expect(isSmtpConfigured(env)).toBe(false);
+    });
+
+    it("throws a descriptive error when SMTP is unset in production", () => {
+      const broken = { ...validEnv, NODE_ENV: "production" } as unknown as NodeJS.ProcessEnv;
+      expect(() => loadEnv(broken)).toThrowError(/SMTP_HOST/);
+    });
+
+    it("succeeds in production once SMTP is fully configured", () => {
+      const env = loadEnv({
+        ...validEnv,
+        NODE_ENV: "production",
+        SMTP_HOST: "smtp.example.com",
+        SMTP_PORT: "587",
+        SMTP_USER: "user",
+        SMTP_PASSWORD: "pass",
+        SMTP_FROM: "noreply@example.com",
+      } as unknown as NodeJS.ProcessEnv);
+      expect(isSmtpConfigured(env)).toBe(true);
     });
   });
 });

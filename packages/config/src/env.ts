@@ -36,15 +36,29 @@ const baseEnvSchema = z.object({
   JWT_REFRESH_TTL_SECONDS: z.coerce.number().int().positive().default(604800),
 
   // ---- Phase 2 — SMTP (OTP / transactional email) ----
-  // All optional: if SMTP_HOST is unset, the mail layer falls back to
-  // logging the OTP to the server console instead of failing (development
-  // convenience — the mail layer, not this schema, decides how to react).
+  // Optional at the schema level, but see the `superRefine` below:
+  // - development / test: SMTP_HOST may be unset — the mail layer falls
+  //   back to logging the (redacted) email to the server console.
+  // - production: SMTP is mandatory. The console fallback would print
+  //   plaintext OTPs, which must never happen in production, so startup
+  //   fails validation instead of silently falling back.
   SMTP_HOST: z.string().min(1).optional(),
   SMTP_PORT: z.coerce.number().int().positive().optional(),
   SMTP_USER: z.string().min(1).optional(),
   SMTP_PASSWORD: z.string().min(1).optional(),
   SMTP_FROM: z.string().min(1).optional(),
   SMTP_SECURE: z.coerce.boolean().default(false),
+
+  // ---- Phase 2 — OTP (registration / verification, Step 3) ----
+  // How long a generated OTP (and the pending registration it belongs
+  // to) remains valid.
+  OTP_TTL_SECONDS: z.coerce.number().int().positive().default(600),
+  // Wrong-code attempts allowed before the pending registration is
+  // invalidated and the user must start over.
+  OTP_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
+  // Minimum time between OTP sends for the same email (register or
+  // resend), to prevent email-bombing a single address.
+  OTP_RESEND_COOLDOWN_SECONDS: z.coerce.number().int().positive().default(60),
 });
 
 export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
@@ -72,6 +86,22 @@ export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
         message: `${key} is required once any SMTP_* variable is set (all-or-nothing configuration)`,
       });
     }
+  }
+
+  // Phase 2 Step 3 blocker fix: the console-logging mail fallback (which
+  // would otherwise print the plaintext OTP/email body) is only a safe
+  // default in development/test. In production there is no acceptable
+  // "unconfigured" fallback — startup must fail loudly instead of ever
+  // risking a plaintext OTP hitting production logs or stdout.
+  if (env.NODE_ENV === "production" && smtpProvided.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["SMTP_HOST"],
+      message:
+        "SMTP_HOST (and the rest of SMTP_*) is required in production — the console-logging " +
+        "mail fallback is disabled outside development/test to prevent plaintext OTPs from " +
+        "ever being written to logs.",
+    });
   }
 });
 

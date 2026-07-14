@@ -280,3 +280,274 @@ Fixed without weakening any production validation and without making any env var
   exist, but nothing calls `prisma.user.*` until Step 3 (registration) needs it.
 - `ZodValidationPipe` and the shared auth schemas are not wired to any controller yet — by
   design, per Step 2's scope boundaries.
+
+### Step 2 — local verification confirmed
+
+Locally verified green end-to-end: `pnpm install`, `prisma validate`/`generate`, a real Docker
+environment (Postgres/Redis/MongoDB/Qdrant), the first migration applied against a real
+Postgres database, `pnpm build`/`lint`/`typecheck`/`test`, and GitHub Actions all passed.
+
+One fix required: `PasswordHasherService`'s `argon2.Options & { type: argon2.ArgonType }` type
+failed because installed `argon2` v0.41.x doesn't export `ArgonType`. Fixed to plain
+`argon2.Options` (the `type: argon2.argon2id` value assignment itself was always fine — only the
+extra type-level intersection was invalid). This fix is preserved as-is in Step 3.
+
+## Step 3 — Registration, pending-registration flow, OTP generation, email delivery,
+## verification, and resend OTP (complete)
+
+- **`packages/config`**: added `OTP_TTL_SECONDS` (default 600), `OTP_MAX_ATTEMPTS` (default 5),
+  `OTP_RESEND_COOLDOWN_SECONDS` (default 60) — all optional with production-reasonable defaults,
+  consistent with the JWT TTL pattern from Step 1.
+- **`packages/types/src/auth.ts`** (new): `RegisterRequest`/`Response`, `VerifyOtpRequest`/
+  `Response`, `ResendOtpRequest`/`Response` — no tokens in any response; JWT issuance is Step 4.
+- **`packages/schemas/src/auth.ts`**: added `otpCodeSchema` (`^\d{6}$`) and composed
+  `registerRequestSchema`/`verifyOtpRequestSchema`/`resendOtpRequestSchema`, built from the
+  Step 2 field-level schemas so a password-policy change still only happens in one place.
+- **`apps/api/src/auth/otp.service.ts`** (new): generates 6-digit OTP codes via Node's
+  `crypto.randomInt` (cryptographically secure, never `Math.random`, never a fixed/fake value).
+  Single responsibility — hashing/storage live elsewhere.
+- **`apps/api/src/auth/pending-registration.store.ts`** (new): Redis-backed CRUD for in-flight
+  registrations, keyed `auth:pending-registration:{email}`. `save()` sets a fresh `EX` TTL
+  (`OTP_TTL_SECONDS`) on register/resend; `incrementAttempts()` uses `KEEPTTL` so a wrong guess
+  never extends an attacker's guessing window.
+- **`apps/api/src/auth/auth.service.ts`** (new): orchestrates the full flow —
+  - `register()`: rejects if a verified `User` already exists (`409 EMAIL_ALREADY_REGISTERED`);
+    otherwise hashes the password (Argon2id, via the existing `PasswordHasherService` — reused
+    for OTP hashing too, since a 6-digit code is a low-entropy secret already protected by Redis
+    TTL + attempt limits + a resend cooldown, so a second KDF/env-secret for OTPs specifically
+    would add complexity without meaningfully more security), generates+hashes the OTP, saves the
+    pending registration, and emails the code via the Step 1 `MailService` (which already
+    logs-instead-of-sends in dev when SMTP is unset).
+  - `verifyOtp()`: 404 if no pending registration; 410 `OTP_MAX_ATTEMPTS_EXCEEDED` if attempts are
+    exhausted; 410 `OTP_EXPIRED` if the code's own expiry has passed; 400 `OTP_INCORRECT` (with
+    `attemptsRemaining` in `details`) on a wrong code, incrementing the attempt counter; on a
+    correct code, creates the real `User` row (`emailVerifiedAt: now`) and deletes the pending
+    registration. A Prisma unique-constraint race (two verifies for the same email landing
+    concurrently) is caught and converted to the same `409` as the upfront check.
+  - `resendOtp()`: 404 if no pending registration; re-uses the same cooldown check as `register()`
+    (`429 OTP_RESEND_COOLDOWN` with `retryAfterSeconds`); otherwise issues a fresh code, resets
+    attempts to 0, and re-sends.
+  - No JWT/session is issued anywhere in this file — verifying only creates the account; logging
+    in afterward is Step 4.
+- **`apps/api/src/auth/auth.controller.ts`** (new) — the first real endpoints in `AuthModule`:
+  `POST /auth/register` (202), `POST /auth/verify-otp` (201 — this is the call that actually
+  creates the `User` row), `POST /auth/resend-otp` (200). Each validates its body with the Step 2
+  `ZodValidationPipe` against the new composed schemas, and each carries its own `@Throttle()`
+  limit on top of the new app-wide default.
+- **`apps/api/src/app.module.ts`**: added `ThrottlerModule.forRoot([{ name: "default", ttl: 60_000,
+  limit: 60 }])` plus a global `APP_GUARD` → `ThrottlerGuard` (per the approved Phase 2 decision to
+  use `@nestjs/throttler`) — a generic per-IP safety net API-wide; the auth endpoints layer
+  tighter per-route limits on top via `@Throttle()`. Uses the library's default in-memory storage
+  (see known limitations).
+- **`apps/api/test/health.e2e-spec.ts`**: `testEnv` fixture extended with the three new required
+  `OTP_*` fields (no behavior change).
+- **`apps/api/test/auth-registration.e2e-spec.ts`** (new): exercises the real HTTP surface —
+  register → wrong OTP (400) → correct OTP (201) → duplicate-email re-register (409) →
+  malformed-payload validation (400 with structured `details`) — against in-memory Prisma/Redis
+  fakes and a mail-capturing fake, so it needs no live infrastructure.
+- **`apps/api/package.json`**: added `@nestjs/throttler`.
+
+### Architectural decisions worth calling out
+
+- **OTP hashing reuses `PasswordHasherService`** rather than introducing a second hashing
+  primitive/secret. Both password and OTP hashes are Argon2id — the same well-reviewed code path,
+  no new env var, no new dependency. Given OTPs are already short-lived (Redis TTL), attempt-limited,
+  and resend-cooldown-protected, this is a reasonable security/complexity tradeoff.
+- **Pending registrations live only in Redis**, never in Postgres, per the original Phase 2
+  decision — a `User` row is created exactly once, only after verification succeeds.
+- **`AuthService` never issues a token.** Verifying an OTP creates the account; it does not log
+  the person in. This keeps Step 3 strictly scoped and Step 4 (login/JWT) a clean addition on top.
+- **Rate limiting is layered**: `AuthService`'s resend cooldown is a per-email business rule
+  (works correctly even behind a shared NAT/proxy); `ThrottlerGuard` is a per-IP infrastructure
+  rule (works even if someone rotates through many different emails). Neither alone is sufficient.
+
+### New dependencies
+
+- `@nestjs/throttler` (apps/api) — rate limiting, per the approved Phase 2 decision.
+  (`argon2` and `@omniscience/schemas` were already added in Step 2; no change there.)
+
+### Known limitations (Step 3)
+
+- No install/build/lint/typecheck/test has been executed in this session for these new changes —
+  only Step 1 and Step 2 have been locally verified so far, per your reports. Please run the
+  verification commands below before approving.
+- `ThrottlerModule` uses the library's default **in-memory** storage. This is fine for a single
+  API instance but does not share rate-limit counters across multiple instances/replicas — a
+  future step should back it with Redis (`@nestjs/throttler`'s storage adapter) if/when the API is
+  horizontally scaled.
+- The OTP resend cooldown and max-attempts values are process-wide defaults
+  (`OTP_RESEND_COOLDOWN_SECONDS`, `OTP_MAX_ATTEMPTS`); there's no per-user override or admin
+  unlock mechanism yet — not required by the approved scope, but worth knowing operationally.
+- No login endpoint exists yet, so a verified account cannot be used for anything until Step 4.
+- No forgot/reset-password flow yet — Step 5.
+- `apps/api/test/auth-registration.e2e-spec.ts`'s fakes are intentionally minimal (only the
+  surface `AuthService`/`PendingRegistrationStore` call) — they are not a substitute for testing
+  against a real Postgres/Redis, which is covered by your local Docker-based verification instead.
+
+## Step 3 — Production-readiness blocker fixes (complete, locally verified)
+
+A senior-engineer review of the Step 3 implementation above identified three production
+blockers. All three are fixed; nothing else in Step 3 (or earlier steps) was touched, and Step 4
+was not started.
+
+### Blocker 1 — Stale lockfile
+
+`apps/api/package.json` added `@nestjs/throttler` in Step 3 but `pnpm-lock.yaml` was never
+regenerated. Ran `pnpm install` at the repo root to regenerate it. Verified
+`pnpm install --frozen-lockfile` succeeds from a clean `node_modules` (see Commands actually
+executed, below) — this is also now enforced every run by the `redis` service container job in
+CI, which starts from a fresh checkout.
+
+### Blocker 2 — Plaintext OTPs could reach production logs
+
+Previously, `MailService` fell back to `logger.warn`-ing the complete email body (including the
+raw OTP) any time SMTP was unconfigured, in every environment including production.
+
+Fixed in two layers:
+
+- **`packages/config/src/env.ts`**: `envSchema`'s `superRefine` now adds a validation issue on
+  `SMTP_HOST` if `NODE_ENV === "production"` and no `SMTP_*` variable is set. `loadEnv()` (called
+  once, at API startup, before the Nest app is created) throws in that case — the process never
+  finishes booting, so a production deployment without SMTP fails fast and loudly instead of
+  silently falling back to console-logging OTPs. Development and test are unaffected: SMTP stays
+  optional there, exactly as before.
+- **`apps/api/src/mail/mail.service.ts`**: `sendMail()`'s "SMTP not configured" branch now checks
+  `NODE_ENV`. In development/test it still logs the full message (unchanged — this is what lets a
+  developer read an OTP without a working SMTP server). In production it never logs the body; it
+  throws instead. This branch is defense-in-depth only — the `packages/config` fix above means
+  `this.transporter` is already guaranteed non-null in production — but it means even a future bug
+  that bypassed environment validation still couldn't cause a plaintext OTP to reach production
+  logs.
+
+### Blocker 3 — Redis read-modify-write races in `PendingRegistrationStore`
+
+Previously, `incrementAttempts()` and the register/resend cooldown check were separate
+`GET`-then-`SET` round trips from Node, each racy under concurrent requests for the same email:
+two simultaneous wrong-OTP guesses could both read `otpAttempts = N` and both write back `N + 1`,
+losing an increment and letting `OTP_MAX_ATTEMPTS` be bypassed; two simultaneous
+register/resend calls could both read "cooldown elapsed" and both send an OTP email.
+
+Fixed by replacing every read-then-decide-then-write sequence with a single Redis `EVAL` (Lua
+script), which Redis executes atomically — no other command can interleave between the script's
+read and its write, regardless of how many requests arrive concurrently.
+
+- **`apps/api/src/auth/pending-registration.store.ts`** (rewritten): `save()` +
+  `incrementAttempts()` are replaced by `claimSend()` and `recordFailedAttempt()`.
+  - `claimSend(email, record)` — one Lua script (`CLAIM_SEND_SCRIPT`) that atomically checks the
+    resend cooldown against whatever is currently stored (if anything) and, only if the cooldown
+    has elapsed, `SET`s the new record with a fresh `OTP_TTL_SECONDS` `EX`. Returns
+    `{status: "OK"}` or `{status: "COOLDOWN", retryAfterSeconds}`. Used by both `register()` and
+    `resendOtp()` — both start a new OTP lifecycle and both must respect the same cooldown.
+  - `recordFailedAttempt(email)` — one Lua script (`RECORD_FAILED_ATTEMPT_SCRIPT`) that atomically
+    re-reads the record inside Redis, checks expiry and `OTP_MAX_ATTEMPTS`, and either increments
+    `otpAttempts` with `KEEPTTL` (never a fresh `EX` — a wrong guess never extends the guessing
+    window) or deletes the key once the limit is hit. Returns one of `NOT_FOUND` / `EXPIRED` /
+    `MAX_ATTEMPTS_EXCEEDED` / `{status: "INCREMENTED", attemptsRemaining}`.
+  - Both scripts do their date math on epoch-millisecond fields (`otpExpiresAtMs`,
+    `lastOtpSentAtMs`) mirrored alongside the existing ISO-string fields in the stored JSON, since
+    Redis's embedded Lua has no date parser. `get()` strips these internal fields back out before
+    returning a `PendingRegistrationRecord` to callers, so the public shape is unchanged.
+- **`apps/api/src/auth/auth.service.ts`**: `register()` and `resendOtp()` now call `claimSend()`
+  and throw the standard `429 OTP_RESEND_COOLDOWN` (with `retryAfterSeconds` taken from the atomic
+  result) if the claim reports `COOLDOWN` — the email is only sent after a successful claim, so a
+  losing racer can never trigger a send. `verifyOtp()`'s wrong-code branch now calls
+  `recordFailedAttempt()` and maps its atomic result to the appropriate response
+  (`OTP_INCORRECT` / `OTP_EXPIRED` / `OTP_MAX_ATTEMPTS_EXCEEDED` / `PENDING_REGISTRATION_NOT_FOUND`)
+  — the attempt count and limit decision are never taken from the earlier, potentially-stale
+  `get()` read, per the requirement that AuthService consume the atomic Redis result rather than
+  recompute security-sensitive state itself. The upfront "is this already expired / already at the
+  limit" checks in `verifyOtp()` (before even attempting hash verification) still use the initial
+  `get()` snapshot — that's an intentional fast-path for a clean error message and was already
+  buffered against by `otpExpiresAt` being "slightly earlier-or-equal" than the Redis key's own
+  TTL; the atomic script is the sole authority once a *wrong* guess needs its attempt recorded.
+
+### Tests added
+
+- **`apps/api/src/auth/pending-registration.store.spec.ts`** (rewritten): unit tests against a
+  mocked `ioredis.eval`, covering both scripts' return-value parsing (`OK`/`COOLDOWN`,
+  `NOT_FOUND`/`EXPIRED`/`MAX_ATTEMPTS_EXCEEDED`/`INCREMENTED`) and the arguments each script is
+  invoked with.
+- **`apps/api/src/auth/pending-registration.store.concurrency.spec.ts`** (new): runs genuinely
+  concurrent operations (`Promise.all` of 20–50 simultaneous calls) against a **real Redis**
+  instance — a mocked client cannot prove atomicity, since a mock has no concurrency semantics of
+  its own. Proves:
+  - simultaneous failed OTP attempts never lose an increment (exactly 4 `INCREMENTED` results with
+    distinct `attemptsRemaining` values, exactly 1 `MAX_ATTEMPTS_EXCEEDED`, out of 20 concurrent
+    calls against `OTP_MAX_ATTEMPTS = 5`);
+  - `OTP_MAX_ATTEMPTS` cannot be bypassed by 50 concurrent guesses;
+  - a failed attempt preserves the record's TTL exactly (never extends it, verified by lowering the
+    TTL first and asserting it only ever decreases);
+  - simultaneous resend claims cannot both succeed within the cooldown (exactly 1 `OK` out of 20
+    concurrent claims for the same email).
+  Requires `REDIS_URL` (or a local Redis on `redis://localhost:6379`); skips its assertions with a
+  console warning if none is reachable, so `pnpm test` still passes for a contributor without local
+  Redis. CI now provides one — see `.github/workflows/ci.yml`.
+- **`apps/api/src/mail/mail.service.spec.ts`**: added a `NODE_ENV: "production"` case asserting
+  `sendMail()` rejects and that neither `logger.warn` nor `logger.error` is ever called with the
+  plaintext OTP.
+- **`packages/config/src/env.test.ts`**: added cases for the new production-mandatory SMTP rule
+  (allowed unconfigured in development/test; throws in production when unset; succeeds in
+  production once fully configured).
+- **`apps/api/src/auth/auth.service.spec.ts`**: updated for the new `claimSend`/
+  `recordFailedAttempt` contract, including a case proving `register()`/`resendOtp()` never call
+  `mail.sendMail()` when the atomic claim reports a cooldown.
+- **`apps/api/test/auth-registration.e2e-spec.ts`**: its in-memory fake Redis client now
+  implements `EVAL` for both scripts (dispatched on a `-- SCRIPT: ...` marker comment each script
+  starts with) so the existing HTTP-level test continues to exercise the real `AuthService` code
+  path without requiring live Redis. This fake is single-request-at-a-time (supertest doesn't fire
+  concurrent requests), so it verifies *logic*, not atomicity — atomicity is what the real-Redis
+  concurrency spec above proves.
+
+### Dependencies changed
+
+- `apps/api/package.json` — no new dependency added by these fixes (`@nestjs/throttler` was
+  already added in the Step 3 implementation this review covered; only its lockfile entry was
+  stale — see Blocker 1).
+- `pnpm-lock.yaml` — regenerated at the repo root via `pnpm install`.
+
+### Commands actually executed (this session)
+
+```
+npm install -g pnpm@9.12.0
+pnpm install --no-frozen-lockfile        # regenerates pnpm-lock.yaml (Blocker 1)
+rm -rf node_modules apps/*/node_modules packages/*/node_modules
+pnpm install --frozen-lockfile           # verifies the regenerated lockfile installs cleanly
+apt-get install -y redis-server          # local Redis for the concurrency spec + manual checks
+redis-server --daemonize yes --port 6379
+pnpm build                               # turbo build, all 9 packages — succeeded
+pnpm lint                                # turbo lint, all 9 packages — succeeded (1 unused-import
+                                          # fix applied to pending-registration.store.spec.ts)
+pnpm typecheck                           # turbo typecheck, all 9 packages — succeeded
+REDIS_URL=redis://localhost:6379 pnpm test   # turbo test, all 9 packages — succeeded
+                                              # (@omniscience/api: 17 suites / 72 tests passed,
+                                              # including the 4 real-Redis concurrency tests)
+```
+
+`prisma migrate`/a live Postgres were not exercised in this session — nothing in these three
+blocker fixes touches the Prisma schema or migrations (Blocker 1 is a lockfile-only dependency
+change; Blockers 2–3 are `packages/config`, `MailService`, and `PendingRegistrationStore` only).
+Step 2's already-verified migration is unaffected.
+
+### Honest build/test status
+
+Build ✅ · Lint ✅ · Typecheck ✅ · Test ✅ (72/72 in `@omniscience/api`, including 4 tests against
+a real Redis instance; 18/18 in `@omniscience/config`; full monorepo `pnpm build`/`lint`/
+`typecheck`/`test` all green via `turbo`). GitHub Actions has **not** run yet for this change —
+the CI workflow was updated to add a `redis` service container (required for the new concurrency
+spec to run for real instead of skipping) and needs to actually execute on your end to be
+confirmed green, per your locked workflow.
+
+### Known limitations (Step 3 blocker fixes)
+
+- The real-Redis concurrency spec self-skips its assertions (passes trivially) if no Redis is
+  reachable, rather than failing the build — this keeps `pnpm test` usable without local infra, but
+  means a contributor who never sees a Redis-backed CI run locally won't get a failure signal if
+  they accidentally break atomicity. CI's new `redis` service container is the backstop.
+- `claimSend()`'s cooldown check reads whatever record currently exists at call time; if a pending
+  registration is deleted (e.g. verified successfully) in the moment between `resendOtp()`'s
+  existence check and its `claimSend()` call, the resend will still succeed and create a fresh
+  pending registration from the (now slightly stale) data read earlier — a narrow, non-security-
+  relevant edge case, not the race this blocker fix targets.
+- `ThrottlerModule` in-memory storage limitation from the original Step 3 entry above still stands
+  — unrelated to these three blockers, unchanged.
+- No login endpoint exists yet (Step 4, not started).

@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { displayNameSchema, emailSchema, passwordSchema } from "./auth";
+import {
+  displayNameSchema,
+  emailSchema,
+  otpCodeSchema,
+  passwordSchema,
+  registerRequestSchema,
+  resendOtpRequestSchema,
+  verifyOtpRequestSchema,
+} from "./auth";
 
 describe("emailSchema", () => {
   it("accepts a valid email and normalizes case/whitespace", () => {
@@ -59,5 +67,61 @@ describe("displayNameSchema", () => {
 
   it("rejects a name longer than 100 characters", () => {
     expect(() => displayNameSchema.parse("a".repeat(101))).toThrow();
+  });
+});
+
+describe("otpCodeSchema", () => {
+  it("accepts a 6-digit code and trims whitespace", () => {
+    expect(otpCodeSchema.parse(" 123456 ")).toBe("123456");
+  });
+
+  it("rejects a code with fewer than 6 digits", () => {
+    expect(() => otpCodeSchema.parse("12345")).toThrow();
+  });
+
+  it("rejects a code with non-digit characters", () => {
+    expect(() => otpCodeSchema.parse("12345a")).toThrow();
+  });
+});
+
+describe("registerRequestSchema", () => {
+  const valid = { email: "User@Example.com", password: "Sup3r$ecretPassw0rd!", name: "Arceus" };
+
+  it("accepts a valid payload and normalizes email", () => {
+    expect(registerRequestSchema.parse(valid)).toEqual({
+      ...valid,
+      email: "user@example.com",
+    });
+  });
+
+  it("rejects a payload with a weak password", () => {
+    expect(() => registerRequestSchema.parse({ ...valid, password: "weak" })).toThrow();
+  });
+});
+
+describe("verifyOtpRequestSchema", () => {
+  it("accepts a valid payload", () => {
+    expect(verifyOtpRequestSchema.parse({ email: "user@example.com", otp: "123456" })).toEqual({
+      email: "user@example.com",
+      otp: "123456",
+    });
+  });
+
+  it("rejects a malformed otp", () => {
+    expect(() =>
+      verifyOtpRequestSchema.parse({ email: "user@example.com", otp: "abc" }),
+    ).toThrow();
+  });
+});
+
+describe("resendOtpRequestSchema", () => {
+  it("accepts a valid payload", () => {
+    expect(resendOtpRequestSchema.parse({ email: "user@example.com" })).toEqual({
+      email: "user@example.com",
+    });
+  });
+
+  it("rejects a missing email", () => {
+    expect(() => resendOtpRequestSchema.parse({})).toThrow();
   });
 });

@@ -5,3 +5,11 @@ export type {
   ApiError,
   ApiResponse,
 } from "./health";
+export type {
+  RegisterRequest,
+  RegisterResponse,
+  VerifyOtpRequest,
+  VerifyOtpResponse,
+  ResendOtpRequest,
+  ResendOtpResponse,
+} from "./auth";
