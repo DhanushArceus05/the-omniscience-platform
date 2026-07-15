@@ -37,6 +37,36 @@ underway with an approved 8-step plan requiring explicit sign-off after each ste
   No forgot-password/reset, user-profile, or session-management endpoints yet (later steps, not
   started — awaiting your approval to proceed). No frontend wiring — `LoginPage.tsx`/
   `RegisterPage.tsx` remain UI-only previews.
+- **Step 5** (forgot-password + reset-password, OTP-over-email, per `docs/02_SRS.md`):
+  implementation complete — `PasswordResetStore` (Redis, same atomic-Lua-script shape as
+  `PendingRegistrationStore`), `AuthService.forgotPassword`/`resetPassword`,
+  `POST /auth/forgot-password` + `POST /auth/reset-password`. Your local `pnpm test` runs
+  surfaced and are helping resolve one e2e test-isolation bug across three rounds: (1) the shared
+  `INestApplication`/shared-IP `ThrottlerGuard` state across this file's many requests caused a
+  later, unrelated test to hit a real 429 (22/23 suites, 149/150 tests); (2) an
+  `overrideProvider(APP_GUARD)` fix attempt didn't work — same failure reproduced; (3) an
+  `overrideGuard(ThrottlerGuard)` fix attempt *also* didn't work — same failure reproduced again.
+  Rather than try a fourth guard-override variant, the design was changed at the root: a new
+  `createTestApp()` helper compiles a fresh `TestingModule`/`INestApplication` (and so a fresh,
+  empty in-memory `ThrottlerStorageService`) on demand; the Step 5 describe block now gets its
+  **own fresh app per test** (`beforeEach`/`afterEach`), each seeding its own verified/unverified
+  user via a new `registerAndVerifyUser()` helper instead of depending on another test or the
+  top-level block's account. `ThrottlerGuard` is never overridden, stubbed, or bypassed anywhere —
+  it runs for real on every request; no test needs more than one `/auth/forgot-password` call, so
+  none can approach the real 3-per-10-minutes limit on its own fresh, zero-count counter. No
+  production throttle limit, guard wiring, or `app.module.ts` was touched in any of the three
+  rounds. **Still not verified with a real `pnpm install`/Prisma client from this sandbox** — no
+  npm/pnpm network egress here, reconfirmed again this session (`pnpm build` and the specific
+  `jest test/auth-registration.e2e-spec.ts --runInBand` invocation both still fail with the same
+  HTTP 403 at the corepack step). A manual syntax-level check (global `tsc`, no generated Prisma
+  client) surfaced only the same category of pre-existing environment-only errors already present
+  identically in the untouched Step 3/4 files — no error unique to this fix. **You must re-run
+  `pnpm build`/`pnpm lint`/`pnpm typecheck`/`pnpm test` locally and confirm 23/23 suites, 150/150
+  tests pass** before this step is considered verified. See `claude/CURRENT_PHASE.md` for full
+  detail, architecture, security notes, and known limitations (notably: no session/refresh-token
+  revocation on password reset, since `RefreshTokenStore` has no per-user index to revoke from).
+  No frontend wiring — `ForgotPasswordPage.tsx`/`ResetPasswordPage.tsx` remain UI-only previews.
+  Awaiting your local verification and approval before Step 6.
 
 ## Repository Rule
 

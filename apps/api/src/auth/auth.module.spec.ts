@@ -17,6 +17,7 @@ import { AuthService } from "./auth.service";
 import { JwtAuthGuard } from "./jwt-auth.guard";
 import { OtpService } from "./otp.service";
 import { PasswordHasherService } from "./password-hasher.service";
+import { PasswordResetStore } from "./password-reset.store";
 import { PendingRegistrationStore } from "./pending-registration.store";
 import { RefreshTokenStore } from "./refresh-token.store";
 
@@ -30,7 +31,7 @@ const testEnv = {
 } as unknown as Env;
 
 describe("AuthModule", () => {
-  it("compiles and provides every Step 3 + Step 4 provider plus AuthController", async () => {
+  it("compiles and provides every Step 3 + Step 4 + Step 5 provider plus AuthController", async () => {
     const module: TestingModule = await Test.createTestingModule({
       // ConfigModule/PrismaModule/RedisModule/MailModule are all
       // @Global(), but a Nest testing module only registers global
@@ -45,7 +46,7 @@ describe("AuthModule", () => {
       .overrideProvider(LOGGER)
       .useValue(createLogger({ service: "api-test" }))
       .overrideProvider(PrismaService)
-      .useValue({ user: { findUnique: jest.fn(), create: jest.fn() } })
+      .useValue({ user: { findUnique: jest.fn(), create: jest.fn(), update: jest.fn() } })
       .overrideProvider(RedisService)
       .useValue({
         getClient: () =>
@@ -65,6 +66,7 @@ describe("AuthModule", () => {
     expect(module.get(PendingRegistrationStore)).toBeInstanceOf(PendingRegistrationStore);
     expect(module.get(AccessTokenService)).toBeInstanceOf(AccessTokenService);
     expect(module.get(RefreshTokenStore)).toBeInstanceOf(RefreshTokenStore);
+    expect(module.get(PasswordResetStore)).toBeInstanceOf(PasswordResetStore);
     expect(module.get(JwtAuthGuard)).toBeInstanceOf(JwtAuthGuard);
     expect(module.get(AuthService)).toBeInstanceOf(AuthService);
     expect(module.get(AuthController)).toBeInstanceOf(AuthController);

@@ -12,12 +12,14 @@ import {
 } from "@nestjs/common";
 import type { Env } from "@omniscience/config";
 import type {
+  ForgotPasswordResponse,
   LoginResponse,
   LogoutResponse,
   MeResponse,
   RefreshResponse,
   RegisterResponse,
   ResendOtpResponse,
+  ResetPasswordResponse,
   VerifyOtpResponse,
 } from "@omniscience/types";
 import type { Logger } from "pino";
@@ -27,6 +29,10 @@ import { PrismaService } from "../prisma/prisma.service";
 import { AccessTokenService } from "./access-token.service";
 import { OtpService } from "./otp.service";
 import { PasswordHasherService } from "./password-hasher.service";
+import {
+  PasswordResetStore,
+  type RecordFailedAttemptResult as PasswordResetRecordFailedAttemptResult,
+} from "./password-reset.store";
 import {
   PendingRegistrationStore,
   type ClaimSendResult,
@@ -64,7 +70,8 @@ const DUMMY_HASH =
  * OTP email → verification → real `User` row created in Postgres only
  * once verified (Step 3); then login → JWT access token + Redis-backed
  * refresh token → refresh (rotates both) → logout (revokes the refresh
- * token) (Step 4).
+ * token) (Step 4); then forgot-password → 6-digit OTP email → reset
+ * (verifies the OTP and overwrites `passwordHash`) (Step 5).
  */
 @Injectable()
 export class AuthService {
@@ -78,6 +85,7 @@ export class AuthService {
     private readonly mail: MailService,
     private readonly accessTokens: AccessTokenService,
     private readonly refreshTokens: RefreshTokenStore,
+    private readonly passwordResets: PasswordResetStore,
   ) {}
 
   async register(input: RegisterInput): Promise<RegisterResponse> {
@@ -315,6 +323,125 @@ export class AuthService {
     return { id: user.id, email: user.email, name: user.name };
   }
 
+  /**
+   * Starts a password reset for `email`.
+   *
+   * Always returns the same generic response, whether or not `email`
+   * belongs to a real, verified account — the response itself must never
+   * reveal account existence (a stricter guarantee than `login`'s, which
+   * only matches response *content*; here the Redis write and OTP email
+   * simply don't happen at all for an unknown or unverified email, so
+   * there is nothing to observe from the response). The OTP is only ever
+   * issued for an existing, verified `User` row — a merely-pending
+   * registration (Step 3) has no `User` row yet and is treated the same
+   * as an unregistered email.
+   */
+  async forgotPassword(email: string): Promise<ForgotPasswordResponse> {
+    const user = await this.prisma.user.findUnique({ where: { email } });
+
+    if (user && user.emailVerifiedAt) {
+      const { otp, otpHash, otpExpiresAt, lastOtpSentAt } = await this.issueOtp();
+
+      // Same atomic cooldown claim as registration's `claimSend` (Phase 2
+      // Step 3 blocker fix pattern): two concurrent /forgot-password
+      // calls for the same email can never both win the claim and both
+      // send a reset OTP email. Unlike register/resend, a lost cooldown
+      // race here must NOT be surfaced to the caller (see the doc
+      // comment above) — it silently keeps whichever OTP is already
+      // in flight rather than throwing a 429, so the response can stay
+      // identical to the "no account" case.
+      const claim = await this.passwordResets.claimSend(email, {
+        userId: user.id,
+        otpHash,
+        otpAttempts: 0,
+        otpExpiresAt,
+        lastOtpSentAt,
+      });
+
+      if (claim.status === "OK") {
+        await this.sendPasswordResetOtpEmail(email, otp);
+        this.logger.info({ userId: user.id }, "password reset otp sent");
+      } else {
+        this.logger.info(
+          { userId: user.id },
+          "password reset otp not resent: resend cooldown still active",
+        );
+      }
+    } else {
+      this.logger.info({ email }, "forgot-password requested for unknown or unverified email");
+    }
+
+    return { email, otpExpiresInSeconds: this.env.OTP_TTL_SECONDS };
+  }
+
+  /**
+   * Completes a password reset: verifies the OTP issued by
+   * `forgotPassword` and, only on success, overwrites the user's
+   * `passwordHash`.
+   *
+   * Deliberately does not revoke the user's existing refresh tokens —
+   * `RefreshTokenStore` (Step 4) has no index from `userId` to its
+   * issued tokens, only from an opaque `tokenId` the client already
+   * holds, so there is nothing to look up and revoke here without adding
+   * that index (out of scope for this step; see known limitations).
+   */
+  async resetPassword(
+    email: string,
+    otp: string,
+    newPassword: string,
+  ): Promise<ResetPasswordResponse> {
+    const record = await this.passwordResets.get(email);
+    if (!record) {
+      throw new NotFoundException({
+        code: "PASSWORD_RESET_NOT_FOUND",
+        message: "No password reset was requested for this email, or it has expired.",
+      });
+    }
+
+    if (record.otpAttempts >= this.env.OTP_MAX_ATTEMPTS) {
+      await this.passwordResets.delete(email);
+      throw new GoneException({
+        code: "OTP_MAX_ATTEMPTS_EXCEEDED",
+        message: "Too many incorrect attempts. Please request a new reset code.",
+      });
+    }
+
+    if (new Date(record.otpExpiresAt).getTime() < Date.now()) {
+      await this.passwordResets.delete(email);
+      throw new GoneException({
+        code: "OTP_EXPIRED",
+        message: "This reset code has expired. Please request a new one.",
+      });
+    }
+
+    const isValid = await this.passwordHasher.verify(record.otpHash, otp);
+    if (!isValid) {
+      // Same atomic counter as `verifyOtp` (Phase 2 Step 3 blocker fix):
+      // recomputed in Redis so concurrent wrong guesses can't lose an
+      // increment or bypass `OTP_MAX_ATTEMPTS`.
+      const result = await this.passwordResets.recordFailedAttempt(email);
+      throw this.errorForFailedPasswordResetAttempt(result);
+    }
+
+    const user = await this.prisma.user.findUnique({ where: { id: record.userId } });
+    if (!user) {
+      // The account was deleted after the reset OTP was issued.
+      await this.passwordResets.delete(email);
+      throw new NotFoundException({
+        code: "PASSWORD_RESET_NOT_FOUND",
+        message: "No password reset was requested for this email, or it has expired.",
+      });
+    }
+
+    const passwordHash = await this.passwordHasher.hash(newPassword);
+    await this.prisma.user.update({ where: { id: user.id }, data: { passwordHash } });
+    await this.passwordResets.delete(email);
+
+    this.logger.info({ userId: user.id }, "password reset completed");
+
+    return { email: user.email };
+  }
+
   private async issueOtp(): Promise<{
     otp: string;
     otpHash: string;
@@ -380,6 +507,47 @@ export class AuthService {
       to: email,
       subject: "Your Omniscience Platform verification code",
       text: `Your verification code is ${otp}. It expires in ${minutes} minute${minutes === 1 ? "" : "s"}. If you didn't request this, you can safely ignore this email.`,
+    });
+  }
+
+  /**
+   * Maps the atomic `PasswordResetStore.recordFailedAttempt` result to the
+   * response the API contract expects.
+   */
+  private errorForFailedPasswordResetAttempt(
+    result: PasswordResetRecordFailedAttemptResult,
+  ): HttpException {
+    switch (result.status) {
+      case "NOT_FOUND":
+        return new NotFoundException({
+          code: "PASSWORD_RESET_NOT_FOUND",
+          message: "No password reset was requested for this email, or it has expired.",
+        });
+      case "EXPIRED":
+        return new GoneException({
+          code: "OTP_EXPIRED",
+          message: "This reset code has expired. Please request a new one.",
+        });
+      case "MAX_ATTEMPTS_EXCEEDED":
+        return new GoneException({
+          code: "OTP_MAX_ATTEMPTS_EXCEEDED",
+          message: "Too many incorrect attempts. Please request a new reset code.",
+        });
+      case "INCREMENTED":
+        return new BadRequestException({
+          code: "OTP_INCORRECT",
+          message: "The reset code is incorrect.",
+          details: { attemptsRemaining: result.attemptsRemaining },
+        });
+    }
+  }
+
+  private async sendPasswordResetOtpEmail(email: string, otp: string): Promise<void> {
+    const minutes = Math.round(this.env.OTP_TTL_SECONDS / 60);
+    await this.mail.sendMail({
+      to: email,
+      subject: "Your Omniscience Platform password reset code",
+      text: `Your password reset code is ${otp}. It expires in ${minutes} minute${minutes === 1 ? "" : "s"}. If you didn't request this, you can safely ignore this email — your password has not been changed.`,
     });
   }
 

@@ -85,3 +85,31 @@ export interface LogoutResponse {
 }
 
 export type MeResponse = AuthenticatedUser;
+
+/**
+ * Phase 2 Step 5 — forgot-password and reset-password.
+ *
+ * Follows the same OTP-over-email pattern as registration (Step 3)
+ * rather than a mailed reset link/token, per the SRS ("forgot-password
+ * OTP"). `forgotPassword` always responds with the same shape whether or
+ * not the email is registered — the response alone must never reveal
+ * account existence.
+ */
+export interface ForgotPasswordRequest {
+  email: string;
+}
+
+export interface ForgotPasswordResponse {
+  email: string;
+  otpExpiresInSeconds: number;
+}
+
+export interface ResetPasswordRequest {
+  email: string;
+  otp: string;
+  newPassword: string;
+}
+
+export interface ResetPasswordResponse {
+  email: string;
+}

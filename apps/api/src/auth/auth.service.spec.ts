@@ -14,6 +14,7 @@ import { AccessTokenService } from "./access-token.service";
 import { AuthService, type PendingRegistrationRecord } from "./auth.service";
 import { OtpService } from "./otp.service";
 import { PasswordHasherService } from "./password-hasher.service";
+import { PasswordResetStore, type PasswordResetRecord } from "./password-reset.store";
 import { PendingRegistrationStore } from "./pending-registration.store";
 import { RefreshTokenStore } from "./refresh-token.store";
 import { MailService } from "../mail/mail.service";
@@ -28,7 +29,7 @@ describe("AuthService", () => {
   const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn() } as unknown as Logger;
 
   const prisma = {
-    user: { findUnique: jest.fn(), create: jest.fn() },
+    user: { findUnique: jest.fn(), create: jest.fn(), update: jest.fn() },
   } as unknown as PrismaService;
 
   const passwordHasher = {
@@ -59,6 +60,22 @@ describe("AuthService", () => {
     revoke: jest.fn(),
   } as unknown as RefreshTokenStore;
 
+  const passwordResets = {
+    get: jest.fn(),
+    claimSend: jest.fn(),
+    recordFailedAttempt: jest.fn(),
+    delete: jest.fn(),
+  } as unknown as PasswordResetStore;
+
+  const buildResetRecord = (overrides: Partial<PasswordResetRecord> = {}): PasswordResetRecord => ({
+    userId: "user_1",
+    otpHash: "hashed-reset-otp",
+    otpAttempts: 0,
+    otpExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+    lastOtpSentAt: new Date(Date.now() - 120_000).toISOString(),
+    ...overrides,
+  });
+
   const buildRecord = (overrides: Partial<PendingRegistrationRecord> = {}): PendingRegistrationRecord => ({
     name: "Arceus",
     passwordHash: "hashed-password",
@@ -83,6 +100,7 @@ describe("AuthService", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     (pendingRegistrations.claimSend as jest.Mock).mockResolvedValue({ status: "OK" });
+    (passwordResets.claimSend as jest.Mock).mockResolvedValue({ status: "OK" });
     service = new AuthService(
       env,
       logger,
@@ -93,6 +111,7 @@ describe("AuthService", () => {
       mail,
       accessTokens,
       refreshTokens,
+      passwordResets,
     );
   });
 
@@ -413,6 +432,143 @@ describe("AuthService", () => {
       (prisma.user.findUnique as jest.Mock).mockResolvedValue(null);
 
       await expect(service.getCurrentUser("user_1")).rejects.toThrow(UnauthorizedException);
+    });
+  });
+
+  describe("forgotPassword", () => {
+    it("claims the send and emails an OTP for an existing, verified account", async () => {
+      const user = buildUser();
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(user);
+      (otpService.generateCode as jest.Mock).mockReturnValue("654321");
+      (passwordHasher.hash as jest.Mock).mockResolvedValue("hashed-reset-otp");
+
+      const result = await service.forgotPassword("user@example.com");
+
+      expect(passwordResets.claimSend).toHaveBeenCalledWith(
+        "user@example.com",
+        expect.objectContaining({ userId: user.id, otpAttempts: 0, otpHash: "hashed-reset-otp" }),
+      );
+      expect(mail.sendMail).toHaveBeenCalledWith(
+        expect.objectContaining({ to: "user@example.com", text: expect.stringContaining("654321") }),
+      );
+      expect(result).toEqual({ email: "user@example.com", otpExpiresInSeconds: 600 });
+    });
+
+    it("returns the same generic response and sends nothing for an unknown email", async () => {
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(null);
+
+      const result = await service.forgotPassword("nobody@example.com");
+
+      expect(passwordResets.claimSend).not.toHaveBeenCalled();
+      expect(mail.sendMail).not.toHaveBeenCalled();
+      expect(result).toEqual({ email: "nobody@example.com", otpExpiresInSeconds: 600 });
+    });
+
+    it("returns the same generic response and sends nothing for an unverified account", async () => {
+      const user = buildUser({ emailVerifiedAt: null });
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(user);
+
+      const result = await service.forgotPassword("user@example.com");
+
+      expect(passwordResets.claimSend).not.toHaveBeenCalled();
+      expect(mail.sendMail).not.toHaveBeenCalled();
+      expect(result).toEqual({ email: "user@example.com", otpExpiresInSeconds: 600 });
+    });
+
+    it("silently respects the resend cooldown instead of throwing or leaking a 429", async () => {
+      const user = buildUser();
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(user);
+      (passwordResets.claimSend as jest.Mock).mockResolvedValue({
+        status: "COOLDOWN",
+        retryAfterSeconds: 42,
+      });
+
+      const result = await service.forgotPassword("user@example.com");
+
+      expect(mail.sendMail).not.toHaveBeenCalled();
+      expect(result).toEqual({ email: "user@example.com", otpExpiresInSeconds: 600 });
+    });
+  });
+
+  describe("resetPassword", () => {
+    it("verifies the code, updates the password hash, and clears the reset record", async () => {
+      const record = buildResetRecord();
+      (passwordResets.get as jest.Mock).mockResolvedValue(record);
+      (passwordHasher.verify as jest.Mock).mockResolvedValue(true);
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(buildUser({ id: "user_1" }));
+      (passwordHasher.hash as jest.Mock).mockResolvedValue("new-hashed-password");
+
+      const result = await service.resetPassword("user@example.com", "123456", "N3wSup3r$ecret!");
+
+      expect(passwordHasher.verify).toHaveBeenCalledWith(record.otpHash, "123456");
+      expect(passwordHasher.hash).toHaveBeenCalledWith("N3wSup3r$ecret!");
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: "user_1" },
+        data: { passwordHash: "new-hashed-password" },
+      });
+      expect(passwordResets.delete).toHaveBeenCalledWith("user@example.com");
+      expect(result).toEqual({ email: "user@example.com" });
+    });
+
+    it("throws NotFoundException when there is no pending reset", async () => {
+      (passwordResets.get as jest.Mock).mockResolvedValue(null);
+
+      await expect(
+        service.resetPassword("user@example.com", "123456", "N3wSup3r$ecret!"),
+      ).rejects.toThrow(NotFoundException);
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it("deletes the reset record and throws GoneException once max attempts are reached", async () => {
+      const record = buildResetRecord({ otpAttempts: 5 });
+      (passwordResets.get as jest.Mock).mockResolvedValue(record);
+
+      await expect(
+        service.resetPassword("user@example.com", "000000", "N3wSup3r$ecret!"),
+      ).rejects.toThrow(GoneException);
+      expect(passwordResets.delete).toHaveBeenCalledWith("user@example.com");
+      expect(passwordHasher.verify).not.toHaveBeenCalled();
+    });
+
+    it("deletes the reset record and throws GoneException when the OTP has expired", async () => {
+      const record = buildResetRecord({ otpExpiresAt: new Date(Date.now() - 1000).toISOString() });
+      (passwordResets.get as jest.Mock).mockResolvedValue(record);
+
+      await expect(
+        service.resetPassword("user@example.com", "123456", "N3wSup3r$ecret!"),
+      ).rejects.toThrow(GoneException);
+      expect(passwordResets.delete).toHaveBeenCalledWith("user@example.com");
+      expect(passwordHasher.verify).not.toHaveBeenCalled();
+    });
+
+    it("delegates the failed attempt atomically and throws BadRequestException on an incorrect code", async () => {
+      const record = buildResetRecord({ otpAttempts: 1 });
+      (passwordResets.get as jest.Mock).mockResolvedValue(record);
+      (passwordHasher.verify as jest.Mock).mockResolvedValue(false);
+      (passwordResets.recordFailedAttempt as jest.Mock).mockResolvedValue({
+        status: "INCREMENTED",
+        attemptsRemaining: 3,
+      });
+
+      const promise = service.resetPassword("user@example.com", "000000", "N3wSup3r$ecret!");
+      await expect(promise).rejects.toThrow(BadRequestException);
+      await expect(promise).rejects.toMatchObject({
+        response: expect.objectContaining({ details: { attemptsRemaining: 3 } }),
+      });
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it("throws NotFoundException when the reset record's user no longer exists", async () => {
+      const record = buildResetRecord();
+      (passwordResets.get as jest.Mock).mockResolvedValue(record);
+      (passwordHasher.verify as jest.Mock).mockResolvedValue(true);
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(null);
+
+      await expect(
+        service.resetPassword("user@example.com", "123456", "N3wSup3r$ecret!"),
+      ).rejects.toThrow(NotFoundException);
+      expect(passwordResets.delete).toHaveBeenCalledWith("user@example.com");
+      expect(prisma.user.update).not.toHaveBeenCalled();
     });
   });
 });

@@ -12,6 +12,8 @@ export {
   refreshTokenSchema,
   refreshRequestSchema,
   logoutRequestSchema,
+  forgotPasswordRequestSchema,
+  resetPasswordRequestSchema,
 } from "./auth";
 export type {
   OtpCode,
@@ -21,4 +23,6 @@ export type {
   LoginRequestSchema,
   RefreshRequestSchema,
   LogoutRequestSchema,
+  ForgotPasswordRequestSchema,
+  ResetPasswordRequestSchema,
 } from "./auth";

@@ -13,6 +13,8 @@ describe("AuthController", () => {
     refresh: jest.fn(),
     logout: jest.fn(),
     getCurrentUser: jest.fn(),
+    forgotPassword: jest.fn(),
+    resetPassword: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -131,5 +133,37 @@ describe("AuthController", () => {
       success: true,
       data: { id: "user_1", email: "user@example.com", name: "Arceus" },
     });
+  });
+
+  it("forgotPassword() delegates to AuthService with email", async () => {
+    authService.forgotPassword.mockResolvedValue({
+      email: "user@example.com",
+      otpExpiresInSeconds: 600,
+    });
+
+    const result = await controller.forgotPassword({ email: "user@example.com" });
+
+    expect(authService.forgotPassword).toHaveBeenCalledWith("user@example.com");
+    expect(result).toEqual({
+      success: true,
+      data: { email: "user@example.com", otpExpiresInSeconds: 600 },
+    });
+  });
+
+  it("resetPassword() delegates to AuthService with email, otp, and newPassword", async () => {
+    authService.resetPassword.mockResolvedValue({ email: "user@example.com" });
+
+    const result = await controller.resetPassword({
+      email: "user@example.com",
+      otp: "123456",
+      newPassword: "N3wSup3r$ecret!",
+    });
+
+    expect(authService.resetPassword).toHaveBeenCalledWith(
+      "user@example.com",
+      "123456",
+      "N3wSup3r$ecret!",
+    );
+    expect(result).toEqual({ success: true, data: { email: "user@example.com" } });
   });
 });

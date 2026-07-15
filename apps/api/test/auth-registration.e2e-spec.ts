@@ -14,20 +14,49 @@ import { RedisService } from "../src/redis/redis.service";
 
 /**
  * Exercises the real HTTP surface of Step 3 (register → verify-otp,
- * including a wrong-code rejection and a duplicate-email rejection) and
+ * including a wrong-code rejection and a duplicate-email rejection),
  * Step 4 (login → me → refresh (rotation) → logout, plus the
- * unverified/wrong-password/invalid-token rejections) without requiring
- * a live Postgres or Redis instance.
+ * unverified/wrong-password/invalid-token rejections), and Step 5
+ * (forgot-password → reset-password, including a wrong-code rejection
+ * and the unknown-email/unverified-email non-enumeration behavior)
+ * without requiring a live Postgres or Redis instance, and with the
+ * real, unmodified global `ThrottlerGuard` active throughout.
  *
  * `PrismaService` is replaced with a tiny in-memory `users` array, and
  * `RedisService` with an in-memory key/value store that also implements
- * `EVAL` for the three atomic Lua scripts `PendingRegistrationStore`/
- * `RefreshTokenStore` use — both implement only the surface
- * `AuthService`/`PendingRegistrationStore`/`RefreshTokenStore` actually
- * call, not a full Prisma/Redis client. `MailService` is replaced with a fake that
- * captures sent messages so the test can read the real generated OTP out
- * of the (never-logged-in-plaintext-elsewhere) email body, exactly as a
- * person would read it from their inbox.
+ * `EVAL` for the atomic Lua scripts `PendingRegistrationStore`/
+ * `RefreshTokenStore`/`PasswordResetStore` use — both implement only the
+ * surface `AuthService`/`PendingRegistrationStore`/`RefreshTokenStore`/
+ * `PasswordResetStore` actually call, not a full Prisma/Redis client.
+ * `MailService` is replaced with a fake that captures sent messages so
+ * the test can read the real generated OTP out of the
+ * (never-logged-in-plaintext-elsewhere) email body, exactly as a person
+ * would read it from their inbox. `createTestApp()` builds one fresh
+ * `INestApplication` — a fresh `TestingModule` compiled from the real
+ * `AppModule`, with brand-new instances of all three fakes — and is the
+ * single place all of that wiring lives.
+ *
+ * **Test isolation and `ThrottlerGuard`.** `ThrottlerGuard` is never
+ * overridden, stubbed, or bypassed anywhere in this file — production
+ * throttling runs for real on every request the tests make. What *is*
+ * isolated is application state: each call to `createTestApp()` compiles
+ * a brand-new DI container, which means a brand-new (empty, in-memory)
+ * `ThrottlerStorageService` — i.e. a fresh per-IP rate-limit counter
+ * that starts at zero. The Step 3 + Step 4 tests (registration through
+ * login/refresh/logout) share one `INestApplication`, created once in
+ * the top-level `beforeAll`, because they form one continuous, ordered
+ * story about a single account and stay comfortably within every
+ * route's throttle limit doing so. The Step 5 (`forgot-password`/
+ * `reset-password`) tests instead each get their **own** fresh
+ * `INestApplication` via `beforeEach`/`afterEach` — every test seeds
+ * whatever verified/unverified user it needs itself (via
+ * `registerAndVerifyUser()`), rather than depending on the top-level
+ * describe block's account or on execution order relative to other
+ * Step 5 tests. This guarantees no Step 5 test can ever be pushed over
+ * `/auth/forgot-password`'s real 3-per-10-minutes production limit by
+ * an earlier, unrelated test's requests: each test's own budget always
+ * starts fresh, and no single Step 5 test needs more than one
+ * `/auth/forgot-password` call to exercise what it's testing.
  */
 const testEnv: Env = {
   NODE_ENV: "test",
@@ -90,6 +119,21 @@ class FakePrismaService {
       this.users.push(row);
       return row;
     },
+    update: async ({
+      where,
+      data,
+    }: {
+      where: { id: string };
+      data: { passwordHash: string };
+    }): Promise<FakeUserRow> => {
+      const row = this.users.find((u) => u.id === where.id);
+      if (!row) {
+        throw new Error("record not found");
+      }
+      row.passwordHash = data.passwordHash;
+      row.updatedAt = new Date();
+      return row;
+    },
   };
 
   async onModuleInit(): Promise<void> {
@@ -133,7 +177,10 @@ class InMemoryRedisClient {
    * doesn't have to parse or interpret Lua.
    */
   async eval(script: string, _numKeys: number, key: string, ...args: unknown[]): Promise<unknown> {
-    if (script.includes("-- SCRIPT: pending-registration-claim-send")) {
+    if (
+      script.includes("-- SCRIPT: pending-registration-claim-send") ||
+      script.includes("-- SCRIPT: password-reset-claim-send")
+    ) {
       const [cooldownSeconds, ttlSeconds, nowMs, newRecord] = args as [number, number, number, string];
       const entry = this.store.get(key);
       if (entry) {
@@ -153,7 +200,10 @@ class InMemoryRedisClient {
       return ["OK"];
     }
 
-    if (script.includes("-- SCRIPT: pending-registration-record-failed-attempt")) {
+    if (
+      script.includes("-- SCRIPT: pending-registration-record-failed-attempt") ||
+      script.includes("-- SCRIPT: password-reset-record-failed-attempt")
+    ) {
       const [maxAttempts, nowMs] = args as [number, number];
       const entry = this.store.get(key);
       if (!entry) {
@@ -222,28 +272,72 @@ class FakeMailService {
   }
 }
 
+/**
+ * Builds one fresh, fully-wired `INestApplication` from the real
+ * `AppModule` — the real controllers, services, guards (including the
+ * real `ThrottlerGuard`, never overridden), and validation pipes — with
+ * only `ENV`/`RedisService`/`PrismaService`/`MailService` swapped for
+ * fakes so the suite needs no live Postgres, Redis, or SMTP server.
+ * Every call compiles a brand-new `TestingModule`, which means a
+ * brand-new DI container and therefore a brand-new (empty) in-memory
+ * `ThrottlerStorageService` — see the class-level doc comment above for
+ * why that's the actual test-isolation mechanism this file relies on.
+ */
+async function createTestApp(): Promise<{ app: INestApplication; mail: FakeMailService }> {
+  const mail = new FakeMailService();
+  const moduleFixture: TestingModule = await Test.createTestingModule({
+    imports: [AppModule],
+  })
+    .overrideProvider(ENV)
+    .useValue(testEnv)
+    .overrideProvider(RedisService)
+    .useValue(new FakeRedisService())
+    .overrideProvider(PrismaService)
+    .useValue(new FakePrismaService())
+    .overrideProvider(MailService)
+    .useValue(mail)
+    .compile();
+
+  const app = moduleFixture.createNestApplication();
+  app.useGlobalFilters(new AllExceptionsFilter(createLogger({ service: "api-test" })));
+  await app.init();
+
+  return { app, mail };
+}
+
+/** Finds the most recently sent 6-digit code emailed to `to`, exactly as a person would read it out of their inbox. */
+function extractOtpFor(mail: FakeMailService, to: string): string {
+  const sent = [...mail.sentEmails].reverse().find((m) => m.to === to);
+  expect(sent).toBeDefined();
+  const match = sent?.text.match(/\d{6}/);
+  expect(match).toBeTruthy();
+  return match?.[0] as string;
+}
+
+/** Registers and fully verifies a user against `app`, so tests that need an existing verified account don't have to depend on another test's account or ordering. */
+async function registerAndVerifyUser(
+  app: INestApplication,
+  mail: FakeMailService,
+  email: string,
+  password: string,
+  name: string,
+): Promise<void> {
+  await request(app.getHttpServer())
+    .post("/auth/register")
+    .send({ email, password, name })
+    .expect(202);
+  const otp = extractOtpFor(mail, email);
+  await request(app.getHttpServer()).post("/auth/verify-otp").send({ email, otp }).expect(201);
+}
+
 describe("Auth registration + OTP verification (e2e)", () => {
   let app: INestApplication | undefined;
   let mail: FakeMailService;
 
   beforeAll(async () => {
-    mail = new FakeMailService();
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    })
-      .overrideProvider(ENV)
-      .useValue(testEnv)
-      .overrideProvider(RedisService)
-      .useValue(new FakeRedisService())
-      .overrideProvider(PrismaService)
-      .useValue(new FakePrismaService())
-      .overrideProvider(MailService)
-      .useValue(mail)
-      .compile();
-
-    app = moduleFixture.createNestApplication();
-    app.useGlobalFilters(new AllExceptionsFilter(createLogger({ service: "api-test" })));
-    await app.init();
+    const created = await createTestApp();
+    app = created.app;
+    mail = created.mail;
   });
 
   afterAll(async () => {
@@ -256,11 +350,7 @@ describe("Auth registration + OTP verification (e2e)", () => {
   const password = "Sup3r$ecretPassw0rd!";
 
   function extractOtp(): string {
-    const sent = mail.sentEmails.find((m) => m.to === email);
-    expect(sent).toBeDefined();
-    const match = sent?.text.match(/\d{6}/);
-    expect(match).toBeTruthy();
-    return match?.[0] as string;
+    return extractOtpFor(mail, email);
   }
 
   it("registers, sends an OTP, rejects a wrong code, then accepts the right one", async () => {
@@ -457,6 +547,176 @@ describe("Auth registration + OTP verification (e2e)", () => {
       const response = await request(app?.getHttpServer())
         .post("/auth/login")
         .send({ email: "not-an-email" })
+        .expect(400);
+
+      expect(response.body.error.code).toBe("VALIDATION_ERROR");
+    });
+  });
+
+  describe("forgot-password + reset-password (Step 5)", () => {
+    // Deliberately isolated from the rest of this file: every test here
+    // gets its own fresh `INestApplication` (via `createTestApp()`, in
+    // `beforeEach`/`afterEach` below) and seeds whatever verified/
+    // unverified user it needs itself (via `registerAndVerifyUser()` or
+    // a direct `/auth/register` call), rather than reusing the top-level
+    // describe block's `app`/`email`/`password` or depending on another
+    // Step 5 test having already run. See the class-level doc comment
+    // for why a fresh app per test is what actually keeps these tests
+    // independent of `ThrottlerGuard`'s real, unmodified, per-IP rate
+    // limit on `/auth/forgot-password` — each test's own budget starts
+    // at zero, and none of them needs more than one
+    // `/auth/forgot-password` call to exercise what it's testing.
+    let step5App: INestApplication;
+    let step5Mail: FakeMailService;
+
+    const password = "Sup3r$ecretPassw0rd!";
+    const newPassword = "N3wSup3r$ecretPassw0rd!";
+
+    beforeEach(async () => {
+      const created = await createTestApp();
+      step5App = created.app;
+      step5Mail = created.mail;
+    });
+
+    afterEach(async () => {
+      await step5App.close();
+    });
+
+    it("returns the same generic response for an unregistered email and sends nothing", async () => {
+      const response = await request(step5App.getHttpServer())
+        .post("/auth/forgot-password")
+        .send({ email: "never-registered@example.com" })
+        .expect(200);
+
+      expect(response.body).toEqual({
+        success: true,
+        data: { email: "never-registered@example.com", otpExpiresInSeconds: 600 },
+      });
+      expect(step5Mail.sentEmails).toHaveLength(0);
+    });
+
+    it("sends a reset OTP for a registered, verified account with the same response shape", async () => {
+      const email = "reset-flow-send-otp@example.com";
+      await registerAndVerifyUser(step5App, step5Mail, email, password, "Reset Flow Send Otp");
+      const before = step5Mail.sentEmails.length;
+
+      const response = await request(step5App.getHttpServer())
+        .post("/auth/forgot-password")
+        .send({ email })
+        .expect(200);
+
+      expect(response.body).toEqual({
+        success: true,
+        data: { email, otpExpiresInSeconds: 600 },
+      });
+      expect(step5Mail.sentEmails.length).toBe(before + 1);
+    });
+
+    it("rejects reset-password with a wrong code", async () => {
+      const email = "reset-flow-wrong-code@example.com";
+      await registerAndVerifyUser(step5App, step5Mail, email, password, "Reset Flow Wrong Code");
+      await request(step5App.getHttpServer())
+        .post("/auth/forgot-password")
+        .send({ email })
+        .expect(200);
+      const otp = extractOtpFor(step5Mail, email);
+      const wrongOtp = otp === "000000" ? "111111" : "000000";
+
+      const response = await request(step5App.getHttpServer())
+        .post("/auth/reset-password")
+        .send({ email, otp: wrongOtp, newPassword })
+        .expect(400);
+
+      expect(response.body.error.code).toBe("OTP_INCORRECT");
+    });
+
+    it("resets the password with the correct code, after which the old password no longer works", async () => {
+      const email = "reset-flow-success@example.com";
+      await registerAndVerifyUser(step5App, step5Mail, email, password, "Reset Flow Success");
+      await request(step5App.getHttpServer())
+        .post("/auth/forgot-password")
+        .send({ email })
+        .expect(200);
+      const otp = extractOtpFor(step5Mail, email);
+
+      const response = await request(step5App.getHttpServer())
+        .post("/auth/reset-password")
+        .send({ email, otp, newPassword })
+        .expect(200);
+
+      expect(response.body).toEqual({ success: true, data: { email } });
+
+      const oldPasswordAttempt = await request(step5App.getHttpServer())
+        .post("/auth/login")
+        .send({ email, password })
+        .expect(401);
+      expect(oldPasswordAttempt.body.error.code).toBe("INVALID_CREDENTIALS");
+
+      const newPasswordAttempt = await request(step5App.getHttpServer())
+        .post("/auth/login")
+        .send({ email, password: newPassword })
+        .expect(200);
+      expect(typeof newPasswordAttempt.body.data.accessToken).toBe("string");
+    });
+
+    it("rejects reusing the same reset code a second time", async () => {
+      const email = "reset-flow-replay@example.com";
+      await registerAndVerifyUser(step5App, step5Mail, email, password, "Reset Flow Replay");
+      await request(step5App.getHttpServer())
+        .post("/auth/forgot-password")
+        .send({ email })
+        .expect(200);
+      const otp = extractOtpFor(step5Mail, email);
+
+      await request(step5App.getHttpServer())
+        .post("/auth/reset-password")
+        .send({ email, otp, newPassword })
+        .expect(200);
+
+      const replay = await request(step5App.getHttpServer())
+        .post("/auth/reset-password")
+        .send({ email, otp, newPassword: "YetAnotherPassw0rd!" })
+        .expect(404);
+      expect(replay.body.error.code).toBe("PASSWORD_RESET_NOT_FOUND");
+    });
+
+    it("returns the same generic response for a registered-but-not-yet-verified email and sends nothing", async () => {
+      const unverifiedEmail = "reset-flow-unverified@example.com";
+      await request(step5App.getHttpServer())
+        .post("/auth/register")
+        .send({ email: unverifiedEmail, password, name: "Reset Flow Unverified" })
+        .expect(202);
+      const before = step5Mail.sentEmails.length;
+
+      const response = await request(step5App.getHttpServer())
+        .post("/auth/forgot-password")
+        .send({ email: unverifiedEmail })
+        .expect(200);
+
+      expect(response.body).toEqual({
+        success: true,
+        data: { email: unverifiedEmail, otpExpiresInSeconds: 600 },
+      });
+      // Only the registration OTP was sent, never a reset OTP.
+      expect(step5Mail.sentEmails).toHaveLength(before);
+    });
+
+    it("rejects reset-password when no reset was ever requested for the email", async () => {
+      const response = await request(step5App.getHttpServer())
+        .post("/auth/reset-password")
+        .send({ email: "no-reset-requested@example.com", otp: "123456", newPassword })
+        .expect(404);
+
+      expect(response.body.error.code).toBe("PASSWORD_RESET_NOT_FOUND");
+    });
+
+    it("rejects a malformed reset-password payload with structured validation details", async () => {
+      const email = "reset-flow-malformed@example.com";
+      await registerAndVerifyUser(step5App, step5Mail, email, password, "Reset Flow Malformed");
+
+      const response = await request(step5App.getHttpServer())
+        .post("/auth/reset-password")
+        .send({ email, otp: "abc", newPassword: "short" })
         .expect(400);
 
       expect(response.body.error.code).toBe("VALIDATION_ERROR");

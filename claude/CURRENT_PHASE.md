@@ -129,7 +129,7 @@ build cleanly — actually executed in this pass, not assumed.
 
 # Phase 2 — Authentication & Users
 
-Status: **In progress** — Step 1 of 8 complete, awaiting explicit approval before Step 2.
+Status: **In progress** — Step 5 of 8 complete, awaiting explicit approval before Step 6.
 
 Approved decisions (from the Phase 2 implementation prompt): Prisma ORM, Argon2 password
 hashing, OTP + refresh tokens in Redis, JWT access (15m) / refresh (7d) tokens,
@@ -751,3 +751,274 @@ locked workflow.
 - No forgot-password/password-reset, user-profile, or session/device-management endpoints yet
   (later steps). No frontend wiring — `LoginPage.tsx`/`RegisterPage.tsx` remain UI-only previews,
   matching the precedent Step 3 set.
+
+---
+
+# Step 5 — Forgot-password + reset-password (complete)
+
+## Scope (from `claude/PROJECT_STATE.md`'s approved 8-step Phase 2 plan and
+`docs/02_SRS.md`, which specifies "forgot-password OTP")
+
+Two endpoints: `POST /auth/forgot-password` (request a reset code) and
+`POST /auth/reset-password` (verify the code, set a new password). Follows the SRS's own
+wording — an emailed 6-digit OTP, the same pattern Step 3 established for registration —
+rather than a mailed reset link/token. No session/device revocation, no user-profile or
+account-management endpoints; those remain later steps.
+
+## What was implemented
+
+- **`PasswordResetStore`** (`apps/api/src/auth/password-reset.store.ts`) — a Redis-backed store
+  for in-flight password-reset OTPs, structurally mirroring `PendingRegistrationStore` (Step 3):
+  the same atomic `claimSend` (cooldown-gated resend) and `recordFailedAttempt`
+  (attempt-counting, expiry-checking) Lua scripts, under their own `auth:password-reset:` key
+  namespace so a reset flow can never collide with an in-flight registration for the same email.
+  Deliberately its own class rather than a generic/shared store: the two hold structurally
+  different records (`userId` vs. a not-yet-created account's `name`/`passwordHash`), and keeping
+  them separate means `PendingRegistrationStore` (already verified in Step 3) needed zero changes.
+- **`AuthService.forgotPassword(email)`** — looks up the user by email. If (and only if) a real,
+  email-verified account exists, it issues a fresh OTP, atomically claims the send (same cooldown
+  race protection as registration), and emails it. Regardless of whether the account exists, is
+  verified, or the cooldown was already active, the method **always returns the same response
+  shape** (`{ email, otpExpiresInSeconds }`). This is a stricter enumeration-resistance guarantee
+  than `login()`'s (which only matches response *content*, via the `DUMMY_HASH` timing trick) —
+  here the Redis write and the OTP email simply never happen at all for an unknown/unverified
+  email or an active cooldown, so there is nothing an attacker can distinguish from the response
+  itself.
+- **`AuthService.resetPassword(email, otp, newPassword)`** — the same
+  get → attempts-exceeded → expiry → verify → (on failure) atomic-attempt-record flow `verifyOtp`
+  established in Step 3, reusing `PasswordHasherService` for both the OTP hash check and hashing
+  the new password. On success: `prisma.user.update({ passwordHash })`, delete the reset record,
+  return `{ email }`.
+- **`AuthController`** — `POST /auth/forgot-password` (200, `@Throttle` 3/10min — same limit as
+  `/resend-otp`, the closest existing precedent for an OTP-send endpoint) and
+  `POST /auth/reset-password` (200, `@Throttle` 10/10min — same limit as `/verify-otp`).
+- **`packages/schemas`** — `forgotPasswordRequestSchema` (`{ email }`) and
+  `resetPasswordRequestSchema` (`{ email, otp, newPassword }`), reusing `emailSchema`,
+  `otpCodeSchema`, and `passwordSchema` (the new password must meet the same strength policy as
+  registration — a reset is a fresh credential, not an existing one like `loginPasswordSchema`).
+- **`packages/types`** — `ForgotPasswordRequest`/`Response`, `ResetPasswordRequest`/`Response`.
+- **`AuthModule`** — registers `PasswordResetStore`; no new imports needed (`PrismaService`,
+  `RedisService`, `MailService` are already `@Global()`, and `PasswordHasherService`/`OtpService`
+  are already providers in this module from Step 2/3).
+- No new environment variables — `OTP_TTL_SECONDS`/`OTP_MAX_ATTEMPTS`/
+  `OTP_RESEND_COOLDOWN_SECONDS` (Step 3) are reused as-is for the reset OTP's lifecycle, per the
+  approved decision to keep one OTP policy rather than a second, parallel one.
+- No frontend wiring — `ForgotPasswordPage.tsx`/`ResetPasswordPage.tsx` (Phase 1) remain UI-only
+  previews, matching the precedent Step 3 and Step 4 both set.
+
+## Security notes
+
+- **Account-enumeration resistance.** `forgotPassword()`'s response is identical for: an unknown
+  email, a registered-but-unverified email (a pending registration has no `User` row yet, so it's
+  indistinguishable from "never registered" — same precedent `login()`'s `EMAIL_NOT_VERIFIED` path
+  set in Step 4), a verified account with no active cooldown (OTP actually sent), and a verified
+  account whose cooldown is still active (OTP silently not resent). No timing-normalization
+  (`DUMMY_HASH`-style) was added on top of this — unlike `login()`, there's no password check to
+  time here, and the dominant timing cost (a single indexed `findUnique`) is already small and
+  data-independent; see known limitations for the residual, accepted gap.
+- **OTP verification reuses every Step 3 guarantee**: Argon2id-hashed OTP (never plaintext at
+  rest), atomic Redis-side attempt counting (`recordFailedAttempt`) so concurrent wrong guesses
+  can't lose an increment or bypass `OTP_MAX_ATTEMPTS`, and `KEEPTTL` on every failed-attempt write
+  so a wrong guess never extends the attacker's window.
+- **Single-use reset.** A successful `resetPassword()` deletes the Redis record immediately, so the
+  same OTP can never be replayed — verified by the e2e "rejects reusing the same reset code a
+  second time" test (expects `PASSWORD_RESET_NOT_FOUND` on replay, exactly like an
+  already-consumed refresh token in Step 4).
+- **New password strength.** `resetPasswordRequestSchema.newPassword` uses the full `passwordSchema`
+  policy (same as registration), not `loginPasswordSchema` — a reset always produces a fresh
+  credential, so it must meet the current policy even if the account's *old* password predates a
+  policy tightening.
+
+## Known limitations (Step 5)
+
+- **Existing sessions are not revoked on reset.** `resetPassword()` overwrites `passwordHash` but
+  does not revoke the user's outstanding refresh token(s) or invalidate already-issued access
+  tokens. `RefreshTokenStore` (Step 4) only supports lookup by the opaque `tokenId` half of a
+  token the client already holds — it has no secondary index from `userId` to its issued tokens,
+  so there is nothing to enumerate and revoke here without adding that index, which was judged out
+  of scope for this step (a natural Step-5.x/Step-6 hardening candidate, alongside Step 4's
+  already-logged refresh-token-family-reuse-detection gap). Real-world impact is bounded by the
+  existing 15-minute access-token / 7-day refresh-token TTLs.
+- **No timing-side-channel hardening on `forgotPassword()`.** The response *content* is identical
+  across every case (see Security notes), but an attacker measuring response latency very precisely
+  could in principle still infer whether the Redis write + `MailService.sendMail()` branch ran.
+  Judged low-risk and out of scope for this step: `login()`'s `DUMMY_HASH` trick tackles a much
+  higher-value timing channel (password verification); reproducing an equivalent no-op for a
+  reset request would mean unconditionally hashing a dummy OTP and awaiting a fake mail send on
+  every call, adding real latency to legitimate requests to close a comparatively low-value gap.
+- **No per-account lockout beyond the existing per-IP `@Throttle` rate limiting** (same limitation
+  already logged for Step 3/Step 4) guards `/auth/forgot-password` and `/auth/reset-password`.
+- **No frontend wiring** — `ForgotPasswordPage.tsx`/`ResetPasswordPage.tsx` remain Phase 1 UI-only
+  previews (matching the Step 3/Step 4 precedent).
+
+## Dependencies changed
+
+- None. No new packages were added; `PasswordResetStore` and the new `AuthService` methods reuse
+  `argon2` (via the existing `PasswordHasherService`), `ioredis` (via the existing `RedisService`),
+  and `nodemailer` (via the existing `MailService`) — all already dependencies as of Step 1–4.
+- `pnpm-lock.yaml` — unchanged (no dependency added, so no regeneration was needed or performed).
+
+## Tests added
+
+- **`password-reset.store.spec.ts`** — mocked-Redis unit tests: `get` (null / parsed-and-stripped
+  record), `claimSend` (script args, `OK`, rounded-up `COOLDOWN`, unrecognized-result throw),
+  `recordFailedAttempt` (script args, `INCREMENTED`, `NOT_FOUND`, `EXPIRED`,
+  `MAX_ATTEMPTS_EXCEEDED`, unrecognized-result throw), and `delete`.
+- **`password-reset.store.concurrency.spec.ts`** (real Redis, same pattern as
+  `pending-registration.store.concurrency.spec.ts`) — 20 concurrent `recordFailedAttempt` calls
+  prove no lost increments and the key is deleted at `MAX_ATTEMPTS_EXCEEDED`; 20 concurrent
+  `claimSend` calls prove exactly one wins the cooldown race; a TTL-preservation test proves
+  `KEEPTTL` semantics on a failed attempt.
+- **`auth.service.spec.ts`** (extended) — `forgotPassword()` covers: OTP claimed + emailed for an
+  existing verified account; identical generic response with nothing sent for an unknown email;
+  identical generic response with nothing sent for an unverified account; cooldown respected
+  silently (no throw, no 429, no email). `resetPassword()` covers: success (verify → hash → update
+  → delete); `NotFoundException` for no pending reset; `GoneException` for max-attempts-exceeded
+  and for an expired code; `BadRequestException` with `attemptsRemaining` for a wrong code; and
+  `NotFoundException` when the reset record's user no longer exists.
+- **`auth.controller.spec.ts`** (extended) — one delegation test per new endpoint, asserting the
+  `ApiSuccess` envelope.
+- **`auth.module.spec.ts`** (extended) — asserts `PasswordResetStore` resolves from the compiled
+  module alongside the existing Step 2/3/4 providers.
+- **`test/auth-registration.e2e-spec.ts`** (extended, real HTTP via supertest) — full
+  forgot-password→reset-password→login-with-new-password flow (plus asserting the *old* password
+  no longer works), a wrong-code rejection, a replay-of-the-same-code rejection
+  (`PASSWORD_RESET_NOT_FOUND`), the unknown-email and unverified-email non-enumeration cases
+  (identical response, zero emails sent), a no-pending-reset rejection, and a malformed-payload
+  rejection. The in-memory fake Redis client's `EVAL` dispatch was extended to also match on the
+  `-- SCRIPT: password-reset-claim-send` / `-- SCRIPT: password-reset-record-failed-attempt`
+  markers (identical logic to the existing pending-registration cases, just a second marker
+  string); the fake Prisma gained a `user.update` method (Step 5 is the first step that ever
+  updates a `User` row rather than only creating/reading one).
+
+## Post-verification fix — e2e test isolation (three rounds; root-caused and fixed)
+
+### Round 1 — the bug your first local run found
+
+Your first local run reported: **22/23 suites passing, 149/150 tests passing**, with exactly one
+failure — `test/auth-registration.e2e-spec.ts`, `"returns the same generic response for a
+registered-but-not-yet-verified email and sends nothing"`, expected 200, got 429.
+
+**Root cause**: this e2e suite reused one `INestApplication` across the whole file, so every
+request in every test — across Step 3, Step 4, and Step 5's tests — hit the real global
+`ThrottlerGuard` from the same in-process `supertest` client, seen as one constant source IP.
+`/auth/forgot-password`'s production `@Throttle({ limit: 3, ttl: 600_000 })` is deliberately tight,
+so by the time this test's own call ran, earlier Step 5 tests in the same file had already spent
+the 3-per-10-minutes budget for that route.
+
+### Round 1 fix attempt (`overrideProvider(APP_GUARD)`) — did not work
+
+Your second local run reproduced the exact same 429, with the real `ThrottlerException` still
+firing. `overrideProvider(APP_GUARD)` replaces what the `APP_GUARD` DI token resolves to if
+requested fresh, but Nest's global-guard pipeline had already captured the real `ThrottlerGuard`
+instance during module initialization — the override had no effect on the bound instance.
+
+### Round 2 fix attempt (`overrideGuard(ThrottlerGuard)`) — also did not work
+
+Your third local run reported the identical failure again: **1 failed suite, 22 passed; 1 failed
+test, 149 passed**, same 429. `overrideGuard()` is the documented `@nestjs/testing` API for
+replacing a guard by class reference, and it should intercept a globally-bound guard — but it,
+too, made no observable difference here. Rather than attempt a fourth guard-override variant on
+theory alone, the design was changed at the root: **stop trying to defeat `ThrottlerGuard` in
+tests, and instead guarantee no test can ever accumulate enough requests against one throttle
+counter to hit its limit.**
+
+### Round 3 fix (final) — deterministic test isolation, real `ThrottlerGuard` untouched
+
+`test/auth-registration.e2e-spec.ts` was restructured around one new fact: **every call to
+`Test.createTestingModule(...).compile()` produces a brand-new DI container, which means a
+brand-new (empty) in-memory `ThrottlerStorageService` — a fresh per-IP rate-limit counter starting
+at zero.** No guard is stubbed, overridden, or bypassed anywhere in the file; `ThrottlerGuard` runs
+for real on every request in every test.
+
+Concretely:
+- **`createTestApp()`** — a new, reusable async helper that compiles a fresh `TestingModule` from
+  the real `AppModule` (fresh `FakePrismaService`/`FakeRedisService`/`FakeMailService` instances,
+  same `ENV` override as before) and returns `{ app, mail }`. This is now the *only* place the
+  Nest test-app wiring lives; both the top-level describe block and the Step 5 describe block call
+  it, instead of each hand-rolling their own `Test.createTestingModule(...)` chain.
+- **`extractOtpFor(mail, to)`** and **`registerAndVerifyUser(app, mail, email, password, name)`** —
+  two new small helpers factored out of what used to be inline, email-specific logic, so any test
+  (in either describe block) can seed its own verified user without depending on another test.
+- **Top-level describe block** (Step 3 + Step 4): unchanged behavior, now built via
+  `createTestApp()` in its existing `beforeAll`. These tests intentionally remain one continuous,
+  ordered story sharing one app/account (register → verify → login → refresh → logout) — they stay
+  comfortably within every route's real throttle limit doing so, so there was nothing to fix here.
+- **Step 5 describe block** (`forgot-password`/`reset-password`): now gets its own fresh
+  `INestApplication` **per test**, via `beforeEach`/`afterEach` calling `createTestApp()`/
+  `app.close()`. Every test seeds whichever verified/unverified user it needs via
+  `registerAndVerifyUser()` (or a direct `/auth/register` call for the intentionally-unverified
+  case) — none of them depend on the top-level block's account, on `mail.sentEmails` populated by
+  another test, or on execution order relative to other Step 5 tests. Each test also now makes at
+  most **one** call to `/auth/forgot-password` (the previous "replay" test's second forgot-password
+  call was removed as no longer necessary — replay is proven by reusing the *same* already-issued
+  OTP a second time, which needs only one issuance), so no test can ever come close to the real
+  3-per-10-minutes limit on a counter that started at zero for it alone.
+- All eight Step 5 assertions are preserved, including the two this requirement explicitly called
+  out: the unknown-email and the registered-but-unverified-email cases both still assert the
+  identical generic `{ email, otpExpiresInSeconds }` response and zero reset emails sent.
+
+This still does **not**:
+- change, remove, weaken, or skip any `@Throttle(...)` decorator or limit on any real route (all
+  limits — 3/10min on `/forgot-password`, 10/10min on `/reset-password`/`/verify-otp`, 5/10min on
+  `/register`, 10/10min on `/login`, 20/10min on `/refresh`/`/logout` — are untouched in
+  `auth.controller.ts`);
+- change the production `AppModule` wiring at all (`app.module.ts` is unmodified, and
+  `ThrottlerGuard` is never overridden, stubbed, or bypassed anywhere in the test file);
+- skip, weaken, or delete the originally-failing test — it still runs, still asserts a real 200 and
+  a real generic response body, and is now guaranteed a clean (zero-count) throttle counter.
+
+## Commands actually executed (this session)
+
+```
+pnpm build                                              # FAILED — HTTP 403, registry.npmjs.org
+                                                          # unreachable (corepack re-fetches pnpm)
+pnpm --filter @omniscience/api exec jest \
+  test/auth-registration.e2e-spec.ts --runInBand         # FAILED — same 403, before jest ever runs
+```
+
+This sandbox has no npm/pnpm network egress at all — every attempt at every command fails
+identically at the corepack shim step, before `pnpm`/`jest` themselves ever execute. There is no
+`node_modules` and no generated Prisma client in this container, so `pnpm build`, `pnpm lint`,
+`pnpm typecheck`, and `pnpm test` (and the specific `jest test/auth-registration.e2e-spec.ts`
+invocation requested) could **not** actually be run here in this or any prior Step 5 session.
+Reporting a pass/fail result for them would violate the explicit instruction not to claim a
+command passed unless it was actually executed — so this section states plainly that none of them
+ran, rather than presenting theoretical confidence as a real result.
+
+As a partial, best-effort substitute, the corrected `test/auth-registration.e2e-spec.ts` was run
+through a standalone global `tsc --noEmit` (no workspace `node_modules`, no generated Prisma
+client, no `@types/jest`/`@types/node`) as a syntax/structure smoke test. Every error it reported
+is identical in kind to what the same bare check reports on the untouched, already-verified Step
+3/4 files (missing `@types/node`/`node_modules`, no generated Prisma client) — an artifact of this
+sandbox, not a defect in the restructured test file. No error was found that is unique to this
+change.
+
+## Actual local verification results (reported by you, across three rounds)
+
+- **Round 1** (before any fix): 22/23 suites, 149/150 tests — 1 failure (429 on the unverified-email
+  test).
+- **Round 2** (`overrideProvider(APP_GUARD)`): same failure reproduced — fix did not work.
+- **Round 3** (`overrideGuard(ThrottlerGuard)`): same failure reproduced again — fix did not work.
+- **Round 4** (this session — fresh-app-per-Step-5-test, no guard override at all): **not yet run
+  locally.** Please re-run `pnpm test` (or the specific
+  `pnpm --filter @omniscience/api exec jest test/auth-registration.e2e-spec.ts --runInBand`
+  invocation) and confirm **23/23 suites, 150/150 tests** pass.
+
+## Honest build/test status
+
+**Not verified end-to-end by Claude in this session** — this sandbox cannot install any package or
+reach `registry.npmjs.org`/`binaries.prisma.sh`; only you can run these against the real monorepo.
+**Please re-run the following locally and report the result**:
+
+```
+pnpm install --frozen-lockfile
+pnpm --filter @omniscience/api exec jest test/auth-registration.e2e-spec.ts --runInBand
+pnpm build
+pnpm lint
+pnpm typecheck
+pnpm test              # needs a reachable Redis for the *.concurrency.spec.ts files;
+                        # they self-skip with a clear console warning if none is found
+```
+
+GitHub Actions has not run yet for this change either.

@@ -1,27 +1,33 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Post, UseGuards } from "@nestjs/common";
 import { Throttle } from "@nestjs/throttler";
 import {
+  forgotPasswordRequestSchema,
   loginRequestSchema,
   logoutRequestSchema,
   refreshRequestSchema,
   registerRequestSchema,
   resendOtpRequestSchema,
+  resetPasswordRequestSchema,
   verifyOtpRequestSchema,
+  type ForgotPasswordRequestSchema,
   type LoginRequestSchema,
   type LogoutRequestSchema,
   type RefreshRequestSchema,
   type RegisterRequestSchema,
   type ResendOtpRequestSchema,
+  type ResetPasswordRequestSchema,
   type VerifyOtpRequestSchema,
 } from "@omniscience/schemas";
 import type {
   ApiSuccess,
+  ForgotPasswordResponse,
   LoginResponse,
   LogoutResponse,
   MeResponse,
   RefreshResponse,
   RegisterResponse,
   ResendOtpResponse,
+  ResetPasswordResponse,
   VerifyOtpResponse,
 } from "@omniscience/types";
 import { ZodValidationPipe } from "../common/pipes/zod-validation.pipe";
@@ -31,12 +37,14 @@ import { CurrentUser } from "./current-user.decorator";
 import { JwtAuthGuard } from "./jwt-auth.guard";
 
 /**
- * Authentication endpoints (Phase 2 Steps 3 + 4).
+ * Authentication endpoints (Phase 2 Steps 3, 4 + 5).
  *
  * Step 3: registration + OTP verification (`/register`, `/verify-otp`,
  * `/resend-otp`).
- * Step 4 (this step): login, refresh, logout, and the current-session
- * identity check (`/login`, `/refresh`, `/logout`, `/me`).
+ * Step 4: login, refresh, logout, and the current-session identity check
+ * (`/login`, `/refresh`, `/logout`, `/me`).
+ * Step 5 (this step): forgot-password + reset-password
+ * (`/forgot-password`, `/reset-password`).
  *
  * Each endpoint is additionally throttled per-IP (on top of any
  * per-account/per-token business rule `AuthService` itself enforces) as
@@ -115,6 +123,26 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   async me(@CurrentUser() user: AccessTokenPayload): Promise<ApiSuccess<MeResponse>> {
     const data = await this.authService.getCurrentUser(user.sub);
+    return { success: true, data };
+  }
+
+  @Post("forgot-password")
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 3, ttl: 600_000 } })
+  async forgotPassword(
+    @Body(new ZodValidationPipe(forgotPasswordRequestSchema)) body: ForgotPasswordRequestSchema,
+  ): Promise<ApiSuccess<ForgotPasswordResponse>> {
+    const data = await this.authService.forgotPassword(body.email);
+    return { success: true, data };
+  }
+
+  @Post("reset-password")
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 10, ttl: 600_000 } })
+  async resetPassword(
+    @Body(new ZodValidationPipe(resetPasswordRequestSchema)) body: ResetPasswordRequestSchema,
+  ): Promise<ApiSuccess<ResetPasswordResponse>> {
+    const data = await this.authService.resetPassword(body.email, body.otp, body.newPassword);
     return { success: true, data };
   }
 }

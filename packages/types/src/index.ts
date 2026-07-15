@@ -20,4 +20,8 @@ export type {
   LogoutRequest,
   LogoutResponse,
   MeResponse,
+  ForgotPasswordRequest,
+  ForgotPasswordResponse,
+  ResetPasswordRequest,
+  ResetPasswordResponse,
 } from "./auth";

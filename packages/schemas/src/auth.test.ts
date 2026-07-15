@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   displayNameSchema,
   emailSchema,
+  forgotPasswordRequestSchema,
   loginPasswordSchema,
   loginRequestSchema,
   logoutRequestSchema,
@@ -11,6 +12,7 @@ import {
   refreshTokenSchema,
   registerRequestSchema,
   resendOtpRequestSchema,
+  resetPasswordRequestSchema,
   verifyOtpRequestSchema,
 } from "./auth";
 
@@ -190,5 +192,49 @@ describe("logoutRequestSchema", () => {
 
   it("rejects a missing refreshToken", () => {
     expect(() => logoutRequestSchema.parse({})).toThrow();
+  });
+});
+
+describe("forgotPasswordRequestSchema", () => {
+  it("accepts a valid payload and normalizes email", () => {
+    expect(forgotPasswordRequestSchema.parse({ email: "User@Example.com" })).toEqual({
+      email: "user@example.com",
+    });
+  });
+
+  it("rejects a missing email", () => {
+    expect(() => forgotPasswordRequestSchema.parse({})).toThrow();
+  });
+
+  it("rejects an invalid email", () => {
+    expect(() => forgotPasswordRequestSchema.parse({ email: "not-an-email" })).toThrow();
+  });
+});
+
+describe("resetPasswordRequestSchema", () => {
+  const validPayload = {
+    email: "User@Example.com",
+    otp: "123456",
+    newPassword: "Sup3r$ecretPassw0rd!",
+  };
+
+  it("accepts a valid payload and normalizes email", () => {
+    expect(resetPasswordRequestSchema.parse(validPayload)).toEqual({
+      email: "user@example.com",
+      otp: "123456",
+      newPassword: "Sup3r$ecretPassw0rd!",
+    });
+  });
+
+  it("rejects a malformed otp", () => {
+    expect(() =>
+      resetPasswordRequestSchema.parse({ ...validPayload, otp: "12a456" }),
+    ).toThrow();
+  });
+
+  it("rejects a new password that fails the strong-password policy", () => {
+    expect(() =>
+      resetPasswordRequestSchema.parse({ ...validPayload, newPassword: "weak" }),
+    ).toThrow();
   });
 });

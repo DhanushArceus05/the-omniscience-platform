@@ -122,3 +122,27 @@ export const logoutRequestSchema = z.object({
 export type LoginRequestSchema = z.infer<typeof loginRequestSchema>;
 export type RefreshRequestSchema = z.infer<typeof refreshRequestSchema>;
 export type LogoutRequestSchema = z.infer<typeof logoutRequestSchema>;
+
+/**
+ * Phase 2 Step 5 — forgot-password and reset-password request schemas.
+ *
+ * `forgotPasswordRequestSchema` takes only an email — the endpoint itself
+ * always responds the same way regardless of whether the address is
+ * registered, so there is nothing else to validate at this stage.
+ * `resetPasswordRequestSchema` reuses `otpCodeSchema` (same 6-digit code
+ * shape as registration) and `passwordSchema` (the new password must meet
+ * the same strength policy as registration — a reset is a fresh
+ * credential, not an existing one like `loginPasswordSchema`).
+ */
+export const forgotPasswordRequestSchema = z.object({
+  email: emailSchema,
+});
+
+export const resetPasswordRequestSchema = z.object({
+  email: emailSchema,
+  otp: otpCodeSchema,
+  newPassword: passwordSchema,
+});
+
+export type ForgotPasswordRequestSchema = z.infer<typeof forgotPasswordRequestSchema>;
+export type ResetPasswordRequestSchema = z.infer<typeof resetPasswordRequestSchema>;
