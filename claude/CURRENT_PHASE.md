@@ -129,7 +129,7 @@ build cleanly — actually executed in this pass, not assumed.
 
 # Phase 2 — Authentication & Users
 
-Status: **In progress** — Step 5 of 8 complete, awaiting explicit approval before Step 6.
+Status: **In progress** — Step 6 of 8 complete, awaiting explicit approval before Step 7.
 
 Approved decisions (from the Phase 2 implementation prompt): Prisma ORM, Argon2 password
 hashing, OTP + refresh tokens in Redis, JWT access (15m) / refresh (7d) tokens,
@@ -1051,3 +1051,265 @@ build.
 
 No other step, job, or file was modified — the `ai-service` (Python/FastAPI) job is untouched, and
 this doesn't change any application code, test, or dependency.
+
+---
+
+# Step 6 — User-profile endpoints (complete)
+
+## Scope
+
+There is no single, pre-written enumeration of Phase 2's Steps 6/7/8 anywhere in the repository —
+`claude/PROJECT_STATE.md` records the 8-step plan's *composition* incrementally as each step is
+approved and completed, and Steps 1–5 are the only ones written down so far. What **is** written
+down, repeatedly, as the very next unbuilt piece: Step 4's and Step 5's own "known limitations"
+sections both explicitly flag *"No forgot-password/reset, user-profile, or session-management
+endpoints yet (later steps)"* — forgot-password/reset shipped in Step 5, so Step 6 is the next item
+in that same sentence: **user-profile endpoints**. This is an inference from documented precedent,
+not an explicit written spec the way Step 5 had `docs/02_SRS.md`'s literal "forgot-password OTP" —
+flagged here plainly rather than presented as more certain than it is.
+
+Scope implemented, kept deliberately minimal and consistent with that precedent:
+- `PATCH /users/me` — update the authenticated user's own display name.
+- `POST /users/me/change-password` — change password while authenticated, asserting the current
+  password first (distinct from Step 5's unauthenticated, OTP-gated `resetPassword`).
+
+Explicitly **not** in this step's scope (left for a later step, matching the "session-management"
+half of the same known-limitations sentence, or judged clearly out of scope for a "user-profile"
+step):
+- Changing the account's email address — a materially bigger feature needing its own
+  re-verification (mirroring registration's OTP step), not a simple field update.
+- Any session/device management (listing or revoking active sessions/refresh tokens).
+- Account deletion.
+- Admin/other-user profile management (`docs/08_Development_Roadmap.md` has a dedicated later
+  "Admin, Security & Reliability" phase for anything beyond a user managing their own account).
+
+## What was implemented
+
+- **`UsersModule`** (`apps/api/src/users/`) — new module, imports `AuthModule` to reuse its
+  exported `JwtAuthGuard` and `PasswordHasherService` rather than re-implementing either.
+  `PrismaService` is available without an explicit import since `PrismaModule` is `@Global()`
+  (same pattern every other module already relies on).
+- **`UsersService.updateProfile(userId, name)`** — looks up the user by the id from the verified
+  JWT payload (never a request param), updates `name`, returns `{ id, email, name }`. If the user
+  row is gone (deleted after the access token was issued but before it expired), throws the exact
+  same `UnauthorizedException({ code: "UNAUTHORIZED", ... })` `AuthService.getCurrentUser` (Step 4)
+  already uses for the identical scenario.
+- **`UsersService.changePassword(userId, currentPassword, newPassword)`** — verifies
+  `currentPassword` against the stored hash via `PasswordHasherService.verify` first; only on a
+  match does it hash `newPassword` (same `PasswordHasherService.hash`, same Argon2id parameters
+  Step 2 established) and `prisma.user.update({ passwordHash })`. A wrong current password throws
+  `BadRequestException({ code: "CURRENT_PASSWORD_INCORRECT" })` and changes nothing.
+- **`UsersController`** — both routes sit behind `@UseGuards(JwtAuthGuard)` (Step 4) and pull the
+  caller's id from `@CurrentUser()`, never from the URL or body. `@Throttle({ limit: 20, ttl:
+  600_000 })` on `update-profile` (matching `/auth/refresh`/`/auth/logout`'s limit — no credential
+  involved) and `@Throttle({ limit: 10, ttl: 600_000 })` on `change-password` (matching
+  `/auth/reset-password`'s limit — a comparably sensitive credential-changing action).
+- **`packages/schemas`** — `updateProfileRequestSchema` (`{ name }`, reusing `displayNameSchema`
+  from Step 2) and `changePasswordRequestSchema` (`{ currentPassword, newPassword }`, reusing
+  `loginPasswordSchema` for the former — an existing credential being asserted, same reasoning
+  `loginRequestSchema` already applies — and the full `passwordSchema` strength policy for the
+  latter, same as Step 5's `resetPasswordRequestSchema.newPassword`).
+- **`packages/types`** — `UpdateProfileRequest`/`Response`, `ChangePasswordRequest`/`Response`.
+- **`AppModule`** — registers `UsersModule` alongside `AuthModule`; no other wiring changes.
+- No new environment variables, no new dependencies.
+
+## Architecture
+
+`UsersModule` is a new, focused module rather than folding these routes into `AuthModule` —
+`AuthModule` owns the *unauthenticated* identity lifecycle (register/verify/login/refresh/logout/
+forgot-reset), while `UsersModule` owns *authenticated* self-management of the account those flows
+create. This mirrors the roadmap's own module boundary (`docs/08_Development_Roadmap.md` lists
+"Authentication & Users" as one phase but implies distinct concerns), and keeps `AuthModule`'s
+already-large surface from growing further for a feature that doesn't share its unauthenticated
+request lifecycle. `UsersService` depends on `PasswordHasherService` (imported via `AuthModule`,
+not re-implemented) and `PrismaService` (global) — no new abstractions were introduced; both
+endpoints are thin wrappers around primitives Steps 2–5 already built and verified.
+
+## Security notes
+
+- **Ownership is structural, not just checked.** Both operations take their target user id
+  exclusively from `AccessTokenPayload.sub` (the verified JWT payload `JwtAuthGuard` attaches) —
+  there is no id, email, or other identifier accepted from the request body or URL that could name
+  a different account. There is no code path in `UsersController`/`UsersService` that can act on
+  any account other than the token bearer's own.
+- **Change-password requires the current password.** A stolen/leaked but still-valid access token
+  (15-minute default TTL) is not, by itself, sufficient to lock the real account owner out by
+  changing their password — the attacker would also need to already know the current password,
+  which defeats the point of stealing just the token. This mirrors why Step 5's `resetPassword`
+  requires a separate, freshly-issued OTP rather than trusting an access token alone.
+- **New password strength.** `changePasswordRequestSchema.newPassword` uses the full
+  `passwordSchema` policy (same as registration and Step 5's reset), not the looser
+  `loginPasswordSchema` — a changed password is always a fresh credential and must meet the
+  current policy regardless of what the old one satisfied.
+- **No information leak on the wrong-current-password case.** The error
+  (`CURRENT_PASSWORD_INCORRECT`, 400) doesn't reveal anything an attacker with a stolen access
+  token didn't already effectively have (an authenticated session) — unlike `login`'s
+  `INVALID_CREDENTIALS`, there's no account-existence question here to protect, since the caller
+  is already proven to be a valid, authenticated session for this exact account.
+
+## Known limitations (Step 6)
+
+- **No session/refresh-token revocation on password change.** Same limitation already logged for
+  Step 5's `resetPassword`, for the identical reason: `RefreshTokenStore` (Step 4) has no index
+  from `userId` to its issued tokens, only from the opaque `tokenId` half a client already holds,
+  so there's nothing to enumerate and revoke here without adding that index — a natural
+  session-management-step candidate.
+- **No email-address change.** Deliberately out of scope for this step (see Scope above) — would
+  need its own re-verification flow.
+- **No account deletion or session/device listing.** Left for a later step, consistent with the
+  "session-management endpoints" half of the known-limitations sentence this step's scope was
+  inferred from.
+- **No per-account lockout beyond the existing per-IP `@Throttle` rate limiting** guards
+  `/users/me` and `/users/me/change-password` — same limitation already logged for every Step 3–5
+  endpoint.
+
+## Dependencies changed
+
+None. No new packages added; `UsersService` reuses `PasswordHasherService` (Step 2, via
+`AuthModule`) and `PrismaService` (Step 2, global) exactly as-is.
+
+## Tests added
+
+- **`packages/schemas/src/users.test.ts`** — `updateProfileRequestSchema` (valid + trimmed name,
+  too-short name, missing name) and `changePasswordRequestSchema` (valid payload, missing current
+  password, weak new password).
+- **`apps/api/src/users/users.service.spec.ts`** — `updateProfile` (success; `UnauthorizedException`
+  when the user no longer exists) and `changePassword` (success — verify → hash → update; wrong
+  current password → `BadRequestException`, nothing updated; user no longer exists →
+  `UnauthorizedException`, `verify` never called).
+- **`apps/api/src/users/users.controller.spec.ts`** — one delegation test per route, asserting the
+  caller's id is passed through and the `ApiSuccess` envelope shape.
+- **`apps/api/src/users/users.module.spec.ts`** — asserts `UsersService`/`UsersController` resolve
+  from the compiled module alongside the `AuthModule` providers they depend on
+  (`PasswordHasherService`, `AccessTokenService`, `JwtAuthGuard`).
+- **`apps/api/test/users-profile.e2e-spec.ts`** (new, self-contained e2e file — see its own doc
+  comment for why it's separate from `test/auth-registration.e2e-spec.ts` rather than an addition
+  to it) — full register→verify→login→update-profile flow (with a follow-up `/auth/me` check
+  confirming persistence), an unauthenticated-request rejection, a malformed-payload rejection for
+  `PATCH /users/me`; and a full change-password flow (asserting the *old* password stops working
+  and the *new* one works), a wrong-current-password rejection (with a follow-up login proving the
+  password was *not* changed), an unauthenticated-request rejection, and a malformed-payload
+  rejection for `POST /users/me/change-password`. Every test gets its own fresh `INestApplication`
+  (via a `createTestApp()` helper, same pattern as Step 5's e2e describe block) so no test can be
+  pushed over a real per-route throttle limit by an earlier test's requests.
+
+## Commands actually executed (this session)
+
+```
+pnpm build   # FAILED — HTTP 403, registry.npmjs.org unreachable (corepack re-fetches pnpm)
+```
+
+This sandbox still has no npm/pnpm network egress — confirmed again, failing identically at the
+corepack shim step before pnpm itself ever runs. There is no `node_modules` and no generated Prisma
+client in this container, so `pnpm build`, `pnpm lint`, `pnpm typecheck`, and `pnpm test` could
+**not** actually be run here. As a best-effort substitute, every new/changed file was run through a
+standalone global `tsc --noEmit` smoke check; every error it reported was in **untouched,
+already-verified** Step 1–5 files (`jwt-auth.guard.ts`, `otp.service.ts`, `refresh-token.store.ts`,
+`all-exceptions.filter.ts`, `zod-validation.pipe.ts`, `prisma.service.ts`) and identical in kind to
+what the same bare check reports on those files in every prior step's session — an artifact of no
+`node_modules`/no generated Prisma client in this sandbox. **No error was found in any new Step 6
+file.**
+
+## Honest build/test status
+
+**Not verified end-to-end by Claude in this session** — this sandbox cannot install any package or
+reach `registry.npmjs.org`/`binaries.prisma.sh`; only you can run these against the real monorepo,
+exactly as every prior step required. **Please re-run the following locally and report the
+result**:
+
+```
+pnpm install --frozen-lockfile
+pnpm --filter @omniscience/api exec prisma generate
+pnpm build
+pnpm lint
+pnpm typecheck
+pnpm test
+```
+
+GitHub Actions has not run yet for this change either.
+
+## Post-verification fix — shared, production-compatible e2e test infrastructure
+
+Your local run found a real bug in `test/users-profile.e2e-spec.ts`, not in the Step 6 production
+code: `registerVerifyAndLogin()`'s `/auth/register` call failed with a 500, root error
+`InMemoryRedisClient.eval: unexpectedly called by a Step 6 test`. That file's Redis fake had been
+written on the (wrong) assumption that Step 6's own routes are the only thing that would ever run
+against it — but `/auth/register`, called by that file's own setup helper, genuinely calls
+`PendingRegistrationStore.claimSend()` (a real Redis `EVAL`) exactly as it does in
+`test/auth-registration.e2e-spec.ts`. The file's own setup broke its own simplifying assumption.
+
+**Fix**: extracted the already-correct, already-verified fake infrastructure out of
+`test/auth-registration.e2e-spec.ts` into `apps/api/test/helpers/`, and pointed both e2e specs at
+the one shared copy, instead of `test/users-profile.e2e-spec.ts` carrying its own
+simplified/incomplete one-off:
+
+- `test/helpers/fake-prisma.service.ts` — `FakeUserRow` + `FakePrismaService` (`findUnique`/
+  `create`/`update`; `update` supports both `passwordHash` and `name`, the superset Step 5 + Step 6
+  together need — Step 5 only ever needed `passwordHash`).
+- `test/helpers/fake-redis.service.ts` — `InMemoryRedisClient` + `FakeRedisService`, with `EVAL`
+  support for **every** atomic Lua script in the codebase: `PendingRegistrationStore`'s
+  `pending-registration-claim-send`/`pending-registration-record-failed-attempt`,
+  `PasswordResetStore`'s structurally-identical `password-reset-claim-send`/
+  `password-reset-record-failed-attempt`, and `RefreshTokenStore`'s `refresh-token-consume` — this
+  is the exact, already-verified implementation `test/auth-registration.e2e-spec.ts` already used
+  for its own Step 3/4/5 tests, moved rather than rewritten.
+- `test/helpers/fake-mail.service.ts` — `FakeMailService`.
+- `test/helpers/create-test-app.ts` — the shared `testEnv` and `createTestApp()` helper that wires
+  the three fakes into a fresh `TestingModule`/`INestApplication` compiled from the real
+  `AppModule`, with the real, unmodified `ThrottlerGuard`.
+- `test/helpers/auth-test-helpers.ts` — `extractOtpFor()`, `registerAndVerifyUser()`, and a new
+  `registerVerifyAndLogin()` (register → verify → login, returning the access token — the one
+  piece `users-profile.e2e-spec.ts` needed that didn't already exist as a shared helper).
+
+`test/auth-registration.e2e-spec.ts` and `test/users-profile.e2e-spec.ts` were both refactored to
+import from these instead of defining their own copies. This is a **pure extraction**: every class
+and function's logic is byte-for-byte the same as what `auth-registration.e2e-spec.ts` already had
+verified working (23/23 suites, 150/150 tests, per your last confirmation) — only *where* the code
+lives changed, plus `FakePrismaService.update`'s type signature widening to also accept `name`
+(needed for Step 6, harmless for Step 5's existing calls which only ever pass `passwordHash`). No
+test assertion, `expect(...)` call, or test-isolation strategy (per-file `beforeAll`-shared app for
+Step 3/4, per-test fresh app for Step 5 and for all of Step 6) was changed.
+
+No production code, production throttling, `AuthService`, Prisma schema, or migrations were
+touched — this fix is entirely confined to `apps/api/test/`.
+
+## Commands actually executed (this session)
+
+```
+pnpm build   # FAILED — HTTP 403, registry.npmjs.org unreachable (corepack re-fetches pnpm)
+pnpm lint    # FAILED — same 403
+```
+
+This sandbox still has no npm/pnpm network egress — confirmed again, failing identically at the
+corepack shim step before pnpm itself ever runs. There is no `node_modules` and no generated Prisma
+client in this container, so `pnpm build`, `pnpm lint`, `pnpm typecheck`, and `pnpm test` could
+**not** actually be run here. As a best-effort substitute, every new/changed file (all five new
+`test/helpers/*.ts` files plus the two refactored e2e specs) was run through a standalone global
+`tsc --noEmit` smoke check; every error it reported was in **untouched, already-verified** Step 1–5
+files (`jwt-auth.guard.ts`, `otp.service.ts`, `refresh-token.store.ts`,
+`all-exceptions.filter.ts`, `zod-validation.pipe.ts`, `prisma.service.ts`) and identical in kind to
+every prior session's — an artifact of no `node_modules`/no generated Prisma client in this
+sandbox. **No error was found in any new or refactored file.** A manual crude unused-import scan
+across all seven touched/new files also found nothing.
+
+## Honest build/test status
+
+**Not verified end-to-end by Claude in this session.** Please re-run the following locally and
+confirm the `users-profile.e2e-spec.ts` failure is resolved without any change in
+`auth-registration.e2e-spec.ts`'s own passing count:
+
+```
+pnpm install --frozen-lockfile
+pnpm --filter @omniscience/api exec prisma generate
+pnpm build
+pnpm lint
+pnpm typecheck
+pnpm test
+```
+
+Expected: **24/24 suites** (23 previously-verified suites unchanged in behavior, plus
+`users-profile.e2e-spec.ts` now passing instead of erroring), with the total test count unchanged
+from before this fix (this was a test-infrastructure bug, not a missing test — no test was added
+or removed by this fix).
+
+GitHub Actions has not run yet for this change either.

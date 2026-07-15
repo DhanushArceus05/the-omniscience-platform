@@ -25,3 +25,9 @@ export type {
   ResetPasswordRequest,
   ResetPasswordResponse,
 } from "./auth";
+export type {
+  UpdateProfileRequest,
+  UpdateProfileResponse,
+  ChangePasswordRequest,
+  ChangePasswordResponse,
+} from "./users";

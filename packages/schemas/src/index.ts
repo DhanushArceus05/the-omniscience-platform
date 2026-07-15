@@ -26,3 +26,5 @@ export type {
   ForgotPasswordRequestSchema,
   ResetPasswordRequestSchema,
 } from "./auth";
+export { updateProfileRequestSchema, changePasswordRequestSchema } from "./users";
+export type { UpdateProfileRequestSchema, ChangePasswordRequestSchema } from "./users";

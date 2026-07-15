@@ -67,6 +67,32 @@ underway with an approved 8-step plan requiring explicit sign-off after each ste
   revocation on password reset, since `RefreshTokenStore` has no per-user index to revoke from).
   No frontend wiring — `ForgotPasswordPage.tsx`/`ResetPasswordPage.tsx` remain UI-only previews.
   Awaiting your local verification and approval before Step 6.
+- **Step 6** (user-profile endpoints — `PATCH /users/me`, `POST /users/me/change-password`): scope
+  inferred from Step 4/Step 5's own "known limitations" sections (both explicitly flag
+  "user-profile ... endpoints" as the next unbuilt piece after forgot-password) since there is no
+  single written enumeration of Steps 6–8 anywhere in the repo — flagged plainly as an inference,
+  not a literal spec like Step 5 had. New `UsersModule` (imports `AuthModule` for `JwtAuthGuard`/
+  `PasswordHasherService`), both routes behind `JwtAuthGuard` and scoped exclusively to the
+  caller's own account via the verified JWT payload. `changePassword` asserts the current password
+  first (distinct from Step 5's unauthenticated, OTP-gated `resetPassword`). No email-address
+  change, session/device management, or account deletion in this step — left for later steps. No
+  new dependencies. **Not yet verified with a real `pnpm install`/Prisma client from this
+  sandbox** — no npm/pnpm network egress here (confirmed again this session, `pnpm build` fails
+  with the same HTTP 403 at the corepack step). A manual syntax-level check (global `tsc`, no
+  generated Prisma client) found no error in any new Step 6 file — every error it reported was in
+  untouched, already-verified Step 1–5 files, identical in kind to every prior session. **You must
+  run `pnpm install`/`pnpm --filter @omniscience/api exec prisma generate`/`pnpm build`/`pnpm
+  lint`/`pnpm typecheck`/`pnpm test` locally before this step is considered verified.** See
+  `claude/CURRENT_PHASE.md` for full detail, architecture, security notes, and known limitations
+  (notably: no session/refresh-token revocation on password change, for the same reason already
+  logged for Step 5). No frontend wiring for these routes. Your local run found a real bug — not in
+  the production code, but in `test/users-profile.e2e-spec.ts`'s own Redis fake, which wrongly
+  assumed Step 6's routes were the only thing that would ever call Redis, when its own setup
+  helper's `/auth/register` call genuinely does. Fixed by extracting the already-correct,
+  already-verified fakes out of `test/auth-registration.e2e-spec.ts` into shared
+  `apps/api/test/helpers/` modules and pointing both e2e specs at them — a pure extraction, no
+  logic changed, no production code touched. Awaiting your local verification and approval before
+  Step 7.
 
 ## Repository Rule
 
