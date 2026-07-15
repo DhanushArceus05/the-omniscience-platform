@@ -1022,3 +1022,32 @@ pnpm test              # needs a reachable Redis for the *.concurrency.spec.ts f
 ```
 
 GitHub Actions has not run yet for this change either.
+
+## Post-verification fix — CI workflow missing a Prisma Client generation step
+
+Your local environment has a generated `@prisma/client` (from a prior `prisma generate` or `pnpm
+install` with a Prisma `postinstall` hook already having run at some point), so `pnpm build`/
+`lint`/`typecheck`/`test` all passed locally (**23/23 suites, 150/150 tests**, confirmed by you).
+GitHub Actions' `node` job runs on a fresh runner with no such prior state, and `.github/workflows/
+ci.yml` never explicitly ran `prisma generate` — it went straight from `pnpm install` to `pnpm
+lint`, so the CI runner's `PrismaService` (which `extends PrismaClient`) had no generated client to
+extend, surfacing as `Property 'user' does not exist on type 'PrismaService'` during typecheck/
+build.
+
+**Fix (CI workflow only, nothing else touched)**: added a `Generate Prisma Client` step to
+`.github/workflows/ci.yml`'s `node` job, immediately after `Install dependencies` and before
+`Lint`/`Typecheck`/`Test`/`Build`:
+
+```yaml
+- name: Install dependencies
+  run: pnpm install --frozen-lockfile
+
+- name: Generate Prisma Client
+  run: pnpm --filter @omniscience/api exec prisma generate
+
+- name: Lint
+  run: pnpm lint
+```
+
+No other step, job, or file was modified — the `ai-service` (Python/FastAPI) job is untouched, and
+this doesn't change any application code, test, or dependency.
