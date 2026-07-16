@@ -13,6 +13,7 @@ import {
 import type { Env } from "@omniscience/config";
 import type {
   ForgotPasswordResponse,
+  ListSessionsResponse,
   LoginResponse,
   LogoutResponse,
   MeResponse,
@@ -20,6 +21,8 @@ import type {
   RegisterResponse,
   ResendOtpResponse,
   ResetPasswordResponse,
+  RevokeAllSessionsResponse,
+  RevokeSessionResponse,
   VerifyOtpResponse,
 } from "@omniscience/types";
 import type { Logger } from "pino";
@@ -71,7 +74,9 @@ const DUMMY_HASH =
  * once verified (Step 3); then login → JWT access token + Redis-backed
  * refresh token → refresh (rotates both) → logout (revokes the refresh
  * token) (Step 4); then forgot-password → 6-digit OTP email → reset
- * (verifies the OTP and overwrites `passwordHash`) (Step 5).
+ * (verifies the OTP and overwrites `passwordHash`) (Step 5); then
+ * session management — list/revoke the caller's own active sessions
+ * (Step 7).
  */
 @Injectable()
 export class AuthService {
@@ -321,6 +326,47 @@ export class AuthService {
       });
     }
     return { id: user.id, email: user.email, name: user.name };
+  }
+
+  /**
+   * Phase 2 Step 7 — lists the caller's own active sessions (one per
+   * outstanding refresh token). Delegates entirely to
+   * `RefreshTokenStore.listSessions`, which is the sole owner of the
+   * session index; nothing here re-derives or caches session state.
+   */
+  async listSessions(userId: string): Promise<ListSessionsResponse> {
+    return this.refreshTokens.listSessions(userId);
+  }
+
+  /**
+   * Phase 2 Step 7 — revokes exactly one of the caller's own sessions.
+   * `RefreshTokenStore.revokeSession` already scopes the lookup to
+   * `userId`'s own index, so this can never revoke another user's
+   * session; an unknown-or-not-yours `tokenId` surfaces as the same
+   * `SESSION_NOT_FOUND` either way (no enumeration signal).
+   */
+  async revokeSession(userId: string, tokenId: string): Promise<RevokeSessionResponse> {
+    const revoked = await this.refreshTokens.revokeSession(userId, tokenId);
+    if (!revoked) {
+      throw new NotFoundException({
+        code: "SESSION_NOT_FOUND",
+        message: "No active session was found with this id.",
+      });
+    }
+    return { revoked: true };
+  }
+
+  /**
+   * Phase 2 Step 7 — revokes every active session for the caller ("log
+   * out everywhere"), including whichever session issued the refresh
+   * token behind the access token used to call this endpoint. The
+   * caller's current access token (if any) is unaffected until it
+   * naturally expires — same accepted stateless-JWT tradeoff already
+   * documented for `logout()` in Step 4.
+   */
+  async revokeAllSessions(userId: string): Promise<RevokeAllSessionsResponse> {
+    const revokedCount = await this.refreshTokens.revokeAllForUser(userId);
+    return { revokedCount };
   }
 
   /**

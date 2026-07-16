@@ -15,6 +15,9 @@ describe("AuthController", () => {
     getCurrentUser: jest.fn(),
     forgotPassword: jest.fn(),
     resetPassword: jest.fn(),
+    listSessions: jest.fn(),
+    revokeSession: jest.fn(),
+    revokeAllSessions: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -165,5 +168,36 @@ describe("AuthController", () => {
       "N3wSup3r$ecret!",
     );
     expect(result).toEqual({ success: true, data: { email: "user@example.com" } });
+  });
+
+  it("listSessions() delegates to AuthService with the current user's id", async () => {
+    const sessions = [{ tokenId: "token-a", createdAt: "2026-01-01T00:00:00.000Z" }];
+    authService.listSessions.mockResolvedValue(sessions);
+
+    const result = await controller.listSessions({ sub: "user_1", email: "user@example.com" });
+
+    expect(authService.listSessions).toHaveBeenCalledWith("user_1");
+    expect(result).toEqual({ success: true, data: sessions });
+  });
+
+  it("revokeSession() delegates to AuthService with the current user's id and the tokenId param", async () => {
+    authService.revokeSession.mockResolvedValue({ revoked: true });
+
+    const result = await controller.revokeSession(
+      { sub: "user_1", email: "user@example.com" },
+      "token-a",
+    );
+
+    expect(authService.revokeSession).toHaveBeenCalledWith("user_1", "token-a");
+    expect(result).toEqual({ success: true, data: { revoked: true } });
+  });
+
+  it("revokeAllSessions() delegates to AuthService with the current user's id", async () => {
+    authService.revokeAllSessions.mockResolvedValue({ revokedCount: 2 });
+
+    const result = await controller.revokeAllSessions({ sub: "user_1", email: "user@example.com" });
+
+    expect(authService.revokeAllSessions).toHaveBeenCalledWith("user_1");
+    expect(result).toEqual({ success: true, data: { revokedCount: 2 } });
   });
 });

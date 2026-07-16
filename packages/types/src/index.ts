@@ -24,6 +24,10 @@ export type {
   ForgotPasswordResponse,
   ResetPasswordRequest,
   ResetPasswordResponse,
+  SessionSummary,
+  ListSessionsResponse,
+  RevokeSessionResponse,
+  RevokeAllSessionsResponse,
 } from "./auth";
 export type {
   UpdateProfileRequest,

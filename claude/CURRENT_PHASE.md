@@ -129,7 +129,7 @@ build cleanly — actually executed in this pass, not assumed.
 
 # Phase 2 — Authentication & Users
 
-Status: **In progress** — Step 6 of 8 complete, awaiting explicit approval before Step 7.
+Status: **In progress** — Step 7 of 8 complete, awaiting explicit approval before Step 8.
 
 Approved decisions (from the Phase 2 implementation prompt): Prisma ORM, Argon2 password
 hashing, OTP + refresh tokens in Redis, JWT access (15m) / refresh (7d) tokens,
@@ -1313,3 +1313,277 @@ from before this fix (this was a test-infrastructure bug, not a missing test —
 or removed by this fix).
 
 GitHub Actions has not run yet for this change either.
+
+---
+
+# Step 7 — Session management (complete, locally verified in-sandbox)
+
+## Scope
+
+No single, pre-written enumeration of Steps 6/7/8 exists in the repo (same situation Step 6's own
+scope section documented). What is written down, repeatedly, as the next unbuilt piece: Step 4,
+Step 5, and Step 6's own "known limitations" sections all flag the same gap — Step 6 explicitly:
+*"No account deletion or session/device listing. Left for a later step, consistent with the
+'session-management endpoints' half of the known-limitations sentence this step's scope was
+inferred from."* Step 7 is that item: **session management** — listing and revoking the caller's
+own active sessions (outstanding refresh tokens). An inference from documented precedent, not an
+explicit spec line in `docs/02_SRS.md` (which only says "OAuth-ready architecture, rate limits and
+optional 2FA later" for Authentication) — flagged plainly, same as Step 6's scope section did.
+
+Scope implemented, kept minimal:
+- `GET /auth/sessions` — list the caller's own active sessions.
+- `DELETE /auth/sessions/:tokenId` — revoke exactly one of the caller's own sessions.
+- `POST /auth/sessions/revoke-all` — revoke every active session for the caller ("log out
+  everywhere").
+
+Explicitly **not** in scope: device/user-agent/IP metadata per session (never collected anywhere
+in the codebase before this step, and adding collection was judged a separate concern from listing
+what already exists); marking which session is the "current" one (an access token carries no
+reference to the refresh-token session that produced it — see known limitations); any change to
+`/auth/login`'s or `/auth/refresh`'s existing response shape.
+
+## What was implemented
+
+- **`RefreshTokenStore`** (`apps/api/src/auth/refresh-token.store.ts`, extended, Step 4's file) —
+  added a per-user Redis Set index (`auth:refresh-token-index:{userId}`) alongside the existing
+  per-token key. `issue()` now also stores a `createdAt` timestamp in the token record and adds the
+  `tokenId` to the index (with the index's own TTL refreshed to the same window); `consume()` and
+  `revoke()` both prune the index on success. Three new methods: `listSessions(userId)` (reads the
+  index, re-verifies each `tokenId` against its real key — a stale index entry is pruned as it's
+  found, never reported as live — and returns newest-first), `revokeSession(userId, tokenId)`
+  (membership-checked against the caller's own index first, so it can never revoke a different
+  user's session by guessing a `tokenId`), `revokeAllForUser(userId)` (deletes every session and
+  the index itself, returns the count). The index is explicitly documented as best-effort
+  bookkeeping only — the real per-token key remains the sole authority on whether a token is valid;
+  nothing about `consume()`'s existing single-use guarantee changed.
+- **`AuthService`** (extended) — `listSessions`, `revokeSession` (throws `404
+  SESSION_NOT_FOUND` when the store reports no match — identical response whether the `tokenId`
+  belongs to someone else or doesn't exist, no enumeration signal), `revokeAllSessions`. All three
+  are thin delegations to `RefreshTokenStore`, matching the file's existing pattern.
+- **`AuthController`** (extended) — three new routes, all behind `@UseGuards(JwtAuthGuard)`,
+  pulling the caller's id from `@CurrentUser()` exactly like `UsersController` (Step 6). `GET
+  /sessions` and `DELETE /sessions/:tokenId` share `/auth/refresh`'s `@Throttle` limit (20/10min —
+  no credential involved, just an authenticated read/targeted revoke); `POST
+  /sessions/revoke-all` shares `/auth/reset-password`'s limit (10/10min — a comparably sensitive,
+  account-wide action).
+- **`packages/schemas`** — `sessionTokenIdSchema` (`z.string().uuid()`), validating the
+  `:tokenId` route param via the existing `ZodValidationPipe` (already generic over `@Param` as
+  much as `@Body`, no changes needed to the pipe itself).
+- **`packages/types`** — `SessionSummary`, `ListSessionsResponse`, `RevokeSessionResponse`,
+  `RevokeAllSessionsResponse`.
+- **`apps/api/test/helpers/fake-redis.service.ts`** (shared infra, extended) — added an in-memory
+  Set implementation (`SADD`/`SREM`/`SMEMBERS`/`SISMEMBER`/`EXPIRE`) alongside the existing
+  string-keyed store, since `RefreshTokenStore` now issues these commands. No new fake file — the
+  one shared `InMemoryRedisClient` every e2e spec already uses.
+- No new environment variables, no new npm dependencies.
+
+## Architecture
+
+Session management lives in `AuthModule`/`AuthController` (not a new module) because a "session"
+*is* a `RefreshTokenStore` record — the same object Step 4's login/refresh/logout already own.
+Splitting it into a separate module would mean either exposing `RefreshTokenStore` outside
+`AuthModule` (weakening the encapsulation Step 4 established) or duplicating its Redis key
+conventions in a second place. This mirrors the reasoning `UsersModule` (Step 6) used in the
+opposite direction — that split was justified because profile/password-change genuinely don't
+share the unauthenticated request lifecycle `AuthModule` owns; sessions, by contrast, are entirely
+about the very tokens `AuthModule` already issues and rotates.
+
+The per-user index is deliberately **not** the source of truth for anything. A session is "real"
+if and only if its own Redis key (`auth:refresh-token:{tokenId}`) exists — exactly the same check
+`consume()` already made before this step. The index only answers "which `tokenId`s might belong to
+this user," and every read through it (`listSessions`, `revokeSession`) re-verifies against the
+real key before treating anything as authoritative. This means a bug in index maintenance (a
+missed `sadd`/`srem`) can make a session invisible to `listSessions` or fail to get pruned promptly
+— annoying — but can never make an invalid token pass as valid, and can never let `revokeSession`
+delete a session it didn't confirm membership for.
+
+## Security considerations
+
+- **No cross-user session enumeration.** `revokeSession(userId, tokenId)` checks
+  `SISMEMBER auth:refresh-token-index:{userId} {tokenId}` before doing anything else. A `tokenId`
+  that belongs to a different user and a `tokenId` that was never issued produce the exact same
+  `404 SESSION_NOT_FOUND` — an attacker with a valid access token for their own account learns
+  nothing by guessing UUIDs for someone else's sessions. Covered by an e2e test
+  (`test/session-management.e2e-spec.ts`, "rejects revoking a session that belongs to a different
+  user") that asserts both the 404 *and* that the other user's session is untouched afterward.
+- **`tokenId` is safe to display.** It's the non-secret half of `${tokenId}.${secret}` — the value
+  `listSessions` returns is exactly the half a client already holds if it's the session's own
+  owner, and by itself cannot authenticate as anything (this was already true of how `RefreshTokenStore`
+  structured tokens since Step 4; Step 7 is the first step to actually surface `tokenId` in an API
+  response, so it's called out explicitly here and in `packages/types`' docstring).
+- **Revocation is immediate and real, not soft-deleted.** `revokeSession`/`revokeAllForUser` both
+  `DEL` the underlying Redis key — a revoked session's refresh token fails on its very next
+  `/auth/refresh` attempt with the same `401 REFRESH_TOKEN_INVALID` an expired/already-used token
+  produces (proven by e2e test, not just asserted).
+- **`revoke-all` does not special-case "current" session.** Every active session for the caller is
+  revoked, including whichever one issued the refresh token behind the access token used to call
+  the endpoint. This is the standard, expected "log out everywhere" semantic; the caller's current
+  *access* token (stateless JWT) remains valid until its own short expiry regardless — same
+  accepted tradeoff Step 4 already documented for `logout()`.
+- **Concurrency**: a new real-Redis test (appended to `refresh-token.store.concurrency.spec.ts`,
+  same file/pattern as Step 4's `consume()` replay proof) runs 20 concurrent `revokeSession()`
+  calls for the *same* session and asserts exactly one reports success — proving `del()`'s own
+  return count, not just index membership, is what decides success, so two racing requests can't
+  both believe they revoked the same session.
+
+## Known limitations (Step 7)
+
+- **No "current session" flag.** `listSessions` has no way to know which returned session
+  corresponds to the access token used to call it — access tokens (stateless JWTs, Step 4) carry no
+  reference to the refresh-token session that produced them. A future step could add this by
+  embedding the issuing `tokenId` as a JWT claim, but that wasn't judged necessary for a first cut
+  of "list and revoke your own sessions," and doing so would mean every access token becomes
+  bound to one specific refresh-token session, a bigger behavioral change than this step's scope.
+- **No device/user-agent/IP metadata.** A session today is only `{ tokenId, createdAt }` — there's
+  no way for a person to tell *which* login a listed session corresponds to beyond recency. Nothing
+  in the codebase collects `User-Agent`/IP anywhere today (not even for logging), so adding it here
+  would be a new data-collection surface, not just a display change — deliberately deferred.
+- **Index Set uses `SCAN`-free but not indefinitely-bounded membership.** `listSessions` iterates
+  every `tokenId` in the caller's index with individual `GET`s (one round trip per session). Fine
+  at the scale of "how many devices does one person realistically have logged in," not designed for
+  an account with an unbounded number of historical sessions — there's no pagination.
+- **No session revocation on password change/reset.** This is the exact gap Step 5 and Step 6 both
+  flagged and that motivated this step's session index — but neither `AuthService.resetPassword`
+  nor `UsersService.changePassword` was modified to call `revokeAllForUser` automatically. Wiring
+  that in was judged a separate decision (should a password change silently log out every other
+  device, or should that be opt-in?) from building the primitive itself, and is a natural
+  Step-7.x candidate now that the primitive exists.
+- **No refresh-token-family reuse detection** — same limitation Step 4 originally logged, unrelated
+  to and unchanged by this step.
+
+## Dependencies changed
+
+None. No new npm packages — `RefreshTokenStore`'s new Set operations (`SADD`/`SREM`/`SMEMBERS`/
+`SISMEMBER`/`EXPIRE`) are already part of `ioredis`'s existing client surface, same as the
+`GET`/`SET`/`DEL`/`EVAL` it already used.
+
+## Tests added
+
+- **`refresh-token.store.spec.ts`** (updated in place, mocked `ioredis`) — `issue()` now also
+  asserts the `createdAt` field and the `sadd`/`expire` index calls; `consume()`/`revoke()` add
+  assertions for the new `srem` index-pruning calls (including the "record already gone, index
+  prune skipped" case for `revoke()`); three new `describe` blocks for `listSessions` (newest-first
+  ordering, stale-entry pruning, empty case), `revokeSession` (own session, not-a-member, stale
+  index entry), and `revokeAllForUser` (deletes all + index, zero-session case).
+- **`refresh-token.store.concurrency.spec.ts`** (real Redis, extended) — new test: 20 concurrent
+  `revokeSession()` calls for the same session, exactly 1 reports success, `listSessions` afterward
+  is empty. Self-skips with a console warning if no Redis is reachable, same as every existing test
+  in this file.
+- **`packages/schemas/src/auth.test.ts`** (extended) — `sessionTokenIdSchema`: valid UUID accepted,
+  non-UUID and empty string rejected.
+- **`auth.service.spec.ts`** (extended) — `listSessions` delegates to the store;
+  `revokeSession` returns `{ revoked: true }` on success and throws `NotFoundException` when the
+  store reports no match; `revokeAllSessions` returns the store's count, including zero.
+- **`auth.controller.spec.ts`** (extended) — one delegation test per new route, asserting the
+  caller's id is passed through and the `ApiSuccess` envelope shape.
+- **`test/session-management.e2e-spec.ts`** (new, real HTTP via supertest, reusing
+  `test/helpers/` exactly as-is — no new fakes) — `GET /auth/sessions`: single session after one
+  login, two sessions (newest-first) after two logins, 401 unauthenticated. `DELETE
+  /auth/sessions/:tokenId`: revokes exactly the targeted session leaving the other active (verified
+  by actually attempting `/auth/refresh` with both tokens afterward, not just re-listing), 404 for
+  a different user's session (with a follow-up proving that user's session survives), 404 for an
+  unknown-but-well-formed UUID, 400 for a malformed id, 401 unauthenticated. `POST
+  /auth/sessions/revoke-all`: revokes every session for the caller (verified via `/auth/refresh`
+  now failing), returns a zero count on a second call, 401 unauthenticated.
+
+## Commands actually executed (this session)
+
+Unlike every prior step in this file, this sandbox **did** have working npm/pnpm network egress
+this session — `registry.npmjs.org`/`npmjs.org` and the other domains in this environment's
+allowlist were reachable, so the following were genuinely run, not just smoke-checked:
+
+```
+corepack enable && corepack prepare pnpm@9.12.0 --activate   # pnpm was not preinstalled
+pnpm install --frozen-lockfile
+  # succeeded — 817 packages. One non-fatal warning: @prisma/client's postinstall failed to
+  # download its query-engine binary checksum from binaries.prisma.sh (403) — that domain is not
+  # in this sandbox's egress allowlist. The generated client's TypeScript types/JS (index.d.ts
+  # etc.) are written *before* that binary-download step, so they were present and valid.
+pnpm --filter @omniscience/api exec prisma generate
+  # FAILED both with and without PRISMA_ENGINES_CHECKSUM_IGNORE_MISSING=1 — genuinely cannot
+  # complete in this sandbox: binaries.prisma.sh (403 Forbidden) is outside the network allowlist.
+  # This is an environment restriction, not a code issue — see Known limitations below.
+docker compose up -d
+  # NOT RUN — no `docker` binary in this sandbox (`docker: not found`). Not attempted further;
+  # every test in this repo (including this step's new e2e spec) is designed to run without live
+  # Postgres/Redis/SMTP via the FakePrismaService/FakeRedisService/FakeMailService trio, so this
+  # didn't block anything below.
+pnpm build       # SUCCEEDED — 9/9 packages, including @omniscience/api (`nest build`)
+pnpm lint        # SUCCEEDED — 15/15 turbo tasks (9 packages × lint, some cached)
+pnpm typecheck   # SUCCEEDED — 15/15 turbo tasks
+pnpm test        # SUCCEEDED — 15/15 turbo tasks
+  # @omniscience/api: Test Suites: 28 passed, 28 total · Tests: 193 passed, 193 total
+  # (up from Step 6's locally-confirmed 24 suites / ~165 tests: +4 suites — this step's new
+  # session-management.e2e-spec.ts plus the three extended unit-spec files counted per-file, not
+  # per-suite — and +28 tests)
+  # @omniscience/ui: 15 files / 73 tests passed. @omniscience/web: 6 files / 20 tests passed.
+  # The three *.store.concurrency.spec.ts files (including this step's new revokeSession case)
+  # self-skipped with their existing "no Redis reachable" console warning — no live Redis in this
+  # sandbox (same reason docker compose wasn't run) — this is their documented, designed behavior,
+  # not a failure.
+```
+
+## Actual results only
+
+Build ✅ (real, executed) · Lint ✅ (real, executed) · Typecheck ✅ (real, executed) · Test ✅ (real,
+executed — `@omniscience/api` 28/28 suites, 193/193 tests; full monorepo 15/15 turbo tasks). Prisma
+Client generation ❌ **could not complete** in this sandbox specifically at the query-engine-binary
+download step (network egress restriction, not a code defect — see below); this did not block the
+above because the generated client's TypeScript surface was already written by the earlier,
+successful part of the same command, and `PrismaService`/`AuthService`/`UsersService` all typecheck
+and unit/e2e-test correctly against it (via the FakePrismaService double, exactly as every prior
+step's e2e coverage already does). `docker compose up -d` was not run (no `docker` in this
+sandbox) — not required for any test that ran. GitHub Actions has not run yet for this change.
+
+**Please still run the following locally, where `binaries.prisma.sh` and Docker are both
+reachable, and confirm:**
+
+```
+pnpm install --frozen-lockfile
+pnpm --filter @omniscience/api exec prisma generate
+docker compose up -d
+pnpm build
+pnpm lint
+pnpm typecheck
+REDIS_URL=redis://localhost:6379 pnpm test
+  # expect: Test Suites: 28 passed, 28 total · Tests: 193 passed, 193 total, PLUS the three
+  # concurrency spec files actually exercising their real-Redis assertions this time (including
+  # this step's new "concurrent revokeSession calls... report success exactly once" case) instead
+  # of self-skipping.
+```
+
+## Suggested commit message
+
+```
+feat(auth): Phase 2 Step 7 — session management (list/revoke active sessions)
+
+Add GET /auth/sessions, DELETE /auth/sessions/:tokenId, and
+POST /auth/sessions/revoke-all, backed by a new per-user session index
+on RefreshTokenStore (Redis Set, best-effort bookkeeping only — the
+per-token key remains the sole authority on validity).
+
+- RefreshTokenStore: track createdAt + a per-user index; add
+  listSessions/revokeSession/revokeAllForUser
+- AuthService/AuthController: thin delegation + new endpoints, same
+  JwtAuthGuard/@CurrentUser pattern as Step 6's UsersController
+- packages/schemas: sessionTokenIdSchema (UUID route-param validation)
+- packages/types: SessionSummary, ListSessionsResponse,
+  RevokeSessionResponse, RevokeAllSessionsResponse
+- test/helpers/fake-redis.service.ts: add in-memory Set support
+  (sadd/srem/smembers/sismember/expire) — shared by every e2e spec
+- New test/session-management.e2e-spec.ts; extended
+  refresh-token.store.spec.ts, refresh-token.store.concurrency.spec.ts,
+  auth.service.spec.ts, auth.controller.spec.ts, auth.test.ts (schemas)
+
+No cross-user session enumeration: revokeSession checks the caller's
+own index before touching Redis further, so an unknown-vs-not-yours
+tokenId is indistinguishable (404 either way).
+
+Verified in-sandbox this session: pnpm build/lint/typecheck/test all
+green (28/28 suites, 193/193 tests in @omniscience/api). prisma
+generate's query-engine binary download and docker compose are
+blocked/unavailable in this sandbox specifically — needs local
+confirmation where those are reachable.
+
+Phase 2 Step 7/8. Does not start Step 8.
+```

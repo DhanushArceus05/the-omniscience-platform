@@ -6,6 +6,7 @@ import { RedisService } from "../redis/redis.service";
 import { PasswordHasherService } from "./password-hasher.service";
 
 const KEY_PREFIX = "auth:refresh-token:";
+const INDEX_KEY_PREFIX = "auth:refresh-token-index:";
 const SECRET_BYTES = 32;
 
 export interface IssuedRefreshToken {
@@ -17,6 +18,12 @@ export interface IssuedRefreshToken {
 export type ConsumeRefreshTokenResult =
   | { status: "OK"; userId: string }
   | { status: "NOT_FOUND" };
+
+/** Phase 2 Step 7 — one active session as surfaced by `listSessions`. */
+export interface SessionSummary {
+  tokenId: string;
+  createdAt: string;
+}
 
 /**
  * Atomically consumes (reads-and-deletes in one step) a refresh-token
@@ -61,6 +68,16 @@ return value
  * reused rather than introducing a second hashing primitive — same
  * reasoning as OTP hashing in Step 3) is the only thing ever stored.
  * Even a full read of Redis's contents doesn't expose a usable token.
+ *
+ * Phase 2 Step 7 addition: each issued token's `tokenId` is also added to
+ * a per-user Redis Set (`auth:refresh-token-index:{userId}`), purely so
+ * `listSessions`/`revokeSession`/`revokeAllForUser` can enumerate a
+ * user's own active sessions without an O(n) `SCAN` over every refresh
+ * token in Redis. The index is best-effort bookkeeping only — it is
+ * never consulted to decide whether a token is valid; the token's own
+ * key (above) remains the sole source of truth for that, and every
+ * index read re-checks the real key before treating a session as live
+ * (see `listSessions`).
  */
 @Injectable()
 export class RefreshTokenStore {
@@ -74,20 +91,31 @@ export class RefreshTokenStore {
     return `${KEY_PREFIX}${tokenId}`;
   }
 
+  private indexKey(userId: string): string {
+    return `${INDEX_KEY_PREFIX}${userId}`;
+  }
+
   /** Issues a brand-new refresh token for `userId`, with a fresh `JWT_REFRESH_TTL_SECONDS` TTL. */
   async issue(userId: string): Promise<IssuedRefreshToken> {
     const tokenId = randomUUID();
     const secret = randomBytes(SECRET_BYTES).toString("base64url");
     const secretHash = await this.passwordHasher.hash(secret);
+    const createdAt = new Date().toISOString();
 
-    await this.redis
-      .getClient()
-      .set(
-        this.key(tokenId),
-        JSON.stringify({ userId, secretHash }),
-        "EX",
-        this.env.JWT_REFRESH_TTL_SECONDS,
-      );
+    const client = this.redis.getClient();
+    await client.set(
+      this.key(tokenId),
+      JSON.stringify({ userId, secretHash, createdAt }),
+      "EX",
+      this.env.JWT_REFRESH_TTL_SECONDS,
+    );
+    // Step 7 session index — see class docstring. The index Set's own
+    // TTL is refreshed to the same window on every issue; a slightly
+    // longer-lived index than any individual token it references is
+    // harmless, since `listSessions` prunes entries whose real token key
+    // has already expired.
+    await client.sadd(this.indexKey(userId), tokenId);
+    await client.expire(this.indexKey(userId), this.env.JWT_REFRESH_TTL_SECONDS);
 
     return {
       token: `${tokenId}.${secret}`,
@@ -120,12 +148,17 @@ export class RefreshTokenStore {
     const { userId, secretHash } = JSON.parse(raw as string) as {
       userId: string;
       secretHash: string;
+      createdAt?: string;
     };
 
     const isValid = await this.passwordHasher.verify(secretHash, secret);
     if (!isValid) {
       return { status: "NOT_FOUND" };
     }
+
+    // Step 7 session index — see class docstring. Best-effort cleanup
+    // only; consume()'s own validity decision above is already final.
+    await this.redis.getClient().srem(this.indexKey(userId), tokenId);
 
     return { status: "OK", userId };
   }
@@ -141,7 +174,81 @@ export class RefreshTokenStore {
     if (!parsed) {
       return;
     }
-    await this.redis.getClient().del(this.key(parsed.tokenId));
+    const client = this.redis.getClient();
+    // Read first (not atomically paired with the delete below — a
+    // logout racing a concurrent refresh for the exact same token is
+    // already an inherently ambiguous case the caller controls by not
+    // reusing a token it's about to revoke) purely to learn which
+    // user's session index to prune; the delete itself is what actually
+    // revokes the token; a missed/duplicate index prune here can never
+    // make a revoked token usable again.
+    const raw = await client.get(this.key(parsed.tokenId));
+    await client.del(this.key(parsed.tokenId));
+    if (raw) {
+      const { userId } = JSON.parse(raw) as { userId: string };
+      await client.srem(this.indexKey(userId), parsed.tokenId);
+    }
+  }
+
+  /**
+   * Phase 2 Step 7 — lists `userId`'s active sessions (one per
+   * outstanding refresh token), newest first. Reads the per-user index
+   * Set, then re-checks each `tokenId`'s real token key so a session
+   * that already expired naturally (or was revoked through a path that
+   * predates this index) is never reported as active; any such stale
+   * entry is pruned from the index as it's found.
+   */
+  async listSessions(userId: string): Promise<SessionSummary[]> {
+    const client = this.redis.getClient();
+    const tokenIds = await client.smembers(this.indexKey(userId));
+
+    const sessions: SessionSummary[] = [];
+    for (const tokenId of tokenIds) {
+      const raw = await client.get(this.key(tokenId));
+      if (!raw) {
+        await client.srem(this.indexKey(userId), tokenId);
+        continue;
+      }
+      const { createdAt } = JSON.parse(raw) as { createdAt?: string };
+      sessions.push({ tokenId, createdAt: createdAt ?? new Date(0).toISOString() });
+    }
+
+    return sessions.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  /**
+   * Phase 2 Step 7 — revokes exactly one of `userId`'s own sessions by
+   * `tokenId`. Membership in `userId`'s own index is checked first, so
+   * this can never be used to revoke a *different* user's session by
+   * guessing/enumerating `tokenId` values — the caller only ever learns
+   * "not found" for a `tokenId` that isn't theirs, identical to one that
+   * never existed. Returns `true` only if a real, still-live token was
+   * deleted.
+   */
+  async revokeSession(userId: string, tokenId: string): Promise<boolean> {
+    const client = this.redis.getClient();
+    const isMember = await client.sismember(this.indexKey(userId), tokenId);
+    if (!isMember) {
+      return false;
+    }
+    const deletedCount = await client.del(this.key(tokenId));
+    await client.srem(this.indexKey(userId), tokenId);
+    return deletedCount > 0;
+  }
+
+  /**
+   * Phase 2 Step 7 — revokes every active session for `userId` ("log out
+   * everywhere"). Returns the number of sessions actually revoked.
+   */
+  async revokeAllForUser(userId: string): Promise<number> {
+    const client = this.redis.getClient();
+    const tokenIds = await client.smembers(this.indexKey(userId));
+    if (tokenIds.length === 0) {
+      return 0;
+    }
+    await client.del(...tokenIds.map((tokenId) => this.key(tokenId)));
+    await client.del(this.indexKey(userId));
+    return tokenIds.length;
   }
 
   private parseToken(token: string): { tokenId: string; secret: string } | null {

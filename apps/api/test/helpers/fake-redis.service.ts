@@ -15,6 +15,12 @@ import type Redis from "ioredis";
  *   the pending-registration pair, so they share a branch below.
  * - `RefreshTokenStore` (Step 4): `refresh-token-consume`.
  *
+ * Also implements the small Set-command surface (`SADD`/`SREM`/
+ * `SMEMBERS`/`SISMEMBER`/`EXPIRE`) `RefreshTokenStore` uses (Step 7) to
+ * maintain each user's session index — a real in-memory `Map<string,
+ * Set<string>>`, separate from the string-keyed store above, since Redis
+ * itself keeps Sets and strings in distinct keyspaces internally too.
+ *
  * This is a single source of truth specifically so that a step whose
  * routes don't call Redis directly (e.g. Step 6's `/users/me` routes,
  * which only need `JwtAuthGuard`'s stateless JWT verification) still
@@ -34,6 +40,7 @@ import type Redis from "ioredis";
  */
 export class InMemoryRedisClient {
   private readonly store = new Map<string, { value: string; expiresAtMs: number | null }>();
+  private readonly sets = new Map<string, Set<string>>();
 
   async get(key: string): Promise<string | null> {
     const entry = this.store.get(key);
@@ -50,8 +57,51 @@ export class InMemoryRedisClient {
     return "OK";
   }
 
-  async del(key: string): Promise<number> {
-    return this.store.delete(key) ? 1 : 0;
+  async del(...keys: string[]): Promise<number> {
+    let deleted = 0;
+    for (const key of keys) {
+      if (this.store.delete(key)) deleted += 1;
+      if (this.sets.delete(key)) deleted += 1;
+    }
+    return deleted;
+  }
+
+  async sadd(key: string, ...members: string[]): Promise<number> {
+    const set = this.sets.get(key) ?? new Set<string>();
+    let added = 0;
+    for (const member of members) {
+      if (!set.has(member)) added += 1;
+      set.add(member);
+    }
+    this.sets.set(key, set);
+    return added;
+  }
+
+  async srem(key: string, ...members: string[]): Promise<number> {
+    const set = this.sets.get(key);
+    if (!set) return 0;
+    let removed = 0;
+    for (const member of members) {
+      if (set.delete(member)) removed += 1;
+    }
+    return removed;
+  }
+
+  async smembers(key: string): Promise<string[]> {
+    return Array.from(this.sets.get(key) ?? []);
+  }
+
+  async sismember(key: string, member: string): Promise<number> {
+    return this.sets.get(key)?.has(member) ? 1 : 0;
+  }
+
+  async expire(_key: string, _ttlSeconds: number): Promise<number> {
+    // This fake never expires string keys by wall-clock TTL sweep (see
+    // `get()`'s lazy check above) and Set keys have no TTL semantics
+    // this fake needs to reproduce for any current test — a no-op
+    // "success" return is sufficient for `RefreshTokenStore.issue()`'s
+    // fire-and-forget `expire()` call on the session index.
+    return 1;
   }
 
   async eval(script: string, _numKeys: number, key: string, ...args: unknown[]): Promise<unknown> {

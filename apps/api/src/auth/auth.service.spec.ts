@@ -58,6 +58,9 @@ describe("AuthService", () => {
     issue: jest.fn(),
     consume: jest.fn(),
     revoke: jest.fn(),
+    listSessions: jest.fn(),
+    revokeSession: jest.fn(),
+    revokeAllForUser: jest.fn(),
   } as unknown as RefreshTokenStore;
 
   const passwordResets = {
@@ -569,6 +572,48 @@ describe("AuthService", () => {
       ).rejects.toThrow(NotFoundException);
       expect(passwordResets.delete).toHaveBeenCalledWith("user@example.com");
       expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("listSessions", () => {
+    it("delegates directly to RefreshTokenStore.listSessions", async () => {
+      const sessions = [{ tokenId: "token-a", createdAt: "2026-01-01T00:00:00.000Z" }];
+      (refreshTokens.listSessions as jest.Mock).mockResolvedValue(sessions);
+
+      await expect(service.listSessions("user_1")).resolves.toEqual(sessions);
+      expect(refreshTokens.listSessions).toHaveBeenCalledWith("user_1");
+    });
+  });
+
+  describe("revokeSession", () => {
+    it("returns { revoked: true } when RefreshTokenStore reports success", async () => {
+      (refreshTokens.revokeSession as jest.Mock).mockResolvedValue(true);
+
+      await expect(service.revokeSession("user_1", "token-a")).resolves.toEqual({
+        revoked: true,
+      });
+      expect(refreshTokens.revokeSession).toHaveBeenCalledWith("user_1", "token-a");
+    });
+
+    it("throws NotFoundException when the session isn't found or isn't the caller's own", async () => {
+      (refreshTokens.revokeSession as jest.Mock).mockResolvedValue(false);
+
+      await expect(service.revokeSession("user_1", "token-a")).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe("revokeAllSessions", () => {
+    it("returns the revoked count from RefreshTokenStore.revokeAllForUser", async () => {
+      (refreshTokens.revokeAllForUser as jest.Mock).mockResolvedValue(3);
+
+      await expect(service.revokeAllSessions("user_1")).resolves.toEqual({ revokedCount: 3 });
+      expect(refreshTokens.revokeAllForUser).toHaveBeenCalledWith("user_1");
+    });
+
+    it("returns a zero count when the caller has no active sessions", async () => {
+      (refreshTokens.revokeAllForUser as jest.Mock).mockResolvedValue(0);
+
+      await expect(service.revokeAllSessions("user_1")).resolves.toEqual({ revokedCount: 0 });
     });
   });
 });

@@ -146,3 +146,17 @@ export const resetPasswordRequestSchema = z.object({
 
 export type ForgotPasswordRequestSchema = z.infer<typeof forgotPasswordRequestSchema>;
 export type ResetPasswordRequestSchema = z.infer<typeof resetPasswordRequestSchema>;
+
+/**
+ * Phase 2 Step 7 — session-management route param.
+ *
+ * `tokenId` is `RefreshTokenStore`'s `randomUUID()` key suffix (never
+ * the token's secret half), so a UUID shape is all that needs validating
+ * before it reaches the store — an invalid shape can never match a real
+ * session, but rejecting it early with a clean 400 (via the existing
+ * `ZodValidationPipe`, applied to `@Param` the same way it's applied to
+ * `@Body`) is friendlier than a generic 404.
+ */
+export const sessionTokenIdSchema = z.string().uuid("Invalid session id");
+
+export type SessionTokenIdSchema = z.infer<typeof sessionTokenIdSchema>;

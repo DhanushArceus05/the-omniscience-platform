@@ -14,6 +14,7 @@ export {
   logoutRequestSchema,
   forgotPasswordRequestSchema,
   resetPasswordRequestSchema,
+  sessionTokenIdSchema,
 } from "./auth";
 export type {
   OtpCode,
@@ -25,6 +26,7 @@ export type {
   LogoutRequestSchema,
   ForgotPasswordRequestSchema,
   ResetPasswordRequestSchema,
+  SessionTokenIdSchema,
 } from "./auth";
 export { updateProfileRequestSchema, changePasswordRequestSchema } from "./users";
 export type { UpdateProfileRequestSchema, ChangePasswordRequestSchema } from "./users";

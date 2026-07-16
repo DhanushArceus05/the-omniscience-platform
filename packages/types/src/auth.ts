@@ -113,3 +113,29 @@ export interface ResetPasswordRequest {
 export interface ResetPasswordResponse {
   email: string;
 }
+
+/**
+ * Phase 2 Step 7 — session management ("log out other devices").
+ *
+ * A "session" here is one outstanding, unexpired refresh token for the
+ * caller — the same server-side record `login`/`refresh` (Step 4)
+ * already create/rotate, now enumerable and individually revocable.
+ * `tokenId` is the non-secret half of a refresh token
+ * (`${tokenId}.${secret}`) — safe to display/return, since it carries no
+ * secrecy on its own and cannot be used to authenticate without the
+ * secret half only the original client holds.
+ */
+export interface SessionSummary {
+  tokenId: string;
+  createdAt: string;
+}
+
+export type ListSessionsResponse = SessionSummary[];
+
+export interface RevokeSessionResponse {
+  revoked: true;
+}
+
+export interface RevokeAllSessionsResponse {
+  revokedCount: number;
+}

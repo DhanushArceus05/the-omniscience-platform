@@ -13,6 +13,11 @@ import { RefreshTokenStore } from "./refresh-token.store";
  * contention. This runs real concurrent `consume()` calls for the same
  * token against a real Redis instance.
  *
+ * Also covers Phase 2 Step 7's `revokeSession()`: the same class of
+ * concurrency question ("can two simultaneous requests both believe
+ * they revoked the same session?") applies to the session index just as
+ * much as it does to `consume()`'s token rotation.
+ *
  * Requires `REDIS_URL` (or a Redis reachable at `redis://localhost:6379`)
  * — set by the `redis` service container in `.github/workflows/ci.yml`.
  * Skips its assertions (passes trivially, with a console warning) if no
@@ -103,6 +108,33 @@ describe("RefreshTokenStore — concurrency (real Redis)", () => {
 
       expect(first).toEqual({ status: "OK", userId: "user_2" });
       expect(replay).toEqual({ status: "NOT_FOUND" });
+    },
+    20_000,
+  );
+
+  it(
+    "Phase 2 Step 7: concurrent revokeSession calls for the same session report success exactly once",
+    async () => {
+      if (!reachable) return;
+
+      const issued = await store.issue("user_3");
+      const tokenId = issued.token.split(".")[0] as string;
+
+      const CONCURRENT_REVOKERS = 20;
+      const results = await Promise.all(
+        Array.from({ length: CONCURRENT_REVOKERS }, () => store.revokeSession("user_3", tokenId)),
+      );
+
+      // `sismember` still reports membership for every racing caller
+      // until the winning `del`+`srem` pair completes, so this proves
+      // `del`'s own return count (not just index membership) is what
+      // decides success — otherwise more than one caller could report
+      // `true` for a session that's only actually deleted once.
+      const successes = results.filter((r) => r === true);
+      expect(successes).toHaveLength(1);
+
+      const remaining = await store.listSessions("user_3");
+      expect(remaining).toHaveLength(0);
     },
     20_000,
   );

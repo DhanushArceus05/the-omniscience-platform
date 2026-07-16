@@ -1,4 +1,14 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Post, UseGuards } from "@nestjs/common";
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Post,
+  UseGuards,
+} from "@nestjs/common";
 import { Throttle } from "@nestjs/throttler";
 import {
   forgotPasswordRequestSchema,
@@ -8,6 +18,7 @@ import {
   registerRequestSchema,
   resendOtpRequestSchema,
   resetPasswordRequestSchema,
+  sessionTokenIdSchema,
   verifyOtpRequestSchema,
   type ForgotPasswordRequestSchema,
   type LoginRequestSchema,
@@ -21,6 +32,7 @@ import {
 import type {
   ApiSuccess,
   ForgotPasswordResponse,
+  ListSessionsResponse,
   LoginResponse,
   LogoutResponse,
   MeResponse,
@@ -28,6 +40,8 @@ import type {
   RegisterResponse,
   ResendOtpResponse,
   ResetPasswordResponse,
+  RevokeAllSessionsResponse,
+  RevokeSessionResponse,
   VerifyOtpResponse,
 } from "@omniscience/types";
 import { ZodValidationPipe } from "../common/pipes/zod-validation.pipe";
@@ -45,6 +59,8 @@ import { JwtAuthGuard } from "./jwt-auth.guard";
  * (`/login`, `/refresh`, `/logout`, `/me`).
  * Step 5 (this step): forgot-password + reset-password
  * (`/forgot-password`, `/reset-password`).
+ * Step 7: session management — list/revoke the caller's own active
+ * sessions (`/sessions`, `/sessions/:tokenId`, `/sessions/revoke-all`).
  *
  * Each endpoint is additionally throttled per-IP (on top of any
  * per-account/per-token business rule `AuthService` itself enforces) as
@@ -143,6 +159,55 @@ export class AuthController {
     @Body(new ZodValidationPipe(resetPasswordRequestSchema)) body: ResetPasswordRequestSchema,
   ): Promise<ApiSuccess<ResetPasswordResponse>> {
     const data = await this.authService.resetPassword(body.email, body.otp, body.newPassword);
+    return { success: true, data };
+  }
+
+  /**
+   * Phase 2 Step 7 — lists the caller's own active sessions, newest
+   * first. Same `@Throttle` limit as `/auth/refresh`/`/auth/logout`
+   * (Step 4) — no credential is involved, just an authenticated read.
+   */
+  @Get("sessions")
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 20, ttl: 600_000 } })
+  async listSessions(
+    @CurrentUser() user: AccessTokenPayload,
+  ): Promise<ApiSuccess<ListSessionsResponse>> {
+    const data = await this.authService.listSessions(user.sub);
+    return { success: true, data };
+  }
+
+  /**
+   * Phase 2 Step 7 — revokes exactly one of the caller's own sessions.
+   * `tokenId` is validated as a UUID by `sessionTokenIdSchema` before it
+   * ever reaches `AuthService`/`RefreshTokenStore`.
+   */
+  @Delete("sessions/:tokenId")
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 20, ttl: 600_000 } })
+  async revokeSession(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param("tokenId", new ZodValidationPipe(sessionTokenIdSchema)) tokenId: string,
+  ): Promise<ApiSuccess<RevokeSessionResponse>> {
+    const data = await this.authService.revokeSession(user.sub, tokenId);
+    return { success: true, data };
+  }
+
+  /**
+   * Phase 2 Step 7 — revokes every active session for the caller ("log
+   * out everywhere"). Same `@Throttle` limit as `/auth/reset-password`
+   * (Step 5) — a comparably sensitive, account-wide action.
+   */
+  @Post("sessions/revoke-all")
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 600_000 } })
+  async revokeAllSessions(
+    @CurrentUser() user: AccessTokenPayload,
+  ): Promise<ApiSuccess<RevokeAllSessionsResponse>> {
+    const data = await this.authService.revokeAllSessions(user.sub);
     return { success: true, data };
   }
 }

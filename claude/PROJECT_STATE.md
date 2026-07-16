@@ -91,8 +91,40 @@ underway with an approved 8-step plan requiring explicit sign-off after each ste
   helper's `/auth/register` call genuinely does. Fixed by extracting the already-correct,
   already-verified fakes out of `test/auth-registration.e2e-spec.ts` into shared
   `apps/api/test/helpers/` modules and pointing both e2e specs at them — a pure extraction, no
-  logic changed, no production code touched. Awaiting your local verification and approval before
-  Step 7.
+  logic changed, no production code touched. Locally verified by you (build/lint/typecheck/test all
+  green, 24/24 suites), committed, and pushed.
+- **Step 7** (session management — `GET /auth/sessions`, `DELETE /auth/sessions/:tokenId`,
+  `POST /auth/sessions/revoke-all`): scope inferred the same way Step 6's was — Step 6's own
+  "known limitations" section explicitly flags "session/device listing... left for a later step,
+  consistent with the 'session-management endpoints' half of the known-limitations sentence" —
+  flagged plainly as an inference, not a literal spec line. `RefreshTokenStore` (Step 4) extended
+  with a per-user Redis Set index (best-effort bookkeeping only — the existing per-token key
+  remains the sole authority on validity) plus `listSessions`/`revokeSession`/`revokeAllForUser`;
+  three new `AuthController` routes reusing the exact `JwtAuthGuard`/`@CurrentUser()` pattern
+  Step 6 established. `revokeSession` is membership-checked against the caller's own index before
+  touching anything else, so a different user's `tokenId` and an unknown one both produce the same
+  `404 SESSION_NOT_FOUND` — no cross-user enumeration. No device/IP metadata, no "current session"
+  flag (an access token carries no reference to the refresh-token session that issued it), and no
+  automatic session revocation wired into Step 5/6's password-change flows yet — all left for a
+  later step. No new npm dependencies. **This session's sandbox, unlike every prior step's, had
+  working npm/pnpm network egress** — `pnpm install --frozen-lockfile`, `pnpm build`, `pnpm lint`,
+  `pnpm typecheck`, and `pnpm test` were all genuinely executed (not just syntax-checked) and all
+  passed: `@omniscience/api` 28/28 suites, 193/193 tests; full monorepo 15/15 turbo tasks green.
+  `pnpm --filter @omniscience/api exec prisma generate` could not complete in this sandbox
+  specifically — `binaries.prisma.sh` (the query-engine binary host) returned 403, outside this
+  environment's network allowlist — but the generated client's TypeScript surface was already
+  written by the earlier, successful part of the same command, so typecheck/build/test all still
+  ran against a valid `@prisma/client` shape. `docker compose up -d` was not run (no `docker`
+  binary in this sandbox); not required, since every test uses the existing
+  FakePrismaService/FakeRedisService/FakeMailService trio. The three `*.store.concurrency.spec.ts`
+  files (including this step's new real-Redis `revokeSession` race test) self-skipped with their
+  existing "no Redis reachable" warning, same documented behavior as every prior session without a
+  local Redis. See `claude/CURRENT_PHASE.md` for full detail, architecture, security notes, and
+  known limitations. **You must still run `pnpm --filter @omniscience/api exec prisma generate` and
+  `docker compose up -d` where they're reachable, and re-run `pnpm test` with a real Redis, to
+  confirm the three concurrency specs (including the new one) pass for real rather than
+  self-skipping** — everything else has already been confirmed green in-sandbox this session.
+  Awaiting your local verification and approval before Step 8.
 
 ## Repository Rule
 

@@ -13,6 +13,7 @@ import {
   registerRequestSchema,
   resendOtpRequestSchema,
   resetPasswordRequestSchema,
+  sessionTokenIdSchema,
   verifyOtpRequestSchema,
 } from "./auth";
 
@@ -236,5 +237,21 @@ describe("resetPasswordRequestSchema", () => {
     expect(() =>
       resetPasswordRequestSchema.parse({ ...validPayload, newPassword: "weak" }),
     ).toThrow();
+  });
+});
+
+describe("sessionTokenIdSchema", () => {
+  it("accepts a valid UUID", () => {
+    expect(sessionTokenIdSchema.parse("2f4d6b9a-1c2e-4a3b-9d5f-8e7c6b5a4d3c")).toBe(
+      "2f4d6b9a-1c2e-4a3b-9d5f-8e7c6b5a4d3c",
+    );
+  });
+
+  it("rejects a non-UUID string", () => {
+    expect(() => sessionTokenIdSchema.parse("not-a-uuid")).toThrow();
+  });
+
+  it("rejects an empty string", () => {
+    expect(() => sessionTokenIdSchema.parse("")).toThrow();
   });
 });
