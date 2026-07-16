@@ -8,6 +8,7 @@ describe("UsersController", () => {
   const usersService = {
     updateProfile: jest.fn(),
     changePassword: jest.fn(),
+    deleteAccount: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -60,5 +61,17 @@ describe("UsersController", () => {
       "N3wSup3r$ecretPassw0rd!",
     );
     expect(result).toEqual({ success: true, data: { email: "user@example.com" } });
+  });
+
+  it("deleteAccount() delegates to UsersService with the caller's own id and wraps the result", async () => {
+    usersService.deleteAccount.mockResolvedValue({ deleted: true });
+
+    const result = await controller.deleteAccount(
+      { sub: "user_1", email: "user@example.com" },
+      { password: "CorrectPassw0rd!" },
+    );
+
+    expect(usersService.deleteAccount).toHaveBeenCalledWith("user_1", "CorrectPassw0rd!");
+    expect(result).toEqual({ success: true, data: { deleted: true } });
   });
 });

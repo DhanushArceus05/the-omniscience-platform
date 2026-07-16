@@ -4,29 +4,33 @@ import { MemoryRouter } from "react-router-dom";
 import { ThemeProvider } from "@omniscience/ui";
 import { App } from "./App";
 
-vi.mock("@omniscience/sdk", () => ({
-  OmniscienceClient: vi.fn().mockImplementation(() => ({
-    getApiHealth: vi.fn().mockResolvedValue({
-      status: "ok",
-      service: "api",
-      version: "0.1.0",
-      timestamp: new Date().toISOString(),
-      uptimeSeconds: 1,
-    }),
-    getAiServiceHealth: vi.fn().mockResolvedValue({
-      status: "ok",
-      service: "ai-service",
-      version: "0.1.0",
-      timestamp: new Date().toISOString(),
-      uptimeSeconds: 1,
-    }),
-  })),
-}));
+vi.mock("@omniscience/sdk", async () => {
+  const actual = await vi.importActual<typeof import("@omniscience/sdk")>("@omniscience/sdk");
+  return {
+    ApiClientError: actual.ApiClientError,
+    OmniscienceClient: vi.fn().mockImplementation(() => ({
+      getApiHealth: vi.fn().mockResolvedValue({
+        status: "ok",
+        service: "api",
+        version: "0.1.0",
+        timestamp: new Date().toISOString(),
+        uptimeSeconds: 1,
+      }),
+      getAiServiceHealth: vi.fn().mockResolvedValue({
+        status: "ok",
+        service: "ai-service",
+        version: "0.1.0",
+        timestamp: new Date().toISOString(),
+        uptimeSeconds: 1,
+      }),
+    })),
+  };
+});
 
-function renderAt(path: string) {
+function renderAt(entry: string | { pathname: string; state?: unknown }) {
   return render(
     <ThemeProvider>
-      <MemoryRouter initialEntries={[path]}>
+      <MemoryRouter initialEntries={[entry]}>
         <App />
       </MemoryRouter>
     </ThemeProvider>,
@@ -53,10 +57,16 @@ describe("App routing", () => {
     expect(screen.getByRole("heading", { name: "Create your account" })).toBeTruthy();
   });
 
-  it("renders the OTP screen at /verify-otp", () => {
-    renderAt("/verify-otp");
+  it("renders the OTP screen at /verify-otp when navigated with an email", () => {
+    renderAt({ pathname: "/verify-otp", state: { email: "person@example.com" } });
     expect(screen.getByRole("heading", { name: "Verify your email" })).toBeTruthy();
     expect(screen.getAllByRole("textbox")).toHaveLength(6);
+  });
+
+  it("renders a fallback at /verify-otp when no email was passed via navigation", () => {
+    renderAt("/verify-otp");
+    expect(screen.getByRole("heading", { name: "Verify your email" })).toBeTruthy();
+    expect(screen.getByText(/couldn't find a registration in progress/i)).toBeTruthy();
   });
 
   it("renders the forgot-password screen", () => {

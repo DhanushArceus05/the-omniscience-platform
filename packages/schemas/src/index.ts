@@ -28,5 +28,13 @@ export type {
   ResetPasswordRequestSchema,
   SessionTokenIdSchema,
 } from "./auth";
-export { updateProfileRequestSchema, changePasswordRequestSchema } from "./users";
-export type { UpdateProfileRequestSchema, ChangePasswordRequestSchema } from "./users";
+export {
+  updateProfileRequestSchema,
+  changePasswordRequestSchema,
+  deleteAccountRequestSchema,
+} from "./users";
+export type {
+  UpdateProfileRequestSchema,
+  ChangePasswordRequestSchema,
+  DeleteAccountRequestSchema,
+} from "./users";

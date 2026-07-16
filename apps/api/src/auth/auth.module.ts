@@ -31,12 +31,20 @@ import { RefreshTokenStore } from "./refresh-token.store";
  * store/namespace) — new endpoints `POST /auth/forgot-password`,
  * `POST /auth/reset-password`.
  *
+ * Step 7: session index on `RefreshTokenStore` — endpoints
+ * `GET /auth/sessions`, `DELETE /auth/sessions/:tokenId`,
+ * `POST /auth/sessions/revoke-all`.
+ *
  * `PrismaService`, `RedisService`, and `MailService` are available here
  * without an explicit import since their modules are all `@Global()`.
  *
  * `AccessTokenService` and `JwtAuthGuard` are exported so a future
  * module can protect its own routes with the same guard without
- * re-implementing JWT verification.
+ * re-implementing JWT verification. `RefreshTokenStore` is exported as
+ * of Step 8 so `UsersModule` can revoke a deleted account's sessions
+ * without re-implementing `RefreshTokenStore`'s Redis key conventions —
+ * the same "reuse the one existing service" reasoning `JwtAuthGuard`'s
+ * export already followed.
  */
 @Module({
   imports: [
@@ -59,6 +67,6 @@ import { RefreshTokenStore } from "./refresh-token.store";
     JwtAuthGuard,
     AuthService,
   ],
-  exports: [PasswordHasherService, AccessTokenService, JwtAuthGuard],
+  exports: [PasswordHasherService, AccessTokenService, JwtAuthGuard, RefreshTokenStore],
 })
 export class AuthModule {}

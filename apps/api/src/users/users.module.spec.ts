@@ -14,6 +14,7 @@ import { PrismaModule } from "../prisma/prisma.module";
 import { PrismaService } from "../prisma/prisma.service";
 import { RedisModule } from "../redis/redis.module";
 import { RedisService } from "../redis/redis.service";
+import { RefreshTokenStore } from "../auth/refresh-token.store";
 import { UsersController } from "./users.controller";
 import { UsersModule } from "./users.module";
 import { UsersService } from "./users.service";
@@ -28,7 +29,7 @@ const testEnv = {
 } as unknown as Env;
 
 describe("UsersModule", () => {
-  it("compiles and provides UsersService, UsersController, and the JwtAuthGuard it depends on via AuthModule", async () => {
+  it("compiles and provides UsersService, UsersController, and the AuthModule providers they depend on (including Step 8's RefreshTokenStore)", async () => {
     const module: TestingModule = await Test.createTestingModule({
       // Same rationale as auth.module.spec.ts: ConfigModule/PrismaModule/
       // RedisModule/MailModule are all @Global(), but a Nest testing
@@ -61,6 +62,7 @@ describe("UsersModule", () => {
     expect(module.get(PasswordHasherService)).toBeInstanceOf(PasswordHasherService);
     expect(module.get(AccessTokenService)).toBeInstanceOf(AccessTokenService);
     expect(module.get(JwtAuthGuard)).toBeInstanceOf(JwtAuthGuard);
+    expect(module.get(RefreshTokenStore)).toBeInstanceOf(RefreshTokenStore);
     expect(module.get(UsersService)).toBeInstanceOf(UsersService);
     expect(module.get(UsersController)).toBeInstanceOf(UsersController);
   });

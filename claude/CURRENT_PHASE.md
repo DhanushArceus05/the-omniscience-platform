@@ -129,7 +129,8 @@ build cleanly — actually executed in this pass, not assumed.
 
 # Phase 2 — Authentication & Users
 
-Status: **In progress** — Step 7 of 8 complete, awaiting explicit approval before Step 8.
+Status: **Step 8 of 8 complete — Phase 2 implementation done.** Awaiting your local verification
+and the ChatGPT-led senior architecture/security/code-quality review before Phase 3 begins.
 
 Approved decisions (from the Phase 2 implementation prompt): Prisma ORM, Argon2 password
 hashing, OTP + refresh tokens in Redis, JWT access (15m) / refresh (7d) tokens,
@@ -1587,3 +1588,427 @@ confirmation where those are reachable.
 
 Phase 2 Step 7/8. Does not start Step 8.
 ```
+
+---
+
+# Step 8 — Account deletion (complete, locally verified in-sandbox; final step of Phase 2)
+
+## Scope
+
+Same evidence pattern used to justify Step 6 and Step 7's scope: there's no single written
+enumeration of Steps 6–8 anywhere in the repo, so scope comes from what each prior step's own
+"known limitations"/"explicitly not in scope" sections flagged as the next unbuilt piece. Step 6's
+scope section listed, verbatim, as excluded and deferred: *"Any session/device management... [and]
+Account deletion."* Session/device management shipped in Step 7. **Account deletion is the one
+remaining item from that same sentence** — and Step 7's own known limitations reinforced it as the
+natural next candidate ("No session revocation on password change/reset... wiring that in was
+judged a separate decision from building the primitive itself, and is a natural Step-7.x
+candidate now that the primitive exists" — Step 8 wires that primitive into deletion specifically,
+the one place revocation is unambiguously correct to do automatically rather than optional).
+
+`docs/02_SRS.md`'s Authentication line doesn't mention deletion explicitly (it lists
+"registration... login... forgot-password OTP... JWT... OAuth-ready architecture, rate limits and
+optional 2FA later"), and `docs/08_Development_Roadmap.md` has no separate "account deletion" line
+either — consistent with Step 6/7's own observation that Steps 6–8 aren't individually spec'd
+anywhere, only inferable from accumulated known-limitations text. Flagged plainly as an inference,
+per the instruction not to guess silently.
+
+Scope implemented, kept minimal, and — per this step's own instructions — this is explicitly
+**the final step of Phase 2**: no Phase 3 work was started.
+
+- `DELETE /users/me` — permanently deletes the caller's own account. Requires the current
+  password in the body (mirrors `changePassword`'s existing requirement, for the identical
+  reason). On success, also revokes every one of the caller's active refresh-token sessions
+  (Step 7's `RefreshTokenStore.revokeAllForUser`) — the first place in the codebase this primitive
+  is wired into another flow automatically, rather than only being directly callable via
+  `POST /auth/sessions/revoke-all`.
+
+Explicitly **not** in scope: soft-delete/grace-period/restore (hard delete only — no new
+requirement anywhere calls for a recovery window, and adding one would be a materially bigger
+feature); cascading deletion of any *other* data (no other table references `User` yet — Phase 2 is
+Authentication & Users only, nothing downstream exists to cascade to); email notification of
+deletion (no "your account was deleted" email — would need its own template/copy decision, out of
+scope for a first cut); admin-initiated deletion of another user's account (an "Admin, Security &
+Reliability" phase concern per the roadmap, same boundary Step 6 already drew for profile
+management).
+
+## What was implemented
+
+- **`UsersService.deleteAccount(userId, password)`** (extended, Step 6's file) — looks up the
+  user, verifies `password` against the stored hash (reusing the exact `CURRENT_PASSWORD_INCORRECT`
+  code `changePassword` already established for an identical check, rather than inventing a second
+  name for the same failure), then `prisma.user.delete()`s the row and calls
+  `refreshTokens.revokeAllForUser(userId)`. Order is deliberate: the `User` row is deleted first,
+  since that row's existence is what every other endpoint's authorization actually depends on
+  (`AuthService.refresh()` already re-checks the user still exists before honoring a token, a Step
+  4 behavior unchanged by this step) — session revocation runs second, on a best-effort basis,
+  purely to free the now-orphaned Redis records promptly rather than leaving them to their own TTL.
+- **`UsersController`** (extended) — `DELETE /users/me`, behind `JwtAuthGuard`, pulling the
+  caller's id from `@CurrentUser()` exactly like every other route in this controller.
+  `@Throttle({ limit: 3, ttl: 600_000 })` — the tightest limit in this controller, matching
+  `/auth/forgot-password`'s existing precedent, appropriate for the single most irreversible action
+  in the whole API.
+- **`AuthModule`** (extended) — `RefreshTokenStore` added to `exports` (it was already a provider,
+  just not previously exported) so `UsersModule` can inject it without re-implementing
+  `RefreshTokenStore`'s Redis key conventions — same "reuse the one existing service" reasoning
+  `JwtAuthGuard`'s export already followed for Step 6. This is the one place Step 8 touches
+  already-completed Step 4 code, and it's additive only: nothing about `RefreshTokenStore`'s
+  behavior, its existing consumers (`AuthService`), or any of its Step 4/7 tests changed — widening
+  a module's `exports` array cannot change what already resolves correctly inside that module's own
+  providers.
+- **`UsersModule`** (extended) — `UsersService`'s constructor now also takes `RefreshTokenStore`
+  (available via `AuthModule`, which `UsersModule` already imports — no new import needed).
+- **`packages/schemas`** — `deleteAccountRequestSchema` (`{ password }`, reusing
+  `loginPasswordSchema` — an *existing* credential being asserted, same reasoning
+  `changePasswordRequestSchema.currentPassword` already uses, not the full `passwordSchema`
+  strength policy).
+- **`packages/types`** — `DeleteAccountRequest`/`DeleteAccountResponse`.
+- **`apps/api/test/helpers/fake-prisma.service.ts`** (shared infra, extended) — added
+  `user.delete()`, mirroring real Prisma's `P2025` "record not found" error code, following the
+  same convention `create`'s existing `P2002` mock already uses.
+- No new environment variables, no new npm dependencies.
+
+## Architecture
+
+`deleteAccount` stays in `UsersService`/`UsersController` (not a new module) for the same reason
+`changePassword` and `updateProfile` do — it's authenticated self-management of an existing
+account, `UsersModule`'s entire reason to exist per Step 6's own module boundary. The one new
+architectural decision this step makes is exporting `RefreshTokenStore` from `AuthModule`: an
+account-deletion flow that leaves a Redis Set full of now-orphaned session records around until
+their natural 7-day TTL would be a real (if low-severity) hygiene gap, and the primitive to fix it
+already existed from Step 7 — the only missing piece was visibility across the module boundary,
+not new logic. This mirrors, almost exactly, why `JwtAuthGuard` was exported in Step 4 in
+anticipation of a "future module" needing it — Step 6 was that future module then; Step 7's
+`RefreshTokenStore` export is that same pattern now.
+
+## Security considerations
+
+- **Irreversible, and requires a proven-fresh credential first.** Same reasoning `changePassword`
+  already established: a bare stolen/leaked access token (15-minute default TTL) is not, by
+  itself, sufficient to destroy the account — the attacker would also need to already know the
+  current password. Given deletion is strictly more damaging than a password change (a changed
+  password can be reset via Step 5's forgot-password flow; a deleted account cannot be recovered
+  at all), this bar is at least as important to hold here as for `changePassword`, and this step
+  holds it identically rather than loosening it.
+- **No information leak on the wrong-password case.** Same as `changePassword`'s existing
+  reasoning: the `400 CURRENT_PASSWORD_INCORRECT` doesn't reveal anything an attacker with a
+  stolen access token didn't already effectively have.
+- **Deletion is immediate and real, not soft.** `prisma.user.delete()` removes the row outright;
+  there is no `deletedAt`/tombstone field, no "restore within N days" window. `AuthService.login()`
+  and `AuthService.register()` are both unmodified — neither has any special-casing for a
+  "recently deleted" email, so a fresh registration for that address behaves exactly like it would
+  for an address that was never registered at all (verified by e2e test).
+- **Session cleanup is defense-in-depth, not the actual security boundary.** Even if
+  `revokeAllForUser` were somehow skipped or failed silently, every one of the deleted account's
+  refresh tokens would already fail on its very next use — `AuthService.refresh()`'s existing
+  (Step 4) re-check that the token's user still exists rejects it with the same
+  `401 REFRESH_TOKEN_INVALID` a genuinely-revoked token produces. The explicit `revokeAllForUser`
+  call exists to free the Redis records promptly and to make the revocation observable/intentional,
+  not because the account would otherwise remain reachable without it.
+- **Stateless access tokens remain technically valid until their own short expiry** — same
+  accepted tradeoff Step 4 documented for `logout()` and Step 7 documented for `revoke-all`. A
+  deleted account's still-live access token fails every endpoint that looks the user up (proven
+  by e2e test against `/auth/me`), so the practical exposure window is bounded by
+  `JWT_ACCESS_TTL_SECONDS` (15 minutes by default) even though the JWT signature itself doesn't
+  expire early.
+
+## Known limitations (Step 8)
+
+- **No grace period or recovery.** Deletion is immediate and permanent — there is no "restore my
+  account within 30 days" flow. If this is ever needed, it's a materially different feature
+  (soft-delete + scheduled hard-delete job + restore endpoint), not a small addition to this one.
+- **No confirmation email.** The account holder isn't notified by email that their account was
+  deleted. `MailService` already exists and this would be a small addition, but wasn't judged
+  required for a first cut and would need its own copy/template decision.
+- **No cascading deletion of related data**, because none exists yet — Phase 2 is Authentication &
+  Users only. Every later phase that adds a table with a `userId` foreign key will need to decide
+  its own cascade/orphan policy; nothing here presumes what that decision will be.
+- **No per-account lockout beyond the existing per-IP `@Throttle` rate limiting** guards
+  `DELETE /users/me` — same limitation already logged for every Step 3–7 endpoint.
+- **No admin-initiated deletion of another user's account** — deliberately out of scope, an
+  "Admin, Security & Reliability" phase concern per the roadmap.
+
+## Dependencies changed
+
+None. No new packages — `deleteAccount` reuses `PasswordHasherService` (Step 2),
+`PrismaService` (Step 2), and `RefreshTokenStore` (Step 4/7, newly exported from `AuthModule`
+this step) exactly as they already exist.
+
+## Tests added
+
+- **`packages/schemas/src/users.test.ts`** (extended) — `deleteAccountRequestSchema`: valid
+  payload, missing password, empty password.
+- **`apps/api/src/users/users.service.spec.ts`** (extended) — `deleteAccount`: success (verify →
+  delete → revoke-all, asserting the exact call order); wrong password (nothing deleted, nothing
+  revoked); user no longer exists (`UnauthorizedException`, `verify` never called).
+- **`apps/api/src/users/users.controller.spec.ts`** (extended) — one delegation test, asserting
+  the caller's id and password are passed through and the `ApiSuccess` envelope shape.
+- **`apps/api/src/users/users.module.spec.ts`** (extended) — now also asserts `RefreshTokenStore`
+  resolves from `UsersModule`'s compiled graph (proving Step 8's `AuthModule` export actually
+  works end-to-end, not just at the type level), alongside the existing Step 6 providers.
+- **`apps/api/test/account-deletion.e2e-spec.ts`** (new, real HTTP via supertest, reusing
+  `test/helpers/` exactly as-is — no new fakes) — full delete flow: the deleted account's access
+  token stops resolving at `/auth/me`, its refresh token is rejected at `/auth/refresh`, logging in
+  with the old credentials fails like an unknown email, and the same email can freely re-register
+  afterward; a second test proves deletion revokes *every* session, not just the one used to call
+  the endpoint (two logins, delete via the second, the first login's refresh token is rejected
+  too); wrong-password rejection (with a follow-up proving the account and access token both still
+  work); unauthenticated rejection; malformed-payload rejection (with the same follow-up proof).
+
+## Commands actually executed (this session)
+
+Same sandbox as Step 7's session — network egress to `registry.npmjs.org`/`npmjs.org` etc. was
+still available (no fresh `pnpm install` was needed; `node_modules` from Step 7's session was
+still present and valid for these new files, which added no new dependency).
+
+```
+pnpm build       # SUCCEEDED — 9/9 packages, including @omniscience/api (`nest build`)
+pnpm lint        # SUCCEEDED — 15/15 turbo tasks
+pnpm typecheck   # SUCCEEDED — 15/15 turbo tasks
+pnpm test        # SUCCEEDED — 15/15 turbo tasks
+  # @omniscience/api: Test Suites: 29 passed, 29 total · Tests: 203 passed, 203 total
+  # (up from Step 7's 28 suites / 193 tests: +1 suite — this step's new
+  # account-deletion.e2e-spec.ts — and +10 tests across that new file plus the extended
+  # users.service.spec.ts/users.controller.spec.ts/users.module.spec.ts/users.test.ts)
+  # @omniscience/ui and @omniscience/web: unchanged, still passing (this step touched neither).
+```
+
+`pnpm --filter @omniscience/api exec prisma generate` was **not re-run** this session — Step 7's
+session already established, and this session's Prisma schema is unchanged (Step 8 adds no
+model/migration), that `binaries.prisma.sh` (the query-engine binary host) is outside this
+sandbox's network allowlist regardless. The generated client already present from Step 7's partial
+`prisma generate` (types/JS written before the binary-download step that fails) remained valid and
+sufficient for this session's build/typecheck/test — re-running the same command would reproduce
+the identical, already-diagnosed 403, not new information.
+
+`docker compose up -d` was **not run** — same reason as Step 7: no `docker` binary in this
+sandbox, and not required, since every test (including this step's new e2e spec) runs against the
+existing `FakePrismaService`/`FakeRedisService`/`FakeMailService` trio.
+
+## Actual results only
+
+Build ✅ (real, executed) · Lint ✅ (real, executed) · Typecheck ✅ (real, executed) · Test ✅ (real,
+executed — `@omniscience/api` 29/29 suites, 203/203 tests; full monorepo 15/15 turbo tasks). Prisma
+Client generation ❌ **still cannot complete** in this sandbox at the query-engine-binary download
+step (network egress restriction, unchanged from Step 7, not a code defect) — did not block
+anything above, for the same reason it didn't in Step 7. `docker compose up -d` was not run (no
+`docker` binary here) — not required for any test that ran. The three `*.store.concurrency.spec.ts`
+files (unchanged by this step) self-skipped again with their existing "no Redis reachable" warning
+— same documented, designed behavior. GitHub Actions has not run yet for this change.
+
+**Please still run the following locally, where `binaries.prisma.sh` and Docker are both
+reachable, and confirm:**
+
+```
+pnpm install --frozen-lockfile
+pnpm --filter @omniscience/api exec prisma generate
+docker compose up -d
+pnpm build
+pnpm lint
+pnpm typecheck
+REDIS_URL=redis://localhost:6379 pnpm test
+  # expect: Test Suites: 29 passed, 29 total · Tests: 203 passed, 203 total, PLUS the three
+  # concurrency spec files (unchanged by this step, including Step 7's revokeSession race test)
+  # actually exercising their real-Redis assertions this time instead of self-skipping.
+```
+
+## Suggested commit message
+
+```
+feat(users): Phase 2 Step 8 — account deletion (final step of Phase 2)
+
+Add DELETE /users/me, requiring the caller's current password, which
+permanently deletes the account and revokes every one of its active
+sessions via Step 7's RefreshTokenStore.revokeAllForUser — the first
+place that primitive is wired into another flow automatically.
+
+- UsersService.deleteAccount: verify password (reuses
+  CURRENT_PASSWORD_INCORRECT) -> prisma.user.delete -> revokeAllForUser
+  (in that order: the User row's own existence is the real
+  authorization boundary; session revocation is prompt cleanup)
+- UsersController: DELETE /users/me, JwtAuthGuard, tightest throttle
+  in the controller (3/10min, matching /auth/forgot-password)
+- AuthModule: export RefreshTokenStore (was already a provider) so
+  UsersModule can reuse it instead of re-implementing its Redis key
+  conventions — additive only, no behavior change to Step 4/7 code
+- packages/schemas: deleteAccountRequestSchema ({ password })
+- packages/types: DeleteAccountRequest/DeleteAccountResponse
+- test/helpers/fake-prisma.service.ts: add user.delete() (P2025 on
+  not-found, matching create()'s existing P2002 convention)
+- New test/account-deletion.e2e-spec.ts; extended
+  users.service.spec.ts, users.controller.spec.ts, users.module.spec.ts,
+  packages/schemas/src/users.test.ts
+
+Verified in-sandbox this session: pnpm build/lint/typecheck/test all
+green (29/29 suites, 203/203 tests in @omniscience/api). prisma
+generate's query-engine binary download and docker compose remain
+blocked/unavailable in this sandbox (same as Step 7) — needs local
+confirmation where those are reachable.
+
+Final step of Phase 2 (Authentication & Users). Does not start Phase 3.
+```
+
+---
+
+# Post-Step-8 — Frontend auth integration (pre-commit; still Phase 2, Phase 3 not started)
+
+## Why this happened before the Step 8 commit
+
+Step 8's backend (account deletion) was implementation-complete and locally verified
+(`pnpm install --frozen-lockfile`, `prisma generate`, `docker compose up -d`, `pnpm build`/`lint`/
+`typecheck`/`test`), but not yet committed. Manual frontend verification at that point found that
+every auth screen (`RegisterPage`, `LoginPage`, `VerifyOtpPage`, `ForgotPasswordPage`,
+`ResetPasswordPage`) was still the Phase 1 UI-only preview — showing toasts like "Preview only" and
+"Password-reset delivery arrives in Phase 2" instead of calling the real `/auth/*` endpoints Steps
+3–5 built. Since Phase 2's own goal is a working authentication flow, this was fixed before the
+Step 8 backend commit rather than committing a step that leaves the frontend still faking it.
+
+**No backend production code was modified.** Every `/auth/*` endpoint, schema, and type from
+Steps 2–8 is used exactly as already built; this section is additive frontend work plus one new
+SDK layer that calls those existing endpoints.
+
+## What was audited
+
+| Page | Prior state | Real backend call now wired |
+|---|---|---|
+| `RegisterPage.tsx` | Preview-only toast, no API call | `POST /auth/register` |
+| `VerifyOtpPage.tsx` | Preview-only toast, no API call | `POST /auth/verify-otp`, `POST /auth/resend-otp` |
+| `LoginPage.tsx` | Preview-only toast, no API call | `POST /auth/login` |
+| `ForgotPasswordPage.tsx` | Preview-only toast, no API call | `POST /auth/forgot-password` |
+| `ResetPasswordPage.tsx` | Preview-only toast, no OTP field, no API call | `POST /auth/reset-password` (added the missing OTP field — the backend contract requires `{ email, otp, newPassword }` and the page had nowhere to enter a code) |
+
+Also audited: user-profile (`PATCH /users/me`), change-password (`POST /users/me/change-password`),
+session management (`GET/DELETE /auth/sessions*`), and account deletion (`DELETE /users/me`) have
+**no frontend pages** in the current scope, and none were added — see "Explicitly not built" below.
+
+## What was added
+
+- **`packages/sdk/src/api-client-error.ts`** (new) — `ApiClientError` (`code`/`status`/`details`),
+  thrown by every new SDK auth method on a structured backend error.
+- **`packages/sdk/src/client.ts`** (extended) — `register`/`verifyOtp`/`resendOtp`/`login`/
+  `logout`/`forgotPassword`/`resetPassword`, each a direct call to its matching `AuthController`
+  route, typed against the existing `@omniscience/types` request/response contracts (no contract
+  redefined). A new private `postJson()` helper unwraps the shared `ApiSuccess`/`ApiError`
+  envelope and throws `ApiClientError`; the pre-existing `getJson()`/health-check methods are
+  untouched. `refresh`/`me`/session-listing/account-deletion methods were **not** added to the SDK
+  — nothing in the five auth pages needs them yet (see "Explicitly not built").
+- **`apps/web/src/lib/auth/authErrors.ts`** (new) — maps backend error `code`s (e.g.
+  `EMAIL_ALREADY_REGISTERED`, `OTP_INCORRECT`, `EMAIL_NOT_VERIFIED`) to display copy
+  (`getAuthErrorMessage`), extracts per-field validation messages from a `VALIDATION_ERROR`
+  (`getFieldErrors`), and checks a specific error code (`isAuthErrorCode`).
+- **`apps/web/src/lib/auth/validateWithSchema.ts`** (new) — runs a shared `@omniscience/schemas`
+  zod schema client-side before the network call, so a form gets the same field-level messages the
+  server would return, without duplicating a single validation rule.
+- **`apps/web/src/lib/auth/AuthContext.tsx`** (new) — the **one** `AuthProvider`/`useAuth()` for
+  the whole app (see "Do not add duplicate API clients or auth stores" below): builds the SDK
+  client from Vite env vars (mirrors `SystemStatusPanel`'s existing `createClient` pattern —
+  never throws, degrades to a `configError` state), persists a successful login's tokens+user to
+  `localStorage` under one key, and exposes `logout()` (best-effort server-side revoke, always
+  clears local state).
+- **`apps/web/src/App.tsx`** — wrapped in `<AuthProvider>`; doc comment updated.
+- **`apps/web/src/pages/RegisterPage.tsx` / `LoginPage.tsx` / `VerifyOtpPage.tsx` /
+  `ForgotPasswordPage.tsx` / `ResetPasswordPage.tsx`** — rewritten for real integration (see
+  "Behavior" below). Premium UI (`AuthLayout`, `GlassCard`, `FadeIn`, motion, the exact `Input`/
+  `Button`/`Alert`/`OtpInput`/`Toast` components) is unchanged — only the submit-handler logic
+  changed from a `setTimeout`-driven preview toast to a real `client.*()` call.
+- **`apps/web/package.json`** — added `@omniscience/schemas` as a workspace dependency (the forms
+  need it for client-side validation; it wasn't previously a frontend dependency).
+- **`packages/sdk/src/client.test.ts`** (extended) — success + `ApiClientError` (structured error,
+  `VALIDATION_ERROR` details, network failure) coverage for every new SDK method.
+- **`apps/web/src/pages/AuthPages.test.tsx`** (rewritten) — every test now asserts a real
+  `client.*()` call and its argument shape, instead of a preview-only toast; covers success,
+  field-validation, and backend-error paths for all five pages, plus resend-OTP and the
+  `EMAIL_NOT_VERIFIED` → verify-otp redirect.
+- **`apps/web/src/App.test.tsx`** — updated to reflect that `VerifyOtpPage` now genuinely requires
+  an email via router state (a direct `/verify-otp` navigation, with no state, now correctly shows
+  a "start again" fallback instead of a naked OTP form) — this was a real regression the rewrite
+  would otherwise have introduced in an existing, previously-passing test; also added
+  `ApiClientError` to this file's `@omniscience/sdk` mock for consistency.
+
+## Behavior
+
+- **Register → Verify → Login is the real flow.** `RegisterPage` calls `register()` and, on the
+  202 response, navigates to `/verify-otp` carrying `{ email }` in router state (registration
+  itself issues no tokens — matches `RegisterResponse`). `VerifyOtpPage` requires that email; a
+  direct navigation without it shows a "start again" `Alert` linking back to `/register` rather
+  than crashing or faking success. On a correct code it navigates to `/login` (verifying doesn't
+  log the user in either — matches `VerifyOtpResponse`, no tokens). Its "Resend" affordance now
+  really calls `resendOtp()` instead of just linking back to `/register`.
+- **Login persists a real session.** On `client.login()` success, `AuthContext.setSession()`
+  stores `{ accessToken, accessTokenExpiresAt, refreshToken, refreshTokenExpiresAt, user }` in
+  `localStorage` (one key, one write) and navigates to the existing `/app` route. An
+  `EMAIL_NOT_VERIFIED` error redirects to `/verify-otp` with the email pre-filled instead of just
+  showing a generic error, since the account genuinely needs that step next.
+- **Forgot/Reset password is now a real two-step flow.** `ForgotPasswordPage` calls
+  `forgotPassword()` and, since the backend's response is intentionally identical whether or not
+  the email exists, shows a generic "check your inbox" state with a button to continue to
+  `/reset-password` (carrying the email). `ResetPasswordPage` gained the missing OTP field
+  (reusing `OtpInput`, same component `VerifyOtpPage` uses) since the backend contract requires
+  one; on success it navigates to `/login`.
+- **Loading/error/validation:** every submit button uses `Button`'s existing `loading` prop while
+  the request is in flight; `Input`/`OtpInput`'s existing `error` prop shows field-level messages
+  from either client-side `validateWithSchema()` or a backend `VALIDATION_ERROR`; a general
+  `Alert` shows non-field errors (e.g. `EMAIL_ALREADY_REGISTERED`, `INVALID_CREDENTIALS`); success
+  is confirmed via the existing `Toast` system before navigating.
+
+## Explicitly not built (backend-only for now)
+
+Per the instruction not to silently build unrelated pages, these existing backend capabilities
+have **no frontend page/UI**, and none was added in this pass:
+
+- User profile update (`PATCH /users/me`) and change-password (`POST /users/me/change-password`)
+  — Step 6.
+- Session listing/revocation (`GET /auth/sessions`, `DELETE /auth/sessions/:tokenId`,
+  `POST /auth/sessions/revoke-all`) — Step 7.
+- Account deletion (`DELETE /users/me`) — Step 8.
+- Token refresh (`POST /auth/refresh`) and `GET /auth/me` — not called anywhere in the frontend
+  yet; `AuthContext` persists the tokens Step 4 issues but there is no protected route or silent-
+  refresh logic in this pass, since none of the five auth pages need an authenticated call. This is
+  the natural next piece once a Phase 3 dashboard needs to call an authenticated endpoint.
+
+These all remain reachable only via the API directly (or the e2e test suites) until a future
+step/phase builds their frontend.
+
+## Do not add duplicate API clients or auth stores
+
+There is exactly **one** typed API client (`OmniscienceClient` in `@omniscience/sdk`, extended —
+not replaced or duplicated) and exactly **one** auth store (`AuthContext`/`useAuth()` in
+`apps/web/src/lib/auth/`). `SystemStatusPanel`'s existing `createClient()` pattern (catch the
+constructor error, degrade to a `configError` state) was mirrored, not reinvented, in
+`AuthContext.tsx`.
+
+## Commands actually executed this session
+
+```
+corepack enable && corepack prepare pnpm@9.12.0 --activate
+```
+
+Failed identically to every prior no-network session in this sandbox: `HTTP 403` from
+`registry.npmjs.org` at the corepack shim step, before `pnpm` itself can run. There is no
+`node_modules` in this container for this session, so `pnpm install`, `pnpm build`, `pnpm lint`,
+`pnpm typecheck`, and `pnpm test` were **not** executed here. As a substitute, every new/changed
+file was reviewed manually against the actual `@omniscience/types`/`@omniscience/schemas` contracts
+and the existing `packages/ui` component prop signatures (not assumed from memory — each was
+re-read from source before use), and one real regression this rewrite would otherwise have caused
+in the pre-existing `App.test.tsx` (`/verify-otp` navigated to directly, with no router state,
+previously expected 6 OTP boxes — now correctly shows the "start again" fallback) was found and
+fixed during this review, along with a `noUncheckedIndexedAccess` TypeScript issue in the new test
+file's OTP-box-filling helper (fixed with the same `as HTMLInputElement` cast the pre-existing
+`OtpInput.test.tsx` already uses for the identical pattern).
+
+**Please run the following locally and report the result before this is committed:**
+
+```
+pnpm install --frozen-lockfile
+pnpm build
+pnpm lint
+pnpm typecheck
+pnpm test
+```
+
+## Honest status
+
+**Not verified end-to-end by Claude in this session** — same no-network-egress constraint logged
+in every prior step. Everything above reflects careful manual code/contract review (including
+re-reading every touched shared package and UI component from source, not from memory), plus one
+real regression found and fixed in existing test coverage — not a tool run.

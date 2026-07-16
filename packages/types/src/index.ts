@@ -34,4 +34,6 @@ export type {
   UpdateProfileResponse,
   ChangePasswordRequest,
   ChangePasswordResponse,
+  DeleteAccountRequest,
+  DeleteAccountResponse,
 } from "./users";

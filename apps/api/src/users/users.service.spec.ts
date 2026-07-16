@@ -1,17 +1,22 @@
 import { BadRequestException, UnauthorizedException } from "@nestjs/common";
 import { PasswordHasherService } from "../auth/password-hasher.service";
+import { RefreshTokenStore } from "../auth/refresh-token.store";
 import { PrismaService } from "../prisma/prisma.service";
 import { UsersService } from "./users.service";
 
 describe("UsersService", () => {
   const prisma = {
-    user: { findUnique: jest.fn(), update: jest.fn() },
+    user: { findUnique: jest.fn(), update: jest.fn(), delete: jest.fn() },
   } as unknown as PrismaService;
 
   const passwordHasher = {
     hash: jest.fn(),
     verify: jest.fn(),
   } as unknown as PasswordHasherService;
+
+  const refreshTokens = {
+    revokeAllForUser: jest.fn(),
+  } as unknown as RefreshTokenStore;
 
   const buildUser = (overrides: Partial<Record<string, unknown>> = {}) => ({
     id: "user_1",
@@ -28,7 +33,7 @@ describe("UsersService", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    service = new UsersService(prisma, passwordHasher);
+    service = new UsersService(prisma, passwordHasher, refreshTokens);
   });
 
   describe("updateProfile", () => {
@@ -104,6 +109,65 @@ describe("UsersService", () => {
         service.changePassword("user_1", "OldPassw0rd!", "N3wSup3r$ecretPassw0rd!"),
       ).rejects.toThrow(UnauthorizedException);
       expect(passwordHasher.verify).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("deleteAccount", () => {
+    it("verifies the password, deletes the user row, and revokes every session", async () => {
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(buildUser());
+      (passwordHasher.verify as jest.Mock).mockResolvedValue(true);
+      (prisma.user.delete as jest.Mock).mockResolvedValue(buildUser());
+      (refreshTokens.revokeAllForUser as jest.Mock).mockResolvedValue(2);
+
+      const result = await service.deleteAccount("user_1", "CorrectPassw0rd!");
+
+      expect(passwordHasher.verify).toHaveBeenCalledWith(
+        "hashed-current-password",
+        "CorrectPassw0rd!",
+      );
+      expect(prisma.user.delete).toHaveBeenCalledWith({ where: { id: "user_1" } });
+      expect(refreshTokens.revokeAllForUser).toHaveBeenCalledWith("user_1");
+      expect(result).toEqual({ deleted: true });
+    });
+
+    it("deletes the user row before revoking sessions", async () => {
+      const callOrder: string[] = [];
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(buildUser());
+      (passwordHasher.verify as jest.Mock).mockResolvedValue(true);
+      (prisma.user.delete as jest.Mock).mockImplementation(async () => {
+        callOrder.push("delete");
+        return buildUser();
+      });
+      (refreshTokens.revokeAllForUser as jest.Mock).mockImplementation(async () => {
+        callOrder.push("revokeAllForUser");
+        return 0;
+      });
+
+      await service.deleteAccount("user_1", "CorrectPassw0rd!");
+
+      expect(callOrder).toEqual(["delete", "revokeAllForUser"]);
+    });
+
+    it("throws BadRequestException when the password is wrong, deleting nothing and revoking nothing", async () => {
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(buildUser());
+      (passwordHasher.verify as jest.Mock).mockResolvedValue(false);
+
+      await expect(service.deleteAccount("user_1", "WrongPassword!")).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(prisma.user.delete).not.toHaveBeenCalled();
+      expect(refreshTokens.revokeAllForUser).not.toHaveBeenCalled();
+    });
+
+    it("throws UnauthorizedException when the user no longer exists", async () => {
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(null);
+
+      await expect(service.deleteAccount("user_1", "CorrectPassw0rd!")).rejects.toThrow(
+        UnauthorizedException,
+      );
+      expect(passwordHasher.verify).not.toHaveBeenCalled();
+      expect(prisma.user.delete).not.toHaveBeenCalled();
+      expect(refreshTokens.revokeAllForUser).not.toHaveBeenCalled();
     });
   });
 });

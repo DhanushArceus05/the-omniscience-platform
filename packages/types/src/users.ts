@@ -23,3 +23,18 @@ export interface ChangePasswordRequest {
 export interface ChangePasswordResponse {
   email: string;
 }
+
+/**
+ * Phase 2 Step 8 — account deletion. Requires the caller's current
+ * password (same reasoning `ChangePasswordRequest.currentPassword`
+ * documents: a bare stolen/leaked access token alone must not be
+ * enough to destroy the account). Irreversible — there is no "undo" or
+ * grace-period endpoint.
+ */
+export interface DeleteAccountRequest {
+  password: string;
+}
+
+export interface DeleteAccountResponse {
+  deleted: true;
+}

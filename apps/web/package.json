@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@omniscience/sdk": "workspace:*",
+    "@omniscience/schemas": "workspace:*",
     "@omniscience/types": "workspace:*",
     "@omniscience/ui": "workspace:*",
     "react": "^18.3.1",

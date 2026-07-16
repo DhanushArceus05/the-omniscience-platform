@@ -1,17 +1,18 @@
 /**
  * Shared, in-memory stand-in for `PrismaService` used across every e2e
  * spec (`auth-registration.e2e-spec.ts`, `users-profile.e2e-spec.ts`,
- * and any future one). A single source of truth for this fake means a
- * capability added for one feature's tests (e.g. Step 6's `update({
- * data: { name } })`) is automatically available to every other e2e
- * suite too, instead of each file drifting its own slightly-different
- * copy out of sync with what `AuthService`/`UsersService` actually call.
+ * `session-management.e2e-spec.ts`, and any future one). A single
+ * source of truth for this fake means a capability added for one
+ * feature's tests (e.g. Step 6's `update({ data: { name } })`) is
+ * automatically available to every other e2e suite too, instead of each
+ * file drifting its own slightly-different copy out of sync with what
+ * `AuthService`/`UsersService` actually call.
  *
  * Implements only the surface real callers actually use — `findUnique`,
- * `create`, and a partial `update` supporting every field Steps 2–6
+ * `create`, a partial `update` supporting every field Steps 2–6
  * currently update (`passwordHash` for Step 5's `resetPassword`/Step 6's
- * `changePassword`, `name` for Step 6's `updateProfile`) — not a full
- * Prisma Client.
+ * `changePassword`, `name` for Step 6's `updateProfile`), and `delete`
+ * (Step 8's account deletion) — not a full Prisma Client.
  */
 export interface FakeUserRow {
   id: string;
@@ -71,6 +72,19 @@ export class FakePrismaService {
       Object.assign(row, data);
       row.updatedAt = new Date();
       return row;
+    },
+    // Step 8: hard-deletes the row, mirroring real Prisma's P2025 error
+    // code when the target no longer exists (same shape `create`'s
+    // P2002 mock already follows for its own not-found/conflict case).
+    delete: async ({ where }: { where: { id: string } }): Promise<FakeUserRow> => {
+      const index = this.users.findIndex((u) => u.id === where.id);
+      if (index === -1) {
+        throw Object.assign(new Error("Record to delete does not exist."), {
+          code: "P2025",
+        });
+      }
+      const [row] = this.users.splice(index, 1);
+      return row as FakeUserRow;
     },
   };
 

@@ -9,8 +9,32 @@ reusable component library in `@omniscience/ui`).
 
 ## Current
 
-Phase 1 is complete (see prior entry below, unchanged). Phase 2 (Authentication & Users) is
-underway with an approved 8-step plan requiring explicit sign-off after each step.
+Phase 1 is complete (see prior entry below, unchanged). Phase 2 (Authentication & Users) backend
+**implementation is complete — all 8 steps done, locally verified through Step 8** (`pnpm install
+--frozen-lockfile`, `prisma generate`, `docker compose up -d`, `pnpm build`/`lint`/`typecheck`/
+`test`), but **not yet committed** — manual frontend verification found every auth page was still
+the Phase 1 UI-only preview, so the frontend auth integration below was completed first, per your
+instruction to finish it before the Step 8 commit. Awaiting your local verification of both the
+Step 8 backend and this frontend integration, then the ChatGPT-led senior architecture/security/
+code-quality review, before Phase 3 begins.
+
+- **Frontend auth integration (post-Step-8, pre-commit)**: `RegisterPage`/`VerifyOtpPage`/
+  `LoginPage`/`ForgotPasswordPage`/`ResetPasswordPage` now call the real `/auth/*` endpoints Steps
+  3–5 built, via a new SDK layer (`OmniscienceClient` in `@omniscience/sdk`, extended with
+  `register`/`verifyOtp`/`resendOtp`/`login`/`logout`/`forgotPassword`/`resetPassword` and a new
+  `ApiClientError`) and one new `AuthContext`/`useAuth()` (`apps/web/src/lib/auth/`) that persists
+  a logged-in session's tokens to `localStorage`. `ResetPasswordPage` gained a previously-missing
+  OTP field (the backend contract requires `{ email, otp, newPassword }`). All "Preview only"/
+  "arrives in Phase 2" copy is removed. User-profile, change-password, session-management, and
+  account-deletion endpoints (Steps 6–8) deliberately still have **no frontend page** — reachable
+  only via the API directly until a later step/phase builds their UI. No backend production code
+  was modified. **Not verified with a real `pnpm install` from this sandbox** — no npm/pnpm network
+  egress here this session (same `HTTP 403` at the corepack step as every prior no-network
+  session); reviewed manually against the actual shared contracts/component signatures instead,
+  which caught and fixed one real regression in the pre-existing `App.test.tsx` (a `/verify-otp`
+  test that navigated with no router state). See `claude/CURRENT_PHASE.md`'s "Post-Step-8" section
+  for full detail. **You must run `pnpm install --frozen-lockfile`/`pnpm build`/`pnpm lint`/`pnpm
+  typecheck`/`pnpm test` locally and report the result before this is committed.**
 
 - **Step 1** (Prisma/PostgreSQL/Redis/configuration infrastructure): complete, locally verified,
   committed, and pushed.
@@ -125,6 +149,34 @@ underway with an approved 8-step plan requiring explicit sign-off after each ste
   confirm the three concurrency specs (including the new one) pass for real rather than
   self-skipping** — everything else has already been confirmed green in-sandbox this session.
   Awaiting your local verification and approval before Step 8.
+- **Step 8** (account deletion — `DELETE /users/me`; **final step of Phase 2**): scope inferred
+  the same way as Step 6/7's — Step 6's own scope section explicitly listed "Account deletion" as
+  excluded/deferred alongside session management (which shipped in Step 7); this is the one
+  remaining item from that sentence. Requires the current password (same reasoning
+  `changePassword` already established); on success, permanently deletes the `User` row and calls
+  Step 7's `RefreshTokenStore.revokeAllForUser` — the first flow to wire that primitive in
+  automatically rather than only exposing it directly via `/auth/sessions/revoke-all`. Required
+  exporting `RefreshTokenStore` from `AuthModule` (it was already a provider, just not previously
+  exported) — the only place this step touches already-completed Step 1–7 code, and purely
+  additive (widening an `exports` array cannot change existing behavior). No soft-delete/grace
+  period, no cascading deletion (nothing downstream exists yet), no deletion-confirmation email,
+  no admin-initiated deletion of another user's account — all deliberately out of scope. No new
+  dependencies. **This session's sandbox (same one as Step 7's) still had working npm/pnpm network
+  egress** — `pnpm build`, `pnpm lint`, `pnpm typecheck`, and `pnpm test` were all genuinely
+  executed and all passed: `@omniscience/api` 29/29 suites, 203/203 tests (up from Step 7's 28/193);
+  full monorepo 15/15 turbo tasks green. `pnpm --filter @omniscience/api exec prisma generate` was
+  not re-run this session (Step 7's session already established `binaries.prisma.sh` is outside
+  this sandbox's network allowlist, and this step's unchanged Prisma schema means re-running would
+  only reproduce the identical, already-diagnosed 403); `docker compose up -d` was not run (no
+  `docker` binary in this sandbox) — neither blocked build/lint/typecheck/test, which all run
+  against the existing Fake*Service trio. See `claude/CURRENT_PHASE.md` for full detail,
+  architecture, security notes, and known limitations. **You must still run
+  `pnpm --filter @omniscience/api exec prisma generate` and `docker compose up -d` where they're
+  reachable, and re-run `pnpm test` with a real Redis, to confirm the three concurrency specs pass
+  for real** — everything else has already been confirmed green in-sandbox this session. This is
+  the final step of Phase 2 — Phase 3 has not been started. Awaiting your local verification, after
+  which ChatGPT will perform the full Phase 2 senior architecture/security/code-quality review
+  before Phase 3 begins.
 
 ## Repository Rule
 

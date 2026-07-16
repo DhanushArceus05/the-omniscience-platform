@@ -138,6 +138,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@omniscience/schemas':
+        specifier: workspace:*
+        version: link:../../packages/schemas
       '@omniscience/sdk':
         specifier: workspace:*
         version: link:../../packages/sdk

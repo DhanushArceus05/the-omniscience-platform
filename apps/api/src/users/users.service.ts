@@ -1,20 +1,25 @@
 import { BadRequestException, Injectable, UnauthorizedException } from "@nestjs/common";
-import type { ChangePasswordResponse, UpdateProfileResponse } from "@omniscience/types";
+import type {
+  ChangePasswordResponse,
+  DeleteAccountResponse,
+  UpdateProfileResponse,
+} from "@omniscience/types";
 import { PasswordHasherService } from "../auth/password-hasher.service";
+import { RefreshTokenStore } from "../auth/refresh-token.store";
 import { PrismaService } from "../prisma/prisma.service";
 
 /**
- * Orchestrates the Phase 2 Step 6 user-profile flow: updating the
+ * Orchestrates the Phase 2 Step 6 user-profile flow (updating the
  * authenticated user's own display name, and changing their password
- * while already logged in.
+ * while already logged in) plus Phase 2 Step 8's account deletion.
  *
- * Both operations act only on the caller's own account — the user id
+ * Every operation acts only on the caller's own account — the user id
  * comes exclusively from the verified JWT payload `JwtAuthGuard`
  * attaches (`AccessTokenPayload.sub`), passed in by
  * `UsersController`, never from a request body or query param. There is
- * no "update someone else's profile" capability here or anywhere else
- * in this step; that would be an admin capability, out of scope (see
- * `docs/08_Development_Roadmap.md`'s later "Admin, Security &
+ * no "update/delete someone else's profile" capability here or anywhere
+ * else in this step; that would be an admin capability, out of scope
+ * (see `docs/08_Development_Roadmap.md`'s later "Admin, Security &
  * Reliability" phase).
  */
 @Injectable()
@@ -22,6 +27,7 @@ export class UsersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly passwordHasher: PasswordHasherService,
+    private readonly refreshTokens: RefreshTokenStore,
   ) {}
 
   async updateProfile(userId: string, name: string): Promise<UpdateProfileResponse> {
@@ -70,6 +76,49 @@ export class UsersService {
     await this.prisma.user.update({ where: { id: userId }, data: { passwordHash } });
 
     return { email: user.email };
+  }
+
+  /**
+   * Phase 2 Step 8 — permanently deletes the caller's own account.
+   * Irreversible: there is no soft-delete, grace period, or restore
+   * path. Requires the current password first, for the same reason
+   * `changePassword` does (a bare stolen/leaked access token alone must
+   * not be enough to destroy the account) — reuses the exact
+   * `CURRENT_PASSWORD_INCORRECT` code `changePassword` already
+   * established for this identical check, rather than inventing a
+   * second name for the same failure.
+   *
+   * Order matters: the `User` row is deleted first — that row's
+   * existence is what every other endpoint's authorization actually
+   * depends on (e.g. `refresh()`'s existing re-check that the user
+   * still exists), so deleting it is what makes the account gone in
+   * every sense that matters, immediately. `revokeAllForUser` runs
+   * after, on a best-effort basis, purely to free the now-orphaned
+   * Redis session records promptly rather than leaving them to expire
+   * on their own TTL — even if this second step were somehow skipped,
+   * every one of those refresh tokens would already fail on its next
+   * use, since `refresh()` re-checks the user exists before honoring
+   * one. See `RefreshTokenStore`'s Step 7 session-index docstring for
+   * why the index itself is never authoritative.
+   */
+  async deleteAccount(userId: string, password: string): Promise<DeleteAccountResponse> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw this.staleSessionError();
+    }
+
+    const isPasswordValid = await this.passwordHasher.verify(user.passwordHash, password);
+    if (!isPasswordValid) {
+      throw new BadRequestException({
+        code: "CURRENT_PASSWORD_INCORRECT",
+        message: "The current password is incorrect.",
+      });
+    }
+
+    await this.prisma.user.delete({ where: { id: userId } });
+    await this.refreshTokens.revokeAllForUser(userId);
+
+    return { deleted: true };
   }
 
   private staleSessionError(): UnauthorizedException {

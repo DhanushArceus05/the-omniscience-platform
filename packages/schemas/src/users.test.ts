@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { changePasswordRequestSchema, updateProfileRequestSchema } from "./users";
+import { changePasswordRequestSchema, deleteAccountRequestSchema, updateProfileRequestSchema } from "./users";
 
 describe("updateProfileRequestSchema", () => {
   it("accepts a valid payload, trimming the name", () => {
@@ -37,5 +37,21 @@ describe("changePasswordRequestSchema", () => {
     expect(() =>
       changePasswordRequestSchema.parse({ ...validPayload, newPassword: "weak" }),
     ).toThrow();
+  });
+});
+
+describe("deleteAccountRequestSchema", () => {
+  it("accepts a valid payload", () => {
+    expect(deleteAccountRequestSchema.parse({ password: "CorrectPassw0rd!" })).toEqual({
+      password: "CorrectPassw0rd!",
+    });
+  });
+
+  it("rejects a missing password", () => {
+    expect(() => deleteAccountRequestSchema.parse({})).toThrow();
+  });
+
+  it("rejects an empty password", () => {
+    expect(() => deleteAccountRequestSchema.parse({ password: "" })).toThrow();
   });
 });

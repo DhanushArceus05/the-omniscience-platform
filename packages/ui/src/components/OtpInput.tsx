@@ -33,7 +33,7 @@ export function OtpInput({
     next[index] = digit;
     const nextValue = next.join("");
     onChange(nextValue);
-    if (nextValue.length === length && !nextValue.includes("")) {
+    if (next.every((slot) => slot !== "")) {
       onComplete?.(nextValue);
     }
   }

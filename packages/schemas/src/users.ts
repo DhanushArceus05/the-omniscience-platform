@@ -28,5 +28,18 @@ export const changePasswordRequestSchema = z.object({
   newPassword: passwordSchema,
 });
 
+/**
+ * Phase 2 Step 8 — account deletion. Reuses `loginPasswordSchema` for
+ * the same reason `changePasswordRequestSchema.currentPassword` does:
+ * this asserts an *existing* credential, not a new one being chosen, so
+ * the looser login-shape check (not the full strength policy) is the
+ * correct one — an account created under an older, looser password
+ * policy must still be able to delete itself.
+ */
+export const deleteAccountRequestSchema = z.object({
+  password: loginPasswordSchema,
+});
+
 export type UpdateProfileRequestSchema = z.infer<typeof updateProfileRequestSchema>;
 export type ChangePasswordRequestSchema = z.infer<typeof changePasswordRequestSchema>;
+export type DeleteAccountRequestSchema = z.infer<typeof deleteAccountRequestSchema>;
