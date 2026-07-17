@@ -3,7 +3,7 @@ import { Tooltip } from "@omniscience/ui";
 
 export function NotificationButton(): JSX.Element {
   return (
-    <Tooltip label="Notifications (coming soon)">
+    <Tooltip label="Notifications (coming soon)" placement="bottom" align="end">
       <button
         type="button"
         aria-label="Notifications"

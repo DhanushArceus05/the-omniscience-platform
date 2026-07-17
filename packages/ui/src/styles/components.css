@@ -108,8 +108,10 @@
   border: 1px solid var(--omni-glass-border);
   border-radius: var(--omni-radius-lg);
   padding: var(--omni-space-6);
-  backdrop-filter: blur(var(--omni-glass-blur));
-  -webkit-backdrop-filter: blur(var(--omni-glass-blur));
+  /* DIAGNOSTIC (temporary) — isolation test: backdrop-filter disabled.
+     Revert after the test result is confirmed. */
+  /* backdrop-filter: blur(var(--omni-glass-blur)); */
+  /* -webkit-backdrop-filter: blur(var(--omni-glass-blur)); */
   box-shadow: var(--omni-shadow-lg);
 }
 
@@ -342,9 +344,6 @@
 
 .omni-tooltip {
   position: absolute;
-  bottom: calc(100% + var(--omni-space-2));
-  left: 50%;
-  transform: translateX(-50%);
   background: var(--omni-color-bg-elevated);
   border: 1px solid var(--omni-color-border-strong);
   color: var(--omni-color-text-primary);
@@ -355,6 +354,38 @@
   z-index: var(--omni-z-tooltip);
   box-shadow: var(--omni-shadow-md);
   pointer-events: none;
+}
+
+/* Default/legacy placement: above the trigger. Fine for triggers with
+   room above them, but clips against the viewport for anything near
+   the top edge (e.g. header icons) — those should use --bottom instead. */
+.omni-tooltip--top {
+  bottom: calc(100% + var(--omni-space-2));
+}
+
+/* Renders below the trigger with the same offset, so it stays inside
+   the viewport for triggers pinned near the top edge. */
+.omni-tooltip--bottom {
+  top: calc(100% + var(--omni-space-2));
+}
+
+/* Default/legacy alignment: centered on the trigger. Fine when there's
+   room on both sides, but a wide nowrap label centered on a trigger
+   near the right viewport edge (e.g. the last header action icon)
+   overflows past the edge and grows the document's scrollable width. */
+.omni-tooltip--align-center {
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+/* Anchors the tooltip's right edge to the trigger's right edge instead
+   of centering, so it grows into the space already available to the
+   left rather than past the trigger toward the viewport edge. Use for
+   triggers pinned near the right edge of their container. */
+.omni-tooltip--align-end {
+  left: auto;
+  right: 0;
+  transform: none;
 }
 
 /* ---------- Dropdown ---------- */

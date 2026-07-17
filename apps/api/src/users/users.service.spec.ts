@@ -12,6 +12,7 @@ describe("UsersService", () => {
   const passwordHasher = {
     hash: jest.fn(),
     verify: jest.fn(),
+    assertDiffersFromCurrent: jest.fn(),
   } as unknown as PasswordHasherService;
 
   const refreshTokens = {
@@ -83,6 +84,10 @@ describe("UsersService", () => {
         "hashed-current-password",
         "OldPassw0rd!",
       );
+      expect(passwordHasher.assertDiffersFromCurrent).toHaveBeenCalledWith(
+        "hashed-current-password",
+        "N3wSup3r$ecretPassw0rd!",
+      );
       expect(passwordHasher.hash).toHaveBeenCalledWith("N3wSup3r$ecretPassw0rd!");
       expect(prisma.user.update).toHaveBeenCalledWith({
         where: { id: "user_1" },
@@ -98,6 +103,30 @@ describe("UsersService", () => {
       await expect(
         service.changePassword("user_1", "WrongPassword!", "N3wSup3r$ecretPassw0rd!"),
       ).rejects.toThrow(BadRequestException);
+      expect(passwordHasher.hash).not.toHaveBeenCalled();
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it("propagates NEW_PASSWORD_MUST_DIFFER and does not update anything when the new password matches the current one", async () => {
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(buildUser());
+      (passwordHasher.verify as jest.Mock).mockResolvedValue(true);
+      (passwordHasher.assertDiffersFromCurrent as jest.Mock).mockRejectedValue(
+        new BadRequestException({
+          code: "NEW_PASSWORD_MUST_DIFFER",
+          message: "New password must be different from your current password.",
+        }),
+      );
+
+      const promise = service.changePassword("user_1", "CurrentPassw0rd!", "CurrentPassw0rd!");
+
+      await expect(promise).rejects.toThrow(BadRequestException);
+      await expect(promise).rejects.toMatchObject({
+        response: expect.objectContaining({ code: "NEW_PASSWORD_MUST_DIFFER" }),
+      });
+      expect(passwordHasher.assertDiffersFromCurrent).toHaveBeenCalledWith(
+        "hashed-current-password",
+        "CurrentPassw0rd!",
+      );
       expect(passwordHasher.hash).not.toHaveBeenCalled();
       expect(prisma.user.update).not.toHaveBeenCalled();
     });

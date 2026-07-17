@@ -479,6 +479,13 @@ export class AuthService {
       });
     }
 
+    // Must run after the OTP itself is confirmed valid (above) so an
+    // attacker who doesn't know the OTP can't use this response to
+    // learn anything about the account's current password. Reuses the
+    // exact check and error `UsersService.changePassword` (Step 6)
+    // already established for this identical rule.
+    await this.passwordHasher.assertDiffersFromCurrent(user.passwordHash, newPassword);
+
     const passwordHash = await this.passwordHasher.hash(newPassword);
     await this.prisma.user.update({ where: { id: user.id }, data: { passwordHash } });
     await this.passwordResets.delete(email);

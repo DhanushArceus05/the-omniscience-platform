@@ -32,6 +32,57 @@ interface Particle {
 const ACCENT_COLORS = ["124, 92, 255", "34, 211, 238", "244, 114, 182"];
 
 /**
+ * The background is capped to this cadence regardless of display refresh
+ * rate. See {@link shouldRenderFrame} for why.
+ */
+export const BACKGROUND_TARGET_FPS = 30;
+export const BACKGROUND_FRAME_INTERVAL_MS = 1000 / BACKGROUND_TARGET_FPS;
+
+/**
+ * Decides whether enough time has elapsed since the last rendered frame to
+ * justify repainting the canvas again.
+ *
+ * The background animates continuously behind glass (`backdrop-filter:
+ * blur()`) surfaces such as the sidebar and glass cards. `backdrop-filter`
+ * must resample its backdrop every time that backdrop's pixels change, so
+ * redrawing this canvas on every `requestAnimationFrame` tick ties the
+ * browser's compositor work to the display's refresh rate: on a 120-144Hz
+ * display, the canvas (and every blurred surface above it) repaints
+ * 2-2.5x more often than on a 60Hz display for the exact same, very slow
+ * drift. Under that load the compositor can fall behind and briefly show
+ * an unpainted tile for a blurred surface — visible as a flashing gray
+ * rectangle wherever a glass surface happens to sit, exacerbated by any
+ * extra paint work (e.g. hover states) landing in the same frame.
+ *
+ * Throttling to a fixed cadence keeps the animation visually identical
+ * (the drift is already imperceptibly slow) while capping repaint — and
+ * therefore backdrop-filter recompute — frequency, independent of the
+ * display's refresh rate.
+ *
+ * Exported as a pure function so it can be unit tested without needing a
+ * real canvas 2D context (unavailable in jsdom).
+ */
+export function shouldRenderFrame(
+  timestamp: number,
+  lastFrameTime: number | null,
+  frameIntervalMs: number = BACKGROUND_FRAME_INTERVAL_MS,
+): { shouldRender: boolean; nextFrameTime: number } {
+  // `null` is the sentinel for "hasn't rendered yet" (the caller's initial
+  // state before the first requestAnimationFrame tick). Always render
+  // that first frame regardless of the raw timestamp value, since rAF
+  // timestamps are time-since-navigation-start, not time-since-this-
+  // effect-mounted, and could legitimately be small.
+  if (lastFrameTime === null) {
+    return { shouldRender: true, nextFrameTime: timestamp };
+  }
+  const elapsed = timestamp - lastFrameTime;
+  if (elapsed < frameIntervalMs) {
+    return { shouldRender: false, nextFrameTime: lastFrameTime };
+  }
+  return { shouldRender: true, nextFrameTime: timestamp - (elapsed % frameIntervalMs) };
+}
+
+/**
  * The approved background engine (docs/03_Product_Design.md): aurora
  * gradient blobs drifting slowly behind a field of connected floating
  * particles, capped to devicePixelRatio and paused when the tab is
@@ -57,6 +108,7 @@ export function AdaptiveBackground({
     let height = 0;
     let animationFrame = 0;
     let running = true;
+    let lastFrameTime: number | null = null;
 
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
 
@@ -139,8 +191,15 @@ export function AdaptiveBackground({
       }
     }
 
-    function step(): void {
-      if (!ctx || !running) return;
+    function step(timestamp: number): void {
+      if (!running) return;
+      animationFrame = window.requestAnimationFrame(step);
+
+      const { shouldRender, nextFrameTime } = shouldRenderFrame(timestamp, lastFrameTime);
+      if (!shouldRender) return;
+      lastFrameTime = nextFrameTime;
+
+      if (!ctx) return;
       ctx.clearRect(0, 0, width, height);
 
       for (const blob of blobs) {
@@ -165,8 +224,6 @@ export function AdaptiveBackground({
       for (const particle of particles) {
         drawParticle(ctx, particle, width, height);
       }
-
-      animationFrame = window.requestAnimationFrame(step);
     }
 
     function handleVisibilityChange(): void {

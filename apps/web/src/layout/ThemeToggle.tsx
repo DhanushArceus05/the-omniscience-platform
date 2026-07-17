@@ -18,7 +18,7 @@ export function ThemeToggle(): JSX.Element {
   const { theme, setTheme } = useTheme();
 
   return (
-    <Tooltip label={`Theme: ${theme}. Click to switch.`}>
+    <Tooltip label={`Theme: ${theme}. Click to switch.`} placement="bottom">
       <button
         type="button"
         aria-label={`Switch theme (currently ${theme})`}

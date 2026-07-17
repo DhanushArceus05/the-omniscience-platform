@@ -9,8 +9,10 @@
   padding: var(--omni-space-4);
   background: var(--omni-glass-bg);
   border-right: 1px solid var(--omni-color-border);
-  backdrop-filter: blur(var(--omni-glass-blur));
-  -webkit-backdrop-filter: blur(var(--omni-glass-blur));
+  /* DIAGNOSTIC (temporary) — isolation test: backdrop-filter disabled.
+     Revert after the test result is confirmed. */
+  /* backdrop-filter: blur(var(--omni-glass-blur)); */
+  /* -webkit-backdrop-filter: blur(var(--omni-glass-blur)); */
 }
 
 .omni-app-sidebar__link {

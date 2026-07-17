@@ -1,5 +1,17 @@
-import { Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable } from "@nestjs/common";
 import * as argon2 from "argon2";
+
+/**
+ * Shared error code/message for "the new password is identical to the
+ * one already on the account" — used by both the OTP-gated reset flow
+ * (`AuthService.resetPassword`) and the authenticated change-password
+ * flow (`UsersService.changePassword`) so callers don't invent two
+ * names for the same failure.
+ */
+export const NEW_PASSWORD_MUST_DIFFER_ERROR = {
+  code: "NEW_PASSWORD_MUST_DIFFER",
+  message: "New password must be different from your current password.",
+} as const;
 
 /**
  * Focused Argon2id password hashing abstraction. This is the only place
@@ -44,6 +56,24 @@ export class PasswordHasherService {
       return await argon2.verify(hash, password);
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Rejects a candidate new password that is identical to the
+   * account's current one. Shared by `AuthService.resetPassword`
+   * (Step 5, OTP-gated) and `UsersService.changePassword` (Step 6,
+   * authenticated) — both must apply this rule, and both throw the
+   * same `NEW_PASSWORD_MUST_DIFFER_ERROR` shape so clients only ever
+   * handle one code for this failure regardless of which flow they
+   * called. Runs the same `verify` used for real credential checks
+   * (not a plaintext compare), so it stays constant-time and
+   * consistent with the hash actually stored.
+   */
+  async assertDiffersFromCurrent(currentHash: string, newPassword: string): Promise<void> {
+    const isSameAsCurrent = await this.verify(currentHash, newPassword);
+    if (isSameAsCurrent) {
+      throw new BadRequestException(NEW_PASSWORD_MUST_DIFFER_ERROR);
     }
   }
 }

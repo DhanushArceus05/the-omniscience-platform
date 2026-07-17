@@ -35,6 +35,7 @@ describe("AuthService", () => {
   const passwordHasher = {
     hash: jest.fn(),
     verify: jest.fn(),
+    assertDiffersFromCurrent: jest.fn(),
   } as unknown as PasswordHasherService;
 
   const otpService = { generateCode: jest.fn() } as unknown as OtpService;
@@ -498,12 +499,18 @@ describe("AuthService", () => {
       const record = buildResetRecord();
       (passwordResets.get as jest.Mock).mockResolvedValue(record);
       (passwordHasher.verify as jest.Mock).mockResolvedValue(true);
-      (prisma.user.findUnique as jest.Mock).mockResolvedValue(buildUser({ id: "user_1" }));
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(
+        buildUser({ id: "user_1", passwordHash: "hashed-current-password" }),
+      );
       (passwordHasher.hash as jest.Mock).mockResolvedValue("new-hashed-password");
 
       const result = await service.resetPassword("user@example.com", "123456", "N3wSup3r$ecret!");
 
       expect(passwordHasher.verify).toHaveBeenCalledWith(record.otpHash, "123456");
+      expect(passwordHasher.assertDiffersFromCurrent).toHaveBeenCalledWith(
+        "hashed-current-password",
+        "N3wSup3r$ecret!",
+      );
       expect(passwordHasher.hash).toHaveBeenCalledWith("N3wSup3r$ecret!");
       expect(prisma.user.update).toHaveBeenCalledWith({
         where: { id: "user_1" },
@@ -511,6 +518,35 @@ describe("AuthService", () => {
       });
       expect(passwordResets.delete).toHaveBeenCalledWith("user@example.com");
       expect(result).toEqual({ email: "user@example.com" });
+    });
+
+    it("propagates NEW_PASSWORD_MUST_DIFFER and does not update or clear the reset record when the new password matches the current one", async () => {
+      const record = buildResetRecord();
+      (passwordResets.get as jest.Mock).mockResolvedValue(record);
+      (passwordHasher.verify as jest.Mock).mockResolvedValue(true);
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(
+        buildUser({ id: "user_1", passwordHash: "hashed-current-password" }),
+      );
+      (passwordHasher.assertDiffersFromCurrent as jest.Mock).mockRejectedValue(
+        new BadRequestException({
+          code: "NEW_PASSWORD_MUST_DIFFER",
+          message: "New password must be different from your current password.",
+        }),
+      );
+
+      const promise = service.resetPassword("user@example.com", "123456", "CurrentPassw0rd!");
+
+      await expect(promise).rejects.toThrow(BadRequestException);
+      await expect(promise).rejects.toMatchObject({
+        response: expect.objectContaining({ code: "NEW_PASSWORD_MUST_DIFFER" }),
+      });
+      expect(passwordHasher.hash).not.toHaveBeenCalled();
+      expect(prisma.user.update).not.toHaveBeenCalled();
+      // The reset record must survive a rejected attempt so the same
+      // OTP can still be used to submit a different new password,
+      // consistent with every other in-band validation failure here
+      // (e.g. an incorrect OTP does not delete the record either).
+      expect(passwordResets.delete).not.toHaveBeenCalled();
     });
 
     it("throws NotFoundException when there is no pending reset", async () => {

@@ -72,6 +72,11 @@ export class UsersService {
       });
     }
 
+    // Same rule and same shared check `AuthService.resetPassword`
+    // (Step 5) applies for its OTP-gated flow — a "changed" password
+    // that's identical to the old one isn't a real credential change.
+    await this.passwordHasher.assertDiffersFromCurrent(user.passwordHash, newPassword);
+
     const passwordHash = await this.passwordHasher.hash(newPassword);
     await this.prisma.user.update({ where: { id: userId }, data: { passwordHash } });
 
