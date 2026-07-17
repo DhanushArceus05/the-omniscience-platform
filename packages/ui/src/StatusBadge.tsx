@@ -1,6 +1,6 @@
 import type { JSX } from "react";
 
-export type StatusBadgeTone = "ok" | "degraded" | "down";
+export type StatusBadgeTone = "ok" | "degraded" | "down" | "neutral";
 
 export interface StatusBadgeProps {
   tone: StatusBadgeTone;
@@ -11,6 +11,7 @@ const toneStyles: Record<StatusBadgeTone, { background: string; color: string }>
   ok: { background: "#0f2e1d", color: "#4ade80" },
   degraded: { background: "#2e2a0f", color: "#fbbf24" },
   down: { background: "#2e0f14", color: "#f87171" },
+  neutral: { background: "#25272b", color: "#9ca3af" },
 };
 
 /**

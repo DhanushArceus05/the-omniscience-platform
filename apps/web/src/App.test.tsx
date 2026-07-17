@@ -79,9 +79,10 @@ describe("App routing", () => {
     expect(screen.getByRole("heading", { name: "Choose a new password" })).toBeTruthy();
   });
 
-  it("renders the app shell preview at /app", () => {
+  it("redirects an unauthenticated visit to /app to /login", () => {
+    window.localStorage.clear();
     renderAt("/app");
-    expect(screen.getByText("Dashboard arrives in Phase 3")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Welcome back" })).toBeTruthy();
   });
 
   it("renders the not-found page for an unknown route", () => {

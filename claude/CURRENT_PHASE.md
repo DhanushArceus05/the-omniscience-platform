@@ -1,4 +1,26 @@
-# Phase 1 — Premium UI Foundation
+# Phase 3 — Dashboard & Workspace
+
+## Current status (updated — see "Phase 3 Step 1" section at the end of this file for full detail)
+
+- **Phase 0 — Foundation**: complete.
+- **Phase 1 — Premium UI Foundation**: complete (see that phase's section below, unchanged).
+- **Phase 2 — Authentication & Users**: complete. All 8 backend steps plus the frontend auth
+  integration (register/verify-otp/login/forgot-password/reset-password wired to the real
+  `/auth/*` endpoints) are implemented, locally verified, committed, and pushed. This file's body
+  below (originally written mid-Phase-2) was not updated line-by-line as later steps landed —
+  treat the "Current status" section here, not the stale "Phase 1 — Premium UI Foundation /
+  Status: Completed" header that used to open this file, as authoritative for what phase is
+  active.
+- **Post-Phase-2 UI fixes (verified, committed, pushed)**: tooltip overflow and notification
+  tooltip alignment were fixed; a mouse-movement flashing artifact was traced to a static
+  `backdrop-filter` blur on the app sidebar and glass cards and disabled in
+  `apps/web/src/layout/appShell.css` and `packages/ui/src/styles/components.css` (kept disabled —
+  do not re-enable without a follow-up fix for the underlying flashing artifact).
+- **Phase 3 — Dashboard & Workspace, Step 1 (Protected Routing and Session Bootstrap)**:
+  implemented this session — see the dedicated section at the end of this file. Phase 3 Step 2
+  has not been started.
+
+## Phase 1 — Premium UI Foundation
 
 Status: **Completed** (frontend architecture and reusable UI only; no backend, auth, or AI wiring).
 
@@ -2012,3 +2034,254 @@ pnpm test
 in every prior step. Everything above reflects careful manual code/contract review (including
 re-reading every touched shared package and UI component from source, not from memory), plus one
 real regression found and fixed in existing test coverage — not a tool run.
+
+# Phase 3 Step 1 — Protected Routing and Session Bootstrap
+
+Approved scope (with one architectural correction from the plan Claude originally proposed):
+`ProtectedRoute` must not gate on a plain `isAuthenticated` boolean, since that can't distinguish
+"not logged in" from "haven't checked yet" and would flash a redirect on every page load. Instead
+`AuthContext` exposes an explicit `authStatus: "loading" | "authenticated" | "unauthenticated"`
+bootstrap state machine, and `ProtectedRoute` renders a loading state (never redirecting) until
+bootstrap finishes.
+
+## What this step is (and is not)
+
+The first Phase 3 step, not a dashboard feature: it makes `/app` a real authenticated boundary —
+verified against the backend via `/auth/me`, with a single refresh-and-retry via `/auth/refresh`
+if the access token has expired — instead of the unguarded preview route it was at the end of
+Phase 2. No dashboard widgets, workspace data, or new Prisma models. `AppShellPreviewPage`'s
+content is unchanged.
+
+## Files changed
+
+- **`packages/sdk/src/client.ts`** — added `refresh(input: RefreshRequest)` (`POST /auth/refresh`)
+  and `getMe(accessToken: string)` (`GET /auth/me`, sends `Authorization: Bearer <token>`). Both
+  reuse the existing `ApiSuccess`/`ApiError`-envelope-unwrapping logic, which was extracted out of
+  `postJson` into a shared private `request()` method (`postJson` now just builds the URL/init and
+  delegates) so the new authenticated `GET` didn't need to duplicate that parsing. No behavior
+  change to any existing method — same status/error handling, same `ApiClientError` shape.
+- **`packages/sdk/src/client.test.ts`** — added coverage for `refresh()` (success + `401
+  INVALID_REFRESH_TOKEN`) and `getMe()` (success, asserting the `Authorization` header, + `401
+  UNAUTHORIZED`).
+- **`apps/web/src/lib/auth/AuthContext.tsx`** — added the `authStatus`/`isInitializing` bootstrap
+  state machine. On mount, if a persisted session exists: calls `getMe()`; on a `401
+  ApiClientError`, calls `refresh()` once, persists the rotated tokens, and retries `getMe()`
+  once; any other failure at any point clears the persisted session and sets `authStatus =
+  "unauthenticated"`. A non-401 `getMe()` failure (network/5xx) does **not** clear the persisted
+  session — it can't confirm the session invalid, only that it couldn't confirm it valid right
+  now, so a reload once the backend is reachable can still succeed. A `useRef` guard
+  (`bootstrapped`) makes the effect a true run-once, surviving React 18 StrictMode's intentional
+  mount→cleanup→remount cycle in development (which would otherwise fire a second `/auth/me`, and
+  potentially a second `/auth/refresh` reusing an already-rotated-and-discarded refresh token).
+  `setSession`/`logout` now also set `authStatus` directly (`"authenticated"` /
+  `"unauthenticated"`) instead of only touching the session object.
+- **`apps/web/src/lib/auth/ProtectedRoute.tsx`** (new) — reads `authStatus`: `"loading"` → renders
+  a centered `Spinner` (never redirects); `"unauthenticated"` → `<Navigate to="/login" replace
+  state={{ from: location }} />`; `"authenticated"` → renders `children`.
+- **`apps/web/src/lib/auth/ProtectedRoute.test.tsx`** (new) — 7 tests: logged-out visit redirects;
+  valid persisted session loads `/app`; loading state renders and does not redirect prematurely
+  (via a manually-resolved `getMe()` promise); expired-access-token + valid-refresh-token silently
+  recovers (asserts `refresh()` called exactly once, `getMe()` called exactly twice — initial +
+  retry); invalid refresh token clears `localStorage` and redirects; refresh is attempted at most
+  once even when the retried `getMe()` also fails (still only one `refresh()` call, two `getMe()`
+  calls, no loop); and a full `ProtectedRoute` + real `LoginPage` integration test proving the
+  user returns to their originally-requested route (`/app/workspace`, not the default `/app`)
+  after signing in.
+- **`apps/web/src/App.tsx`** — `/app` route's element is now `<ProtectedRoute><AppShellPreviewPage
+  /></ProtectedRoute>`; doc comment updated.
+- **`apps/web/src/App.test.tsx`** — the old unguarded `/app` test ("renders the app shell preview
+  at /app") replaced with "redirects an unauthenticated visit to /app to /login", matching the new
+  behavior (no session in `localStorage` in this test file).
+- **`apps/web/src/App.configError.test.tsx`** — the old "still renders the app shell ... when the
+  URLs are unset" test replaced: with no persisted session, `ProtectedRoute` now redirects to
+  `/login` before `AppShellPreviewPage`/`SystemStatusPanel` are ever reached, regardless of the
+  config-error state, so the test now asserts that redirect happens without throwing (the original
+  regression this suite guards against — a crash from module-scope client construction — remains
+  covered by the other two tests in this file, which still render real routes with no config).
+- **`apps/web/src/pages/LoginPage.tsx`** — reads `location.state.from` (the `Location`
+  `ProtectedRoute` attaches on redirect) and, on successful login, navigates there instead of
+  always defaulting to `/app`; falls back to `/app` when there's no `from` (i.e. a direct visit to
+  `/login`, not a redirect). Uses `navigate(..., { replace: true })` so the `/login` redirect step
+  doesn't stay in browser history.
+
+## Behavior
+
+- Visiting `/app` while logged out (or with a corrupted/unparseable stored session) redirects to
+  `/login`, carrying the original location so login returns the user there.
+- Visiting `/app` with a valid persisted session shows a brief loading state (`Spinner`, `role="status"`)
+  while `/auth/me` confirms it, then renders the shell.
+- An expired access token (glossary: `/auth/me` returns `401`) triggers exactly one
+  `/auth/refresh` call; on success the rotated tokens are persisted and `/auth/me` is retried once
+  more before the route renders. No loop under any failure combination — at most one `refresh()`
+  and at most two `getMe()` calls per bootstrap.
+- A refresh failure (or a retried `/auth/me` that still fails) clears `localStorage` entirely and
+  shows `/login`.
+- The frontend never decodes the JWT to decide authentication — every determination goes through
+  `/auth/me`/`/auth/refresh`, per the approved correction.
+
+## Verification (this session)
+
+This sandbox had working npm/pnpm network egress this session (`corepack prepare pnpm@9.12.0
+--activate` succeeded). Real, full runs — not manual review:
+
+```
+pnpm install --frozen-lockfile   # succeeded (817 packages)
+pnpm build                        # 9/9 packages, succeeded
+pnpm lint                         # 15/15 turbo tasks, succeeded
+pnpm typecheck                    # 15/15 turbo tasks, succeeded
+pnpm test                         # 15/15 turbo tasks, succeeded
+```
+
+Test results: `@omniscience/sdk` 13/13 (was 8/8 — added 5 for `refresh`/`getMe`); `@omniscience/web`
+40/40 across 8 files (was 33/33 across 6 files — added `ProtectedRoute.test.tsx`'s 7 tests, net of
+the two rewritten `/app` tests); `@omniscience/api` 205/205 across 29 suites (unchanged — no
+backend files touched this step); `@omniscience/ui` 80/80 (unchanged). Full monorepo: 15/15 turbo
+tasks green across build/lint/typecheck/test.
+
+`pnpm --filter @omniscience/api exec prisma generate` reproduced the same `binaries.prisma.sh`
+403 documented in every prior session (outside this sandbox's network allowlist) — expected and
+harmless here since this step touched no backend/Prisma code and every API test already runs
+against the existing `FakePrismaService`/`FakeRedisService` trio. `docker compose up -d` was not
+run (no `docker` binary in this sandbox) — not required for the same reason.
+
+## Known limitations / explicitly out of scope
+
+- No dashboard widgets, workspace data model, or new Prisma models — that's Phase 3 Step 2+.
+- `AppShellPreviewPage` content is unchanged (`"Dashboard arrives in Phase 3"` still shows once a
+  session is confirmed) — only the route around it changed.
+- No proactive/background token refresh (e.g. a timer before expiry, or refreshing on every
+  outgoing request) — only the one-time bootstrap-on-mount check implemented here. A user whose
+  access token expires mid-session (while already inside `/app`) will not be silently refreshed
+  again until they reload or re-navigate through `ProtectedRoute`. Left for a later step once
+  Phase 3 actually has authenticated API calls happening inside the shell.
+- `ProtectedRoute`'s "return to originally-requested route" (`from`) is only wired through
+  `LoginPage`; `RegisterPage`→verify→login and the forgot/reset-password flow do not currently
+  carry `from` through to their eventual `/login` hop, so a redirect-triggered registration still
+  lands on `/app` by default after the full flow. Flagged as a minor, deliberately deferred gap —
+  "where practical" per the approved scope, and the common case (an already-registered user
+  hitting a protected link while logged out) is covered.
+
+## Honest status
+
+**Verified end-to-end in this sandbox** — real `pnpm install`/`build`/`lint`/`typecheck`/`test`
+runs, not manual review (unlike several earlier Phase 2 steps, which were review-only due to no
+network egress in those sessions). `prisma generate`/`docker compose` remain unavailable in this
+sandbox for the unrelated, previously-documented reason (`binaries.prisma.sh` outside the network
+allowlist / no `docker` binary) but are irrelevant to this step's unchanged backend. Awaiting your
+local re-run and confirmation, then ChatGPT's senior review, before Phase 3 Step 2.
+
+# Phase 3 Step 1 — Regression Fix (infinite loading + logout not wired)
+
+Your local verification found two blockers after the initial Phase 3 Step 1 implementation above.
+Both are fixed. Phase 3 Step 1 is **not yet re-confirmed by your local run** — this section
+documents the investigation and fix; awaiting your local re-verification.
+
+## Root cause (found by empirical reproduction, not guessed)
+
+**Blocker A — infinite loading on `/app` (both "another browser without logging in" and "refresh
+after login").** Reproduced by rendering `AuthProvider`/`ProtectedRoute` inside a real
+`<StrictMode>` wrapper (matching `apps/web/src/main.tsx` exactly) in a test — this is the detail
+that mattered: without `<StrictMode>`, the original bootstrap logic worked correctly, which is why
+every test in the prior step's `pnpm test` run passed despite the bug shipping.
+
+The bootstrap effect used a `cancelled` boolean captured by that specific effect invocation's
+closure, flipped to `true` by that invocation's cleanup function:
+```
+let cancelled = false;
+async function bootstrap(...) { ...; if (cancelled) return; ...; }
+void bootstrap(initialSession);
+return () => { cancelled = true; };
+```
+React 18 StrictMode's dev-only mount → cleanup → remount cycle runs that cleanup immediately after
+the first (real) bootstrap call is kicked off, setting `cancelled = true` — permanently, since
+nothing ever set it back. The `bootstrapped` ref (correctly, by design) then prevented the
+remount's effect invocation from starting a *second* bootstrap call, since only one real network
+round-trip should happen. Net effect: the one real `getMe()`/`refresh()` result, whenever it
+arrived, was silently discarded by `if (cancelled) return`, and `authStatus` never left
+`"loading"` — the spinner rendered forever. Confirmed via a call-count trace (`getMe` was called
+exactly once and did resolve, but the resulting `setAuthStatus` call never ran) before touching
+any code.
+
+This affected **any** bootstrap path with an async round-trip: a valid session (case "refresh
+after login") and an invalid/expired session needing the getMe→refresh→retry chain (most likely
+explanation for "another browser without logging in" — that browser most plausibly still had a
+persisted-but-now-invalid session from earlier testing, e.g. a redis restart invalidating refresh
+tokens, or shared browser storage across tabs/windows, since a *genuinely* session-less mount was
+tested and confirmed unaffected both before and after the fix). Empirically, a session-less mount
+never hit this bug at all — `authStatus` starts as `"unauthenticated"` synchronously from
+`useState`'s lazy initializer and no async call is ever made on that path.
+
+**Fix:** replaced the per-invocation `cancelled` closure with an `isMounted` ref that is reset to
+`true` at the *start* of every effect invocation, including the StrictMode remount:
+```
+const isMounted = useRef(true);
+useEffect(() => {
+  isMounted.current = true;
+  ...
+  return () => { isMounted.current = false; };
+}, [client]);
+```
+Trace: mount 1 sets `isMounted.current = true`, kicks off the one real bootstrap call (gated by
+`bootstrapped`), and registers a cleanup. StrictMode immediately runs that cleanup
+(`isMounted.current = false`), then remounts — the remount's effect body resets
+`isMounted.current = true` again (synchronously, before any pending promise can resolve — promise
+continuations run on a later microtask/macrotask) and, since `bootstrapped.current` is already
+`true`, does not start a second call. By the time the original, still-in-flight `getMe()`/
+`refresh()` promise resolves, `isMounted.current` is back to `true`, so the `setAuthStatus` calls
+go through. A genuine, permanent unmount (component actually removed from the tree, not
+StrictMode's synthetic one) still correctly suppresses state updates, since nothing resets
+`isMounted.current` back to `true` in that case.
+
+**Blocker B — logout not testable ("Sign out (coming soon)").** `UserMenu`'s `sign-out` item was
+still Phase 1's UI-only disabled placeholder; nothing in Phase 3 Step 1's original implementation
+wired it up. Fixed by threading a real `onSignOut` callback (`AppShellPreviewPage` → `AppShell` →
+`TopBar` → `UserMenu`) that calls `AuthContext.logout()`. `ProtectedRoute` picks up the resulting
+`authStatus === "unauthenticated"` reactively and redirects to `/login` on its own — `UserMenu`
+doesn't need to navigate. Also switched the top bar's previously-hardcoded `"Guest User"` to the
+real signed-in user's name via `useAuth().user`.
+
+## Files changed (this fix, on top of the original Phase 3 Step 1 diff)
+
+- `apps/web/src/lib/auth/AuthContext.tsx` — `cancelled` closure replaced with the `isMounted` ref
+  pattern described above; no other behavioral change (still exactly one `getMe()` and at most one
+  `refresh()`+retry-`getMe()` per bootstrap).
+- `apps/web/src/lib/auth/ProtectedRoute.test.tsx` — added a `StrictMode`-wrapped regression
+  `describe` block with 3 tests: valid session resolves (not stuck loading), invalid session
+  clears and redirects (not stuck loading), and a no-session control case (redirects immediately,
+  confirming this path was never affected).
+- `apps/web/src/layout/UserMenu.tsx` — `onSignOut` prop added; "Sign out" is no longer `disabled`.
+- `apps/web/src/layout/UserMenu.test.tsx` (new) — sign-out click calls `onSignOut`; Profile/
+  Settings remain disabled/coming-soon.
+- `apps/web/src/layout/TopBar.tsx` — threads `userName`/`onSignOut` props through to `UserMenu`.
+- `apps/web/src/layout/AppShell.tsx` — threads `userName`/`onSignOut` props through to `TopBar`.
+- `apps/web/src/layout/AppShell.test.tsx` — updated both tests for the two new required
+  `AppShellProps`.
+- `apps/web/src/pages/AppShellPreviewPage.tsx` — reads `user`/`logout` from `useAuth()`, passes
+  the real name and a working sign-out handler into `AppShell`.
+
+## Verification (this session, real runs)
+
+```
+pnpm build       → 9/9 packages, PASS
+pnpm lint        → 15/15 turbo tasks, PASS
+pnpm typecheck   → 15/15 turbo tasks, PASS
+pnpm test        → 15/15 turbo tasks, PASS
+```
+`@omniscience/web`: 45/45 across 9 files (was 40/40 across 8 — +3 StrictMode regression tests in
+`ProtectedRoute.test.tsx`, +2 in the new `UserMenu.test.tsx`). `@omniscience/sdk` 13/13,
+`@omniscience/api` 205/205, `@omniscience/ui` 80/80 — all unchanged, no files in those packages
+touched by this fix.
+
+Before writing the fix, the two new StrictMode regression tests were run against the **pre-fix**
+code and confirmed to fail (timing out at 2s, reproducing both hangs exactly), then run again
+against the fix and confirmed to pass in under 100ms — this is empirical confirmation of both the
+bug and the fix, not inference from reading the code.
+
+## Honest status
+
+Verified end-to-end in this sandbox exactly as the original Phase 3 Step 1 was. Root cause was
+found by reproducing the exact reported symptom under the exact rendering condition the app
+actually uses (`<StrictMode>`), not by inspecting the code and guessing. Awaiting your local
+re-run — in particular, please re-test all four originally-reported behaviors (login, unauthenticated
+`/app` visit in a fresh/second browser, page refresh after login, and sign-out from the account
+menu) — then ChatGPT's senior review, before Phase 3 Step 2.

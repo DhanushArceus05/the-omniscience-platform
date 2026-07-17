@@ -18,7 +18,7 @@ describe("StatusBadge", () => {
     expect(badge.getAttribute("data-tone")).toBe("down");
   });
 
-  it.each([["ok"], ["degraded"], ["down"]] as const)(
+  it.each([["ok"], ["degraded"], ["down"], ["neutral"]] as const)(
     "renders without throwing for tone=%s",
     (tone) => {
       expect(() => render(<StatusBadge tone={tone} label={tone} />)).not.toThrow();

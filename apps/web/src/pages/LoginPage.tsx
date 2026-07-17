@@ -1,5 +1,6 @@
 import { useState, type FormEvent, type JSX } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+import type { Location } from "react-router-dom";
 import { loginRequestSchema } from "@omniscience/schemas";
 import { Alert, Button, Input, useToast } from "@omniscience/ui";
 import { useAuth } from "../lib/auth/AuthContext";
@@ -21,6 +22,11 @@ export function LoginPage(): JSX.Element {
   const { client, setSession } = useAuth();
   const { showToast } = useToast();
   const navigate = useNavigate();
+  const location = useLocation();
+  // Set by ProtectedRoute when it redirected an unauthenticated visit to
+  // /login — lets a successful sign-in return the user to the page they
+  // actually asked for instead of always landing on /app.
+  const from = (location.state as { from?: Location } | null)?.from;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -47,7 +53,7 @@ export function LoginPage(): JSX.Element {
         title: "Welcome back",
         description: `Signed in as ${result.user.name}.`,
       });
-      navigate("/app");
+      navigate(from ? `${from.pathname}${from.search}${from.hash}` : "/app", { replace: true });
     } catch (error) {
       if (isAuthErrorCode(error, "EMAIL_NOT_VERIFIED")) {
         showToast({

@@ -7,7 +7,8 @@ type LoadState<T> =
   | { phase: "loading" }
   | { phase: "success"; data: T }
   | { phase: "error"; message: string }
-  | { phase: "config-error"; message: string };
+  | { phase: "config-error"; message: string }
+  | { phase: "not-configured" };
 
 const CONFIG_ERROR_STATE: LoadState<HealthCheckResponse> = {
   phase: "config-error",
@@ -15,14 +16,28 @@ const CONFIG_ERROR_STATE: LoadState<HealthCheckResponse> = {
 };
 
 /**
+ * The neutral resting state for the AI service badge when no AI service
+ * URL is configured. This is deliberately distinct from `config-error`:
+ * a missing `VITE_API_BASE_URL` is a broken setup (the panel has nothing
+ * to check), but a missing `VITE_AI_SERVICE_BASE_URL` is an expected,
+ * normal condition in phases where `apps/ai-service` doesn't exist yet.
+ * No request is ever made for this state — see the effect below.
+ */
+const AI_NOT_CONFIGURED_STATE: LoadState<HealthCheckResponse> = { phase: "not-configured" };
+
+/**
  * Builds the SDK client from Vite env vars. Never throws: if
- * VITE_API_BASE_URL / VITE_AI_SERVICE_BASE_URL are missing (e.g. the
- * frontend is running standalone, without the API/AI service configured),
- * this returns `null` instead of letting `OmniscienceClient`'s constructor
- * error escape — that error, if left uncaught at module scope, would
- * crash the entire app (including the landing and auth routes) before
- * React ever renders. Missing config is a normal, recoverable state that
- * SystemStatusPanel surfaces via CONFIG_ERROR_STATE instead.
+ * VITE_API_BASE_URL is missing (e.g. the frontend is running standalone,
+ * without the API configured), this returns `null` instead of letting
+ * `OmniscienceClient`'s constructor error escape — that error, if left
+ * uncaught at module scope, would crash the entire app (including the
+ * landing and auth routes) before React ever renders. Missing config is
+ * a normal, recoverable state that SystemStatusPanel surfaces via
+ * CONFIG_ERROR_STATE instead.
+ *
+ * `VITE_AI_SERVICE_BASE_URL` is intentionally NOT required here: the AI
+ * service isn't part of every phase, and the panel only ever polls it
+ * when `client.isAiServiceConfigured()` is true (see the effect below).
  */
 function createClient(): OmniscienceClient | null {
   try {
@@ -42,12 +57,16 @@ function toneFor(state: LoadState<HealthCheckResponse>): StatusBadgeTone {
   if (state.phase === "error" || state.phase === "config-error") {
     return "down";
   }
+  if (state.phase === "not-configured") {
+    return "neutral";
+  }
   return "degraded";
 }
 
 function labelFor(name: string, state: LoadState<HealthCheckResponse>): string {
   if (state.phase === "loading") return `${name}: checking…`;
   if (state.phase === "config-error") return `${name}: configuration unavailable`;
+  if (state.phase === "not-configured") return `${name}: Not Configured`;
   if (state.phase === "error") return `${name}: unreachable`;
   return `${name}: ${state.data.status}`;
 }
@@ -65,15 +84,16 @@ export function SystemStatusPanel(): JSX.Element {
   const [apiHealth, setApiHealth] = useState<LoadState<HealthCheckResponse>>(
     client ? { phase: "loading" } : CONFIG_ERROR_STATE,
   );
-  const [aiHealth, setAiHealth] = useState<LoadState<HealthCheckResponse>>(
-    client ? { phase: "loading" } : CONFIG_ERROR_STATE,
-  );
+  const [aiHealth, setAiHealth] = useState<LoadState<HealthCheckResponse>>(() => {
+    if (!client) return CONFIG_ERROR_STATE;
+    return client.isAiServiceConfigured() ? { phase: "loading" } : AI_NOT_CONFIGURED_STATE;
+  });
 
   useEffect(() => {
     if (!client) {
-      // Nothing to check: VITE_API_BASE_URL / VITE_AI_SERVICE_BASE_URL
-      // are not configured. The initial config-error state already
-      // reflects that; there is no request to make.
+      // Nothing to check: VITE_API_BASE_URL isn't configured. The
+      // initial config-error state already reflects that; there is no
+      // request to make.
       return undefined;
     }
 
@@ -92,6 +112,17 @@ export function SystemStatusPanel(): JSX.Element {
           });
         }
       });
+
+    // Only poll the AI service if a base URL was actually configured.
+    // Polling an unconfigured (default/placeholder) URL is exactly the
+    // bug this guard fixes: it produced a repeating, unsuppressable
+    // ERR_CONNECTION_REFUSED for a service this phase never runs.
+    if (!client.isAiServiceConfigured()) {
+      setAiHealth(AI_NOT_CONFIGURED_STATE);
+      return () => {
+        cancelled = true;
+      };
+    }
 
     client
       .getAiServiceHealth()

@@ -8,9 +8,11 @@ import { SearchField } from "./SearchField";
 export interface TopBarProps {
   breadcrumbs: BreadcrumbItem[];
   onToggleSidebar: () => void;
+  userName: string;
+  onSignOut: () => void;
 }
 
-export function TopBar({ breadcrumbs, onToggleSidebar }: TopBarProps): JSX.Element {
+export function TopBar({ breadcrumbs, onToggleSidebar, userName, onSignOut }: TopBarProps): JSX.Element {
   return (
     <header className="omni-app-topbar">
       <button
@@ -30,7 +32,7 @@ export function TopBar({ breadcrumbs, onToggleSidebar }: TopBarProps): JSX.Eleme
       <div className="omni-app-topbar__actions">
         <ThemeToggle />
         <NotificationButton />
-        <UserMenu name="Guest User" />
+        <UserMenu name={userName} onSignOut={onSignOut} />
       </div>
     </header>
   );

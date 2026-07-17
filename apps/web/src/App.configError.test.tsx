@@ -46,11 +46,12 @@ describe("App routing without API/AI service configuration", () => {
     expect(screen.getByRole("heading", { name: "Welcome back" })).toBeTruthy();
   });
 
-  it("still renders the app shell (with a configuration-unavailable status) when the URLs are unset", () => {
+  it("redirects an unauthenticated visit to /app to /login without throwing, even when the URLs are unset", () => {
     vi.stubEnv("VITE_API_BASE_URL", "");
     vi.stubEnv("VITE_AI_SERVICE_BASE_URL", "");
+    window.localStorage.clear();
 
     expect(() => renderAt("/app")).not.toThrow();
-    expect(screen.getByText("Dashboard arrives in Phase 3")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Welcome back" })).toBeTruthy();
   });
 });

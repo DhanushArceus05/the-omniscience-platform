@@ -7,6 +7,8 @@ import "./appShell.css";
 export interface AppShellProps {
   navItems: SidebarNavItem[];
   breadcrumbs: BreadcrumbItem[];
+  userName: string;
+  onSignOut: () => void;
   children: ReactNode;
 }
 
@@ -16,7 +18,7 @@ export interface AppShellProps {
  * appShell.css for the responsive rules (mobile / tablet / desktop /
  * ultra-wide).
  */
-export function AppShell({ navItems, breadcrumbs, children }: AppShellProps): JSX.Element {
+export function AppShell({ navItems, breadcrumbs, userName, onSignOut, children }: AppShellProps): JSX.Element {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   return (
@@ -31,7 +33,12 @@ export function AppShell({ navItems, breadcrumbs, children }: AppShellProps): JS
         />
       )}
       <div className="omni-app-shell__body">
-        <TopBar breadcrumbs={breadcrumbs} onToggleSidebar={() => setMobileSidebarOpen((prev) => !prev)} />
+        <TopBar
+          breadcrumbs={breadcrumbs}
+          onToggleSidebar={() => setMobileSidebarOpen((prev) => !prev)}
+          userName={userName}
+          onSignOut={onSignOut}
+        />
         <main className="omni-app-shell__main omni-motion-fade">{children}</main>
       </div>
     </div>

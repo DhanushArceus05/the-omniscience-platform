@@ -25,10 +25,29 @@ describe("OmniscienceClient", () => {
     );
   });
 
-  it("throws if aiServiceBaseUrl is missing", () => {
-    expect(() => new OmniscienceClient({ apiBaseUrl: "http://x", aiServiceBaseUrl: "" })).toThrow(
-      /aiServiceBaseUrl/,
-    );
+  it("does not throw when aiServiceBaseUrl is omitted (AI service not configured for this phase)", () => {
+    expect(() => new OmniscienceClient({ apiBaseUrl: "http://x" })).not.toThrow();
+  });
+
+  it("reports isAiServiceConfigured() as false when aiServiceBaseUrl is omitted or empty", () => {
+    expect(new OmniscienceClient({ apiBaseUrl: "http://x" }).isAiServiceConfigured()).toBe(false);
+    expect(
+      new OmniscienceClient({ apiBaseUrl: "http://x", aiServiceBaseUrl: "" }).isAiServiceConfigured(),
+    ).toBe(false);
+  });
+
+  it("reports isAiServiceConfigured() as true when aiServiceBaseUrl is provided", () => {
+    expect(
+      new OmniscienceClient({
+        apiBaseUrl: "http://x",
+        aiServiceBaseUrl: "http://localhost:8000",
+      }).isAiServiceConfigured(),
+    ).toBe(true);
+  });
+
+  it("getAiServiceHealth() throws a descriptive error when aiServiceBaseUrl is not configured", async () => {
+    const client = new OmniscienceClient({ apiBaseUrl: "http://x" });
+    await expect(client.getAiServiceHealth()).rejects.toThrow(/not configured/);
   });
 
   it("fetches API health successfully", async () => {
@@ -149,5 +168,70 @@ describe("OmniscienceClient auth methods", () => {
     await expect(
       client.forgotPassword({ email: "person@example.com" }),
     ).rejects.toMatchObject({ code: "NETWORK_ERROR" });
+  });
+
+  it("refresh() posts to /auth/refresh and unwraps ApiSuccess.data", async () => {
+    const data = {
+      accessToken: "new-access",
+      accessTokenExpiresInSeconds: 900,
+      refreshToken: "new-refresh",
+      refreshTokenExpiresInSeconds: 604_800,
+    };
+    const fetchImpl = mockJsonFetch(200, { success: true, data });
+    const client = makeClient(fetchImpl);
+
+    const result = await client.refresh({ refreshToken: "old-refresh" });
+
+    expect(result).toEqual(data);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://localhost:4000/auth/refresh",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ refreshToken: "old-refresh" }),
+      }),
+    );
+  });
+
+  it("throws ApiClientError when refresh() is called with an invalid refresh token", async () => {
+    const fetchImpl = mockJsonFetch(401, {
+      success: false,
+      error: { code: "INVALID_REFRESH_TOKEN", message: "This session is no longer valid." },
+    });
+    const client = makeClient(fetchImpl);
+
+    await expect(client.refresh({ refreshToken: "stale" })).rejects.toMatchObject({
+      code: "INVALID_REFRESH_TOKEN",
+      status: 401,
+    });
+  });
+
+  it("getMe() sends the access token as a Bearer header and unwraps ApiSuccess.data", async () => {
+    const data = { id: "user-1", email: "person@example.com", name: "Person Name" };
+    const fetchImpl = mockJsonFetch(200, { success: true, data });
+    const client = makeClient(fetchImpl);
+
+    const result = await client.getMe("access-token");
+
+    expect(result).toEqual(data);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://localhost:4000/auth/me",
+      expect.objectContaining({
+        method: "GET",
+        headers: { Authorization: "Bearer access-token" },
+      }),
+    );
+  });
+
+  it("throws ApiClientError with status 401 when getMe() is called with an expired access token", async () => {
+    const fetchImpl = mockJsonFetch(401, {
+      success: false,
+      error: { code: "UNAUTHORIZED", message: "A valid access token is required." },
+    });
+    const client = makeClient(fetchImpl);
+
+    await expect(client.getMe("expired")).rejects.toMatchObject({
+      code: "UNAUTHORIZED",
+      status: 401,
+    });
   });
 });

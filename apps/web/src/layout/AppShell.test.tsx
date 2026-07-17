@@ -20,7 +20,7 @@ describe("AppShell", () => {
     render(
       <ThemeProvider>
         <MemoryRouter>
-          <AppShell navItems={navItems} breadcrumbs={breadcrumbs}>
+          <AppShell navItems={navItems} breadcrumbs={breadcrumbs} userName="Person Name" onSignOut={() => {}}>
             <p>page content</p>
           </AppShell>
         </MemoryRouter>
@@ -36,7 +36,7 @@ describe("AppShell", () => {
     render(
       <ThemeProvider>
         <MemoryRouter>
-          <AppShell navItems={navItems} breadcrumbs={breadcrumbs}>
+          <AppShell navItems={navItems} breadcrumbs={breadcrumbs} userName="Person Name" onSignOut={() => {}}>
             <p>page content</p>
           </AppShell>
         </MemoryRouter>

@@ -6,6 +6,9 @@ import type {
   LoginResponse,
   LogoutRequest,
   LogoutResponse,
+  MeResponse,
+  RefreshRequest,
+  RefreshResponse,
   RegisterRequest,
   RegisterResponse,
   ResendOtpRequest,
@@ -19,7 +22,13 @@ import { ApiClientError } from "./api-client-error";
 
 export interface OmniscienceClientOptions {
   apiBaseUrl: string;
-  aiServiceBaseUrl: string;
+  /**
+   * Optional. The AI service (`apps/ai-service`) is not part of every
+   * phase — leave this unset when no AI service is configured. Callers
+   * must check `isAiServiceConfigured()` (or catch the descriptive error
+   * from `getAiServiceHealth()`) before assuming it's reachable.
+   */
+  aiServiceBaseUrl?: string;
   fetchImpl?: typeof fetch;
 }
 
@@ -33,19 +42,29 @@ export interface OmniscienceClientOptions {
  */
 export class OmniscienceClient {
   private readonly apiBaseUrl: string;
-  private readonly aiServiceBaseUrl: string;
+  private readonly aiServiceBaseUrl: string | null;
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: OmniscienceClientOptions) {
     if (!options.apiBaseUrl) {
       throw new Error("OmniscienceClient requires apiBaseUrl");
     }
-    if (!options.aiServiceBaseUrl) {
-      throw new Error("OmniscienceClient requires aiServiceBaseUrl");
-    }
     this.apiBaseUrl = options.apiBaseUrl.replace(/\/$/, "");
-    this.aiServiceBaseUrl = options.aiServiceBaseUrl.replace(/\/$/, "");
+    this.aiServiceBaseUrl = options.aiServiceBaseUrl
+      ? options.aiServiceBaseUrl.replace(/\/$/, "")
+      : null;
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  }
+
+  /**
+   * Whether an AI service base URL was provided. Callers (e.g.
+   * `SystemStatusPanel`) must check this before polling
+   * `getAiServiceHealth()` — the AI service isn't part of every phase,
+   * and polling an unconfigured URL only produces connection-refused
+   * noise for a service that was never meant to run.
+   */
+  isAiServiceConfigured(): boolean {
+    return this.aiServiceBaseUrl !== null;
   }
 
   async getApiHealth(): Promise<HealthCheckResponse> {
@@ -53,6 +72,11 @@ export class OmniscienceClient {
   }
 
   async getAiServiceHealth(): Promise<HealthCheckResponse> {
+    if (!this.aiServiceBaseUrl) {
+      throw new Error(
+        "OmniscienceClient: aiServiceBaseUrl is not configured; call isAiServiceConfigured() first",
+      );
+    }
     return this.getJson<HealthCheckResponse>(`${this.aiServiceBaseUrl}/health`);
   }
 
@@ -81,6 +105,29 @@ export class OmniscienceClient {
     return this.postJson<LogoutRequest, LogoutResponse>("/auth/logout", input);
   }
 
+  /**
+   * `POST /auth/refresh` — Phase 2 Step 4. Rotates the refresh token: the
+   * request's token is single-use, and both a new access token and a new
+   * refresh token come back. Callers must persist the returned tokens and
+   * discard the ones they sent.
+   */
+  async refresh(input: RefreshRequest): Promise<RefreshResponse> {
+    return this.postJson<RefreshRequest, RefreshResponse>("/auth/refresh", input);
+  }
+
+  /**
+   * `GET /auth/me` — Phase 2 Step 4 / Phase 3 Step 1. Confirms an access
+   * token is still valid and returns the identity the backend associates
+   * with it — the frontend never decodes the JWT itself to make that
+   * determination, only ever asks the backend via this call.
+   */
+  async getMe(accessToken: string): Promise<MeResponse> {
+    return this.request<MeResponse>(`${this.apiBaseUrl}/auth/me`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+  }
+
   /** `POST /auth/forgot-password` — Phase 2 Step 5. */
   async forgotPassword(input: ForgotPasswordRequest): Promise<ForgotPasswordResponse> {
     return this.postJson<ForgotPasswordRequest, ForgotPasswordResponse>(
@@ -107,6 +154,21 @@ export class OmniscienceClient {
 
   /**
    * POSTs a JSON body to an `apps/api` route and unwraps the shared
+   * `ApiSuccess`/`ApiError` envelope via `request()`.
+   */
+  private async postJson<TRequest, TResponse>(
+    path: string,
+    body: TRequest,
+  ): Promise<TResponse> {
+    return this.request<TResponse>(`${this.apiBaseUrl}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  /**
+   * Sends a request to an `apps/api` route and unwraps the shared
    * `ApiSuccess`/`ApiError` envelope. On failure — either a non-2xx
    * status or (defensively) a `success: false` body on a 2xx status —
    * throws `ApiClientError` with the backend's structured `code` and
@@ -117,18 +179,10 @@ export class OmniscienceClient {
    * page) is treated the same as a network failure: it never reaches
    * the caller as a confusing parse exception.
    */
-  private async postJson<TRequest, TResponse>(
-    path: string,
-    body: TRequest,
-  ): Promise<TResponse> {
-    const url = `${this.apiBaseUrl}${path}`;
+  private async request<T>(url: string, init: RequestInit): Promise<T> {
     let response: Response;
     try {
-      response = await this.fetchImpl(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      response = await this.fetchImpl(url, init);
     } catch {
       throw new ApiClientError({
         code: "NETWORK_ERROR",
@@ -164,6 +218,6 @@ export class OmniscienceClient {
       throw new ApiClientError({ code, message, status: response.status, details: errorBody?.error?.details });
     }
 
-    return (json as { data: TResponse }).data;
+    return (json as { data: T }).data;
   }
 }

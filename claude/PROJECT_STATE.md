@@ -9,14 +9,43 @@ reusable component library in `@omniscience/ui`).
 
 ## Current
 
-Phase 1 is complete (see prior entry below, unchanged). Phase 2 (Authentication & Users) backend
-**implementation is complete — all 8 steps done, locally verified through Step 8** (`pnpm install
---frozen-lockfile`, `prisma generate`, `docker compose up -d`, `pnpm build`/`lint`/`typecheck`/
-`test`), but **not yet committed** — manual frontend verification found every auth page was still
-the Phase 1 UI-only preview, so the frontend auth integration below was completed first, per your
-instruction to finish it before the Step 8 commit. Awaiting your local verification of both the
-Step 8 backend and this frontend integration, then the ChatGPT-led senior architecture/security/
-code-quality review, before Phase 3 begins.
+Phase 1 is complete (see prior entry below, unchanged). **Phase 2 (Authentication & Users) is
+complete** — all 8 backend steps plus the frontend auth integration are implemented, locally
+verified, **committed, and pushed** (superseding the "not yet committed, awaiting your local
+verification" note this section previously carried — that verification has since happened).
+ChatGPT's senior architecture/security/code-quality review of Phase 2 has taken place and Phase 3
+has begun.
+
+**Post-Phase-2 UI fixes (verified, committed, pushed):** tooltip overflow and notification tooltip
+alignment issues were fixed; a mouse-movement flashing artifact was traced to a static
+`backdrop-filter` blur on the app sidebar and glass cards and disabled in
+`apps/web/src/layout/appShell.css` and `packages/ui/src/styles/components.css`. Do not undo these
+fixes.
+
+**Phase 3 — Dashboard & Workspace, Step 1 (Protected Routing and Session Bootstrap): complete,
+locally verified this session** (`pnpm install --frozen-lockfile`, `pnpm build`/`lint`/`typecheck`/
+`test`, all real runs — this sandbox had working npm/pnpm network egress). `/app` is now a real
+authenticated route: `AuthContext` gained an `authStatus: "loading" | "authenticated" |
+"unauthenticated"` bootstrap state machine that verifies any persisted session against
+`GET /auth/me`, refreshing once via `POST /auth/refresh` and retrying `/auth/me` if the access
+token had expired, and clearing all local state if that can't be salvaged; `ProtectedRoute`
+(`apps/web/src/lib/auth/ProtectedRoute.tsx`, new) renders a loading state during bootstrap (never
+redirecting prematurely) and redirects to `/login` only once bootstrap confirms the user is
+logged out, preserving the originally-requested route so login can return them there.
+`@omniscience/sdk`'s `OmniscienceClient` gained `refresh()`/`getMe()`. No dashboard widgets,
+workspace data, or new Prisma models — see `claude/CURRENT_PHASE.md`'s "Phase 3 Step 1" section
+for full detail, architecture, and known limitations (notably: no proactive/background token
+refresh once inside `/app`, only the bootstrap-on-mount check; the "return to originally-requested
+route" behavior is wired through `LoginPage` only, not yet through the register→verify→login or
+forgot/reset-password flows). Test counts this session: `@omniscience/sdk` 13/13 (+5),
+`@omniscience/web` 40/40 across 8 files (+7 net), `@omniscience/api` 205/205 (unchanged, no
+backend files touched), `@omniscience/ui` 80/80 (unchanged); full monorepo 15/15 turbo tasks green
+across build/lint/typecheck/test. `prisma generate`/`docker compose` remain unavailable in this
+sandbox for the same previously-documented reasons (irrelevant here — no backend code changed).
+Awaiting your local re-run and confirmation, then ChatGPT's senior review, before Phase 3 Step 2.
+Do not begin Phase 3 Step 2 until that approval lands.
+
+### Phase 2 step-by-step history (unchanged from when each step was implemented)
 
 - **Frontend auth integration (post-Step-8, pre-commit)**: `RegisterPage`/`VerifyOtpPage`/
   `LoginPage`/`ForgotPasswordPage`/`ResetPasswordPage` now call the real `/auth/*` endpoints Steps
