@@ -1,7 +1,7 @@
 import type { JSX } from "react";
-import { EmptyState } from "@omniscience/ui";
 import { AppShell } from "../layout/AppShell";
 import { SystemStatusPanel } from "../features/system-status/SystemStatusPanel";
+import { WorkspaceDashboard } from "../features/workspaces/WorkspaceDashboard";
 import { useAuth } from "../lib/auth/AuthContext";
 
 const NAV_ITEMS = [
@@ -11,10 +11,12 @@ const NAV_ITEMS = [
 ];
 
 /**
- * Reachable at /app (behind ProtectedRoute as of Phase 3 Step 1). Demonstrates
- * the Responsive App Shell deliverable and keeps the Phase 0 health widget
- * alive. Real dashboard/workspace functionality is out of scope until later
- * Phase 3 steps.
+ * Reachable at /app (behind ProtectedRoute as of Phase 3 Step 1).
+ * Phase 3 Step 2 replaces the former placeholder with a real (if still
+ * minimal) `WorkspaceDashboard`: list/create workspaces, scoped to the
+ * caller's own. Further workspace features (a detail page; chats,
+ * files, reports, memory, agents, analytics, timeline) remain out of
+ * scope for later Phase 3 steps.
  */
 export function AppShellPreviewPage(): JSX.Element {
   const { user, logout } = useAuth();
@@ -28,11 +30,9 @@ export function AppShellPreviewPage(): JSX.Element {
     >
       <div style={{ display: "flex", flexDirection: "column", gap: "var(--omni-space-6)" }}>
         <SystemStatusPanel />
-        <EmptyState
-          title="Dashboard arrives in Phase 3"
-          description="This shell is the reusable foundation — workspace and dashboard functionality is built on top of it next."
-        />
+        <WorkspaceDashboard />
       </div>
     </AppShell>
   );
 }
+

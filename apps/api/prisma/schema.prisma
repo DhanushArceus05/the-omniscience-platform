@@ -43,5 +43,32 @@ model User {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
+  workspaces Workspace[]
+
   @@map("users")
+}
+
+/// Workspace container (Phase 3 Step 2 — the first entity every later
+/// Phase 3 feature — chats/files/reports/memory/agents/analytics/
+/// timeline — attaches to). Ownership is single-user only in this step;
+/// there is no sharing/membership model yet.
+///
+/// - `onDelete: Cascade` on `ownerId`: deleting a `User` deletes every
+///   workspace they own, so account deletion (Phase 2 Step 8) never
+///   leaves orphaned workspace rows behind. Approved decision for this
+///   step — no soft-delete/orphan-preservation policy exists yet.
+/// - `@@index([ownerId])` supports both the ownership-scoped list query
+///   and the newest-first keyset-pagination query, both of which always
+///   filter by `ownerId` first.
+model Workspace {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  ownerId     String
+  owner       User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([ownerId])
+  @@map("workspaces")
 }

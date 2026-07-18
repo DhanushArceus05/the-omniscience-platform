@@ -103,6 +103,16 @@ export interface AuthContextValue {
   configError: boolean;
   user: AuthenticatedUser | null;
   /**
+   * The current access token, or `null` when not authenticated.
+   * Phase 3 Step 2 introduces the first in-page authenticated calls
+   * (`listWorkspaces`/`createWorkspace`/`getWorkspace`) that need this
+   * directly, rather than only at bootstrap. There is deliberately no
+   * accompanying refresh-and-retry helper here yet — see
+   * `WorkspaceDashboard`'s docstring for why that's still a documented
+   * future step, not part of this one.
+   */
+  accessToken: string | null;
+  /**
    * `"loading"` until the initial bootstrap (verify-or-refresh any
    * persisted session against the backend) finishes; `"authenticated"` or
    * `"unauthenticated"` after. Prefer this over `isAuthenticated` for any
@@ -276,6 +286,7 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
       client,
       configError: client === null,
       user: session?.user ?? null,
+      accessToken: session?.accessToken ?? null,
       authStatus,
       isInitializing: authStatus === "loading",
       isAuthenticated: authStatus === "authenticated",

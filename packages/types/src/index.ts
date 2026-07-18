@@ -37,3 +37,11 @@ export type {
   DeleteAccountRequest,
   DeleteAccountResponse,
 } from "./users";
+export type {
+  Workspace,
+  CreateWorkspaceRequest,
+  CreateWorkspaceResponse,
+  ListWorkspacesQuery,
+  ListWorkspacesResponse,
+  GetWorkspaceResponse,
+} from "./workspaces";

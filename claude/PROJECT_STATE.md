@@ -45,6 +45,35 @@ sandbox for the same previously-documented reasons (irrelevant here — no backe
 Awaiting your local re-run and confirmation, then ChatGPT's senior review, before Phase 3 Step 2.
 Do not begin Phase 3 Step 2 until that approval lands.
 
+**Phase 3 — Dashboard & Workspace, Step 2 (Workspace Data Model, Ownership Isolation & Dashboard
+Listing): locked and implemented this session, locally verified** (`pnpm install
+--frozen-lockfile`, `pnpm build`/`lint`/`typecheck`/`test`, all real runs against a real local
+Redis — this sandbox had working npm/pnpm network egress). A `Workspace` Prisma model was added
+(`onDelete: Cascade` on `ownerId`, approved) with `POST /workspaces`, `GET /workspaces` (bounded,
+keyset/cursor-paginated, newest-first, default limit 20/max 50), and `GET /workspaces/:id` — all
+behind `JwtAuthGuard`, ownership always from the verified JWT, never request input; a missing
+workspace and another owner's workspace both return the identical `404 WORKSPACE_NOT_FOUND`. **No
+update or delete endpoint** — deliberately not full CRUD. `AppShellPreviewPage`'s "Dashboard
+arrives in Phase 3" placeholder was replaced with a real `WorkspaceDashboard`
+(`apps/web/src/features/workspaces/`): loading, real empty state, populated list, a create-workspace
+modal with client-side validation against the same shared Zod schema the backend uses, and a
+recoverable error state with retry — a successful create updates the list immediately with no page
+refresh, and there is no "Open workspace" action or detail route (not required by this step). No
+broad automatic 401-refresh-and-retry was added to the new SDK methods — that remains a documented
+future step, same gap Phase 3 Step 1 already flagged. See `claude/CURRENT_PHASE.md`'s "Phase 3 Step
+2" section for full architecture, migration, and test detail. Test counts this session:
+`@omniscience/api` 234/234 across 33 suites (+29/+4 from Step 1's 205/29), `@omniscience/schemas`
+70/70 (+16), `@omniscience/sdk` 23/23 (+10), `@omniscience/web` 54/54 across 10 files (+8, no
+existing Step 1 test file changed or regressed), `@omniscience/ui`/`@omniscience/config`/
+`@omniscience/utils` unchanged; full monorepo 15/15 turbo tasks green. `prisma generate`'s
+schema-engine binary still could not be downloaded in this sandbox (`binaries.prisma.sh` 403,
+outside the network allowlist — the same restriction documented since Phase 2 Step 3); this did
+not block `build`/`typecheck`, which compiled cleanly against the real (if binary-incomplete)
+generated Prisma client already present from prior installs. The migration SQL is hand-authored,
+same caveat as Phase 2 Step 2's users-table migration. Awaiting your local `prisma generate`/
+migration apply against a real Postgres and your approval before Phase 3 Step 3. Do not begin
+Phase 3 Step 3 until that approval lands.
+
 ### Phase 2 step-by-step history (unchanged from when each step was implemented)
 
 - **Frontend auth integration (post-Step-8, pre-commit)**: `RegisterPage`/`VerifyOtpPage`/

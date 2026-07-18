@@ -24,8 +24,20 @@ export interface FakeUserRow {
   updatedAt: Date;
 }
 
+/** Phase 3 Step 2 — mirrors the real `Workspace` Prisma model's shape. */
+export interface FakeWorkspaceRow {
+  id: string;
+  name: string;
+  description: string | null;
+  ownerId: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export class FakePrismaService {
   private readonly users: FakeUserRow[] = [];
+  private readonly workspaces: FakeWorkspaceRow[] = [];
+  private workspaceSeq = 0;
 
   user = {
     findUnique: async ({
@@ -85,6 +97,77 @@ export class FakePrismaService {
       }
       const [row] = this.users.splice(index, 1);
       return row as FakeUserRow;
+    },
+  };
+
+  /**
+   * Phase 3 Step 2 — implements only the surface `WorkspacesService`
+   * actually calls: `create`, `findUnique` (by id, for the
+   * ownership-checked get-one), and a keyset-aware `findMany` matching
+   * the exact `{ ownerId, OR: [...] }` shape `WorkspacesService.
+   * listForOwner` builds (newest-first by `createdAt`, tie-broken by
+   * `id` descending — the same order the real Postgres query's
+   * `orderBy` produces). IDs are zero-padded sequential strings so a
+   * plain lexical comparison sorts identically to creation order, same
+   * as a real `cuid()` does in practice.
+   */
+  workspace = {
+    create: async ({
+      data,
+    }: {
+      data: { name: string; description: string | null; ownerId: string };
+    }): Promise<FakeWorkspaceRow> => {
+      this.workspaceSeq += 1;
+      const row: FakeWorkspaceRow = {
+        id: `workspace_${String(this.workspaceSeq).padStart(10, "0")}`,
+        name: data.name,
+        description: data.description,
+        ownerId: data.ownerId,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      this.workspaces.push(row);
+      return row;
+    },
+    findUnique: async ({
+      where,
+    }: {
+      where: { id: string };
+    }): Promise<FakeWorkspaceRow | null> =>
+      this.workspaces.find((w) => w.id === where.id) ?? null,
+    findMany: async ({
+      where,
+      take,
+    }: {
+      where: {
+        ownerId: string;
+        OR?: Array<{ createdAt: Date | { lt: Date }; id?: { lt: string } }>;
+      };
+      take: number;
+    }): Promise<FakeWorkspaceRow[]> => {
+      let rows = this.workspaces.filter((w) => w.ownerId === where.ownerId);
+      if (where.OR) {
+        rows = rows.filter((w) =>
+          (where.OR ?? []).some((cond) => {
+            if (cond.createdAt instanceof Date) {
+              // { createdAt: eq, id: { lt } } branch
+              return (
+                w.createdAt.getTime() === cond.createdAt.getTime() &&
+                cond.id !== undefined &&
+                w.id < cond.id.lt
+              );
+            }
+            // { createdAt: { lt } } branch
+            return w.createdAt.getTime() < cond.createdAt.lt.getTime();
+          }),
+        );
+      }
+      const sorted = rows.slice().sort((a, b) => {
+        const diff = b.createdAt.getTime() - a.createdAt.getTime();
+        if (diff !== 0) return diff;
+        return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+      });
+      return sorted.slice(0, take);
     },
   };
 

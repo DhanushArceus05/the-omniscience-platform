@@ -1,7 +1,12 @@
 import type {
+  CreateWorkspaceRequest,
+  CreateWorkspaceResponse,
   ForgotPasswordRequest,
   ForgotPasswordResponse,
+  GetWorkspaceResponse,
   HealthCheckResponse,
+  ListWorkspacesQuery,
+  ListWorkspacesResponse,
   LoginRequest,
   LoginResponse,
   LogoutRequest,
@@ -141,6 +146,66 @@ export class OmniscienceClient {
     return this.postJson<ResetPasswordRequest, ResetPasswordResponse>(
       "/auth/reset-password",
       input,
+    );
+  }
+
+  /**
+   * `POST /workspaces` — Phase 3 Step 2. Creates a workspace owned by
+   * whichever identity `accessToken` belongs to — ownership is decided
+   * entirely server-side from the verified JWT, never from `input`.
+   */
+  async createWorkspace(
+    accessToken: string,
+    input: CreateWorkspaceRequest,
+  ): Promise<CreateWorkspaceResponse> {
+    return this.request<CreateWorkspaceResponse>(`${this.apiBaseUrl}/workspaces`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify(input),
+    });
+  }
+
+  /**
+   * `GET /workspaces` — Phase 3 Step 2. Bounded, keyset-paginated list
+   * of the caller's own workspaces, newest first. `query.limit` is
+   * capped server-side (`MAX_WORKSPACE_LIST_LIMIT`); `query.cursor`
+   * should be the previous call's `nextCursor` verbatim, or omitted for
+   * the first page.
+   *
+   * No automatic 401-refresh-and-retry here by design — this is the
+   * same "caller decides what to do on failure" contract every other
+   * method on this client already has. In-page token refresh remains a
+   * documented future step, not something bolted onto individual
+   * methods ad hoc.
+   */
+  async listWorkspaces(
+    accessToken: string,
+    query?: ListWorkspacesQuery,
+  ): Promise<ListWorkspacesResponse> {
+    const params = new URLSearchParams();
+    if (query?.limit !== undefined) {
+      params.set("limit", String(query.limit));
+    }
+    if (query?.cursor) {
+      params.set("cursor", query.cursor);
+    }
+    const queryString = params.toString();
+    return this.request<ListWorkspacesResponse>(
+      `${this.apiBaseUrl}/workspaces${queryString ? `?${queryString}` : ""}`,
+      { method: "GET", headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+  }
+
+  /**
+   * `GET /workspaces/:id` — Phase 3 Step 2. Throws `ApiClientError` with
+   * `code: "WORKSPACE_NOT_FOUND"` (404) both when the id doesn't exist
+   * at all and when it belongs to a different owner — identical either
+   * way, by design, on the backend.
+   */
+  async getWorkspace(accessToken: string, id: string): Promise<GetWorkspaceResponse> {
+    return this.request<GetWorkspaceResponse>(
+      `${this.apiBaseUrl}/workspaces/${encodeURIComponent(id)}`,
+      { method: "GET", headers: { Authorization: `Bearer ${accessToken}` } },
     );
   }
 

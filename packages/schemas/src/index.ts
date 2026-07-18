@@ -38,3 +38,17 @@ export type {
   ChangePasswordRequestSchema,
   DeleteAccountRequestSchema,
 } from "./users";
+export {
+  workspaceNameSchema,
+  workspaceDescriptionSchema,
+  createWorkspaceRequestSchema,
+  listWorkspacesQuerySchema,
+  workspaceIdParamSchema,
+  DEFAULT_WORKSPACE_LIST_LIMIT,
+  MAX_WORKSPACE_LIST_LIMIT,
+} from "./workspaces";
+export type {
+  CreateWorkspaceRequestSchema,
+  ListWorkspacesQuerySchema,
+  WorkspaceIdParamSchema,
+} from "./workspaces";

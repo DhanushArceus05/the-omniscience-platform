@@ -8,6 +8,7 @@ import { MailModule } from "./mail/mail.module";
 import { PrismaModule } from "./prisma/prisma.module";
 import { RedisModule } from "./redis/redis.module";
 import { UsersModule } from "./users/users.module";
+import { WorkspacesModule } from "./workspaces/workspaces.module";
 
 /**
  * Root module.
@@ -27,9 +28,13 @@ import { UsersModule } from "./users/users.module";
  *     Uses the default in-memory throttle storage (fine for a single
  *     instance; a shared Redis-backed store would be needed for
  *     horizontal scaling — see Step 3's known limitations).
- *   Step 6 (this step): `UsersModule` added — `PATCH /users/me` and
+ *   Step 6: `UsersModule` added — `PATCH /users/me` and
  *     `POST /users/me/change-password`, both behind the same global
  *     `ThrottlerGuard` plus their own per-route `@Throttle()` limits.
+ * Phase 3 — Dashboard & Workspace:
+ *   Step 2 (this step): `WorkspacesModule` added — `POST /workspaces`,
+ *     `GET /workspaces`, `GET /workspaces/:id`, all behind
+ *     `JwtAuthGuard` and scoped to the caller's own workspaces.
  */
 @Module({
   imports: [
@@ -40,6 +45,7 @@ import { UsersModule } from "./users/users.module";
     ThrottlerModule.forRoot([{ name: "default", ttl: 60_000, limit: 60 }]),
     AuthModule,
     UsersModule,
+    WorkspacesModule,
     HealthModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

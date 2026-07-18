@@ -235,3 +235,129 @@ describe("OmniscienceClient auth methods", () => {
     });
   });
 });
+
+describe("OmniscienceClient workspace methods (Phase 3 Step 2)", () => {
+  const workspace = {
+    id: "workspace_1",
+    name: "Research",
+    description: "Deep-dive projects",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+
+  it("createWorkspace() posts to /workspaces with a Bearer header and unwraps ApiSuccess.data", async () => {
+    const fetchImpl = mockJsonFetch(201, { success: true, data: workspace });
+    const client = makeClient(fetchImpl);
+
+    const result = await client.createWorkspace("access-token", {
+      name: "Research",
+      description: "Deep-dive projects",
+    });
+
+    expect(result).toEqual(workspace);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://localhost:4000/workspaces",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer access-token" },
+        body: JSON.stringify({ name: "Research", description: "Deep-dive projects" }),
+      }),
+    );
+  });
+
+  it("createWorkspace() surfaces a structured ApiClientError on validation failure", async () => {
+    const fetchImpl = mockJsonFetch(400, {
+      success: false,
+      error: {
+        code: "VALIDATION_ERROR",
+        message: "Request validation failed",
+        details: [{ path: "name", message: "Workspace name is required" }],
+      },
+    });
+    const client = makeClient(fetchImpl);
+
+    await expect(client.createWorkspace("access-token", { name: "" })).rejects.toMatchObject({
+      code: "VALIDATION_ERROR",
+      status: 400,
+      details: [{ path: "name", message: "Workspace name is required" }],
+    });
+  });
+
+  it("listWorkspaces() sends a Bearer header and no query string when called with no arguments", async () => {
+    const fetchImpl = mockJsonFetch(200, {
+      success: true,
+      data: { workspaces: [workspace], nextCursor: null },
+    });
+    const client = makeClient(fetchImpl);
+
+    const result = await client.listWorkspaces("access-token");
+
+    expect(result).toEqual({ workspaces: [workspace], nextCursor: null });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://localhost:4000/workspaces",
+      expect.objectContaining({
+        method: "GET",
+        headers: { Authorization: "Bearer access-token" },
+      }),
+    );
+  });
+
+  it("listWorkspaces() encodes limit and cursor as query params", async () => {
+    const fetchImpl = mockJsonFetch(200, {
+      success: true,
+      data: { workspaces: [], nextCursor: "opaque-cursor" },
+    });
+    const client = makeClient(fetchImpl);
+
+    await client.listWorkspaces("access-token", { limit: 10, cursor: "prev-cursor" });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://localhost:4000/workspaces?limit=10&cursor=prev-cursor",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("listWorkspaces() does not retry or refresh on a 401 — it surfaces ApiClientError as-is", async () => {
+    const fetchImpl = mockJsonFetch(401, {
+      success: false,
+      error: { code: "UNAUTHORIZED", message: "A valid access token is required." },
+    });
+    const client = makeClient(fetchImpl);
+
+    await expect(client.listWorkspaces("expired")).rejects.toMatchObject({
+      code: "UNAUTHORIZED",
+      status: 401,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("getWorkspace() sends a Bearer header and URL-encodes the id", async () => {
+    const fetchImpl = mockJsonFetch(200, { success: true, data: workspace });
+    const client = makeClient(fetchImpl);
+
+    const result = await client.getWorkspace("access-token", "workspace 1/special");
+
+    expect(result).toEqual(workspace);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://localhost:4000/workspaces/workspace%201%2Fspecial",
+      expect.objectContaining({
+        method: "GET",
+        headers: { Authorization: "Bearer access-token" },
+      }),
+    );
+  });
+
+  it("getWorkspace() surfaces WORKSPACE_NOT_FOUND identically for a missing or foreign id", async () => {
+    const fetchImpl = mockJsonFetch(404, {
+      success: false,
+      error: { code: "WORKSPACE_NOT_FOUND", message: "Workspace not found." },
+    });
+    const client = makeClient(fetchImpl);
+
+    await expect(client.getWorkspace("access-token", "anything")).rejects.toMatchObject({
+      code: "WORKSPACE_NOT_FOUND",
+      status: 404,
+    });
+  });
+});
+
