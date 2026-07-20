@@ -9,6 +9,13 @@
   padding: var(--omni-space-4);
   background: var(--omni-glass-bg);
   border-right: 1px solid var(--omni-color-border);
+  overflow: hidden;
+  transition:
+    width var(--omni-duration-base) var(--omni-ease-emphasized),
+    padding var(--omni-duration-base) var(--omni-ease-emphasized),
+    opacity var(--omni-duration-base) var(--omni-ease-emphasized),
+    border-color var(--omni-duration-base) var(--omni-ease-emphasized),
+    transform var(--omni-duration-base) var(--omni-ease-emphasized);
   /* DIAGNOSTIC (temporary) — isolation test: backdrop-filter disabled.
      Revert after the test result is confirmed. */
   /* backdrop-filter: blur(var(--omni-glass-blur)); */
@@ -57,8 +64,10 @@
 }
 
 .omni-app-topbar__menu-button {
-  display: none;
   all: unset;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
   padding: var(--omni-space-2);
   border-radius: var(--omni-radius-sm);
@@ -90,6 +99,54 @@
   display: none;
 }
 
+.omni-user-menu__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--omni-space-2);
+  cursor: pointer;
+  padding: var(--omni-space-1) var(--omni-space-2);
+  border-radius: var(--omni-radius-md);
+  transition: background-color var(--omni-duration-fast) var(--omni-ease-standard);
+}
+
+.omni-user-menu__trigger:hover {
+  background: var(--omni-color-surface-hover);
+}
+
+.omni-user-menu__name {
+  font-size: var(--omni-text-sm);
+  font-weight: var(--omni-font-weight-medium);
+  color: var(--omni-color-text-primary);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.omni-user-menu__identity {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--omni-space-1) 0 var(--omni-space-3);
+  margin-bottom: var(--omni-space-2);
+  border-bottom: 1px solid var(--omni-color-border);
+  width: 100%;
+}
+
+.omni-user-menu__identity-name {
+  font-size: var(--omni-text-sm);
+  font-weight: var(--omni-font-weight-semibold);
+  color: var(--omni-color-text-primary);
+}
+
+.omni-user-menu__identity-email {
+  font-size: var(--omni-text-xs);
+  color: var(--omni-color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Tablet and below: collapse the sidebar into an off-canvas drawer. */
 @media (max-width: 1024px) {
   .omni-app-sidebar {
@@ -97,18 +154,11 @@
     inset: 0 auto 0 0;
     transform: translateX(-100%);
     z-index: var(--omni-z-drawer);
-    transition: transform var(--omni-duration-base) var(--omni-ease-emphasized);
     box-shadow: var(--omni-shadow-lg);
   }
 
   .omni-app-sidebar--open {
     transform: translateX(0);
-  }
-
-  .omni-app-topbar__menu-button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
   }
 
   .omni-app-topbar__search {
@@ -125,6 +175,19 @@
   }
 }
 
+/* Desktop: the sidebar is persistent and open by default. The hamburger
+   button collapses it in place (rather than sliding it off-canvas) and
+   the main content expands to fill the reclaimed space. */
+@media (min-width: 1025px) {
+  .omni-app-sidebar:not(.omni-app-sidebar--open) {
+    width: 0;
+    padding-left: 0;
+    padding-right: 0;
+    border-right-color: transparent;
+    opacity: 0;
+  }
+}
+
 @media (max-width: 640px) {
   .omni-app-topbar {
     padding-inline: var(--omni-space-4);
@@ -136,6 +199,10 @@
   }
 
   .omni-app-topbar__breadcrumbs {
+    display: none;
+  }
+
+  .omni-user-menu__name {
     display: none;
   }
 }

@@ -21,6 +21,7 @@ export function AccountSettingsPage(): JSX.Element {
       breadcrumbs={[{ label: "Overview", to: "/app" }, { label: "Settings" }]}
       userName={user?.name ?? "Guest User"}
       avatarUrl={user?.avatarUrl}
+      userEmail={user?.email}
       onSignOut={() => void logout()}
     >
       <SettingsExperience />

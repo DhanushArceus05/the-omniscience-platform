@@ -22,6 +22,7 @@ export function AppShellPreviewPage(): JSX.Element {
       breadcrumbs={[{ label: "Overview" }]}
       userName={user?.name ?? "Guest User"}
       avatarUrl={user?.avatarUrl}
+      userEmail={user?.email}
       onSignOut={() => void logout()}
     >
       <div style={{ display: "flex", flexDirection: "column", gap: "var(--omni-space-6)" }}>

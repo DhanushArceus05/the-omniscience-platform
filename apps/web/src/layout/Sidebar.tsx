@@ -13,6 +13,13 @@ export interface SidebarProps {
   onNavigate?: () => void;
 }
 
+/**
+ * Shared id linking the sidebar `<nav>` to the hamburger button's
+ * `aria-controls` in TopBar, regardless of which layout (mobile drawer
+ * or desktop collapse) is currently active.
+ */
+export const SIDEBAR_NAV_ID = "omni-primary-navigation";
+
 const NAV_LIST_STYLE = {
   display: "flex",
   flexDirection: "column" as const,
@@ -22,6 +29,7 @@ const NAV_LIST_STYLE = {
 export function Sidebar({ items, open, onNavigate }: SidebarProps): JSX.Element {
   return (
     <nav
+      id={SIDEBAR_NAV_ID}
       aria-label="Primary"
       className={`omni-app-sidebar${open ? " omni-app-sidebar--open" : ""}`}
     >
@@ -35,6 +43,7 @@ export function Sidebar({ items, open, onNavigate }: SidebarProps): JSX.Element 
           <li key={item.to}>
             <NavLink
               to={item.to}
+              end
               onClick={onNavigate}
               className={({ isActive }) =>
                 `omni-app-sidebar__link${isActive ? " omni-app-sidebar__link--active" : ""}`
