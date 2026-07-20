@@ -2,10 +2,13 @@ import { BadRequestException, Injectable, UnauthorizedException } from "@nestjs/
 import type {
   ChangePasswordResponse,
   DeleteAccountResponse,
+  DeleteAvatarResponse,
   UpdateProfileResponse,
+  UploadAvatarResponse,
 } from "@omniscience/types";
 import { PasswordHasherService } from "../auth/password-hasher.service";
 import { RefreshTokenStore } from "../auth/refresh-token.store";
+import { AvatarStorageService, type AvatarUploadInput } from "../avatar/avatar-storage.service";
 import { PrismaService } from "../prisma/prisma.service";
 
 /**
@@ -28,6 +31,7 @@ export class UsersService {
     private readonly prisma: PrismaService,
     private readonly passwordHasher: PasswordHasherService,
     private readonly refreshTokens: RefreshTokenStore,
+    private readonly avatarStorage: AvatarStorageService,
   ) {}
 
   async updateProfile(userId: string, name: string): Promise<UpdateProfileResponse> {
@@ -40,7 +44,81 @@ export class UsersService {
     }
 
     const updated = await this.prisma.user.update({ where: { id: userId }, data: { name } });
-    return { id: updated.id, email: updated.email, name: updated.name };
+    return {
+      id: updated.id,
+      email: updated.email,
+      name: updated.name,
+      avatarUrl: this.toAvatarUrl(updated.avatarStorageKey),
+    };
+  }
+
+  /**
+   * Phase 3 Step 3 — uploads (or replaces) the caller's own avatar.
+   * `AvatarStorageService.save` already validates size/MIME/magic-bytes
+   * and writes the new file *before* anything here touches the
+   * database, so a validation failure never leaves the user's row
+   * pointing at a partially-written or nonexistent file. The old
+   * avatar (if any) is deleted only *after* the new one is safely
+   * persisted and the row updated — never the other way around, so a
+   * failure partway through can never leave the account with no avatar
+   * file at all when it previously had one.
+   */
+  async uploadAvatar(userId: string, input: AvatarUploadInput): Promise<UploadAvatarResponse> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw this.staleSessionError();
+    }
+
+    // Captured before `update()` runs: `PrismaService.user.update` (and
+    // this repo's e2e `FakePrismaService` stand-in even more so, since
+    // it mutates the same row object `findUnique` handed back) must
+    // never be trusted not to mutate/refresh the `user` object in
+    // place. Reading `avatarStorageKey` off `user` *after* the update
+    // call would silently pick up the *new* key instead of the old one
+    // whenever that happens, permanently skipping the old file's
+    // deletion.
+    const previousStorageKey = user.avatarStorageKey;
+
+    const stored = await this.avatarStorage.save(input);
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { avatarStorageKey: stored.storageKey },
+    });
+
+    if (previousStorageKey && previousStorageKey !== stored.storageKey) {
+      await this.avatarStorage.delete(previousStorageKey);
+    }
+
+    return { avatarUrl: stored.publicUrl };
+  }
+
+  /**
+   * Phase 3 Step 3 — removes the caller's own avatar, if any. Always
+   * succeeds (a no-op if there wasn't one), the same
+   * "already-in-the-target-state is not an error" convention
+   * `AuthService.logout`/`RefreshTokenStore.revoke` already establish
+   * for idempotent actions.
+   */
+  async deleteAvatar(userId: string): Promise<DeleteAvatarResponse> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw this.staleSessionError();
+    }
+
+    // Same reasoning as `uploadAvatar`: capture the key before
+    // `update()` runs rather than reading `user.avatarStorageKey`
+    // afterward, since a caller must never assume `user` is left
+    // untouched by a subsequent `update()` call.
+    const storageKey = user.avatarStorageKey;
+    if (storageKey) {
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: { avatarStorageKey: null },
+      });
+      await this.avatarStorage.delete(storageKey);
+    }
+
+    return { avatarUrl: null };
   }
 
   /**
@@ -122,8 +200,17 @@ export class UsersService {
 
     await this.prisma.user.delete({ where: { id: userId } });
     await this.refreshTokens.revokeAllForUser(userId);
+    // Best-effort, same as the session-revocation line above: the User
+    // row (the only thing that actually matters for "is this account
+    // gone") is already deleted by this point regardless of whether
+    // this file cleanup succeeds.
+    await this.avatarStorage.delete(user.avatarStorageKey);
 
     return { deleted: true };
+  }
+
+  private toAvatarUrl(avatarStorageKey: string | null): string | null {
+    return avatarStorageKey ? this.avatarStorage.buildPublicUrl(avatarStorageKey) : null;
   }
 
   private staleSessionError(): UnauthorizedException {

@@ -141,6 +141,7 @@ describe("Auth registration + OTP verification (e2e)", () => {
         id: expect.any(String),
         email,
         name: "New User",
+        avatarUrl: null,
       });
 
       accessToken = response.body.data.accessToken;
@@ -199,7 +200,7 @@ describe("Auth registration + OTP verification (e2e)", () => {
 
       expect(response.body).toEqual({
         success: true,
-        data: { id: expect.any(String), email, name: "New User" },
+        data: { id: expect.any(String), email, name: "New User", avatarUrl: null },
       });
     });
 

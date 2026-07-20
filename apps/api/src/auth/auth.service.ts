@@ -12,6 +12,7 @@ import {
 } from "@nestjs/common";
 import type { Env } from "@omniscience/config";
 import type {
+  AuthenticatedUser,
   ForgotPasswordResponse,
   ListSessionsResponse,
   LoginResponse,
@@ -29,6 +30,7 @@ import type { Logger } from "pino";
 import { ENV, LOGGER } from "../config/config.constants";
 import { MailService } from "../mail/mail.service";
 import { PrismaService } from "../prisma/prisma.service";
+import { AvatarStorageService } from "../avatar/avatar-storage.service";
 import { AccessTokenService } from "./access-token.service";
 import { OtpService } from "./otp.service";
 import { PasswordHasherService } from "./password-hasher.service";
@@ -91,6 +93,7 @@ export class AuthService {
     private readonly accessTokens: AccessTokenService,
     private readonly refreshTokens: RefreshTokenStore,
     private readonly passwordResets: PasswordResetStore,
+    private readonly avatarStorage: AvatarStorageService,
   ) {}
 
   async register(input: RegisterInput): Promise<RegisterResponse> {
@@ -265,7 +268,7 @@ export class AuthService {
       accessTokenExpiresInSeconds: this.accessTokens.expiresInSeconds,
       refreshToken: refreshToken.token,
       refreshTokenExpiresInSeconds: refreshToken.expiresInSeconds,
-      user: { id: user.id, email: user.email, name: user.name },
+      user: this.toAuthenticatedUser(user),
     };
   }
 
@@ -325,7 +328,7 @@ export class AuthService {
         message: "A valid access token is required.",
       });
     }
-    return { id: user.id, email: user.email, name: user.name };
+    return this.toAuthenticatedUser(user);
   }
 
   /**
@@ -611,6 +614,30 @@ export class AuthService {
       "code" in err &&
       (err as { code?: unknown }).code === PRISMA_UNIQUE_CONSTRAINT_ERROR_CODE
     );
+  }
+
+  /**
+   * Maps a `User` row to the public `AuthenticatedUser` shape every
+   * login/refresh-adjacent response embeds. `avatarUrl` is always
+   * *derived* from `avatarStorageKey` here, never read from a stored
+   * column — see the Prisma schema's docstring on `User.avatarStorageKey`
+   * for why (a stored URL could go stale if `AVATAR_PUBLIC_BASE_URL`
+   * ever changes; a derived one never can).
+   */
+  private toAuthenticatedUser(user: {
+    id: string;
+    email: string;
+    name: string;
+    avatarStorageKey: string | null;
+  }): AuthenticatedUser {
+    return {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      avatarUrl: user.avatarStorageKey
+        ? this.avatarStorage.buildPublicUrl(user.avatarStorageKey)
+        : null,
+    };
   }
 }
 

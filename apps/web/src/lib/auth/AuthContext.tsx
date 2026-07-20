@@ -127,6 +127,17 @@ export interface AuthContextValue {
   isAuthenticated: boolean;
   /** Persists a successful `login()` response (tokens + user) locally. */
   setSession: (login: LoginResponse) => void;
+  /**
+   * Phase 3 Step 3 — merges a partial `AuthenticatedUser` patch into the
+   * current session's cached `user` (e.g. after a successful
+   * `updateProfile`/`uploadAvatar`/`deleteAvatar` call) and persists it,
+   * so the TopBar/UserMenu name and avatar update immediately without a
+   * page reload. Intentionally the *only* new capability this step
+   * adds here — it merges, it never re-verifies against the backend or
+   * touches `authStatus`/tokens, so it can't weaken session-bootstrap
+   * or logout in any way. A no-op if there's no active session.
+   */
+  updateUser: (patch: Partial<AuthenticatedUser>) => void;
   /** Best-effort server-side revocation, then always clears the local session. */
   logout: () => Promise<void>;
 }
@@ -266,6 +277,15 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
     setAuthStatus("authenticated");
   }, []);
 
+  const updateUser = useCallback((patch: Partial<AuthenticatedUser>) => {
+    setSessionState((previous) => {
+      if (!previous) return previous;
+      const updated: StoredSession = { ...previous, user: { ...previous.user, ...patch } };
+      writeStoredSession(updated);
+      return updated;
+    });
+  }, []);
+
   const logout = useCallback(async () => {
     const refreshToken = session?.refreshToken;
     writeStoredSession(null);
@@ -291,9 +311,10 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
       isInitializing: authStatus === "loading",
       isAuthenticated: authStatus === "authenticated",
       setSession,
+      updateUser,
       logout,
     }),
-    [client, session, authStatus, setSession, logout],
+    [client, session, authStatus, setSession, updateUser, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

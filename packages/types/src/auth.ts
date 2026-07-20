@@ -49,6 +49,8 @@ export interface AuthenticatedUser {
   id: string;
   email: string;
   name: string;
+  /** `null` when the user has no avatar set — the UI falls back to initials (Phase 3 Step 3). */
+  avatarUrl: string | null;
 }
 
 export interface LoginRequest {

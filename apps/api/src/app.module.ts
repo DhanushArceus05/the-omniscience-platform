@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 import { APP_GUARD } from "@nestjs/core";
 import { ThrottlerGuard, ThrottlerModule } from "@nestjs/throttler";
 import { AuthModule } from "./auth/auth.module";
+import { AvatarModule } from "./avatar/avatar.module";
 import { ConfigModule } from "./config/config.module";
 import { HealthModule } from "./health/health.module";
 import { MailModule } from "./mail/mail.module";
@@ -32,9 +33,12 @@ import { WorkspacesModule } from "./workspaces/workspaces.module";
  *     `POST /users/me/change-password`, both behind the same global
  *     `ThrottlerGuard` plus their own per-route `@Throttle()` limits.
  * Phase 3 — Dashboard & Workspace:
- *   Step 2 (this step): `WorkspacesModule` added — `POST /workspaces`,
+ *   Step 2: `WorkspacesModule` added — `POST /workspaces`,
  *     `GET /workspaces`, `GET /workspaces/:id`, all behind
  *     `JwtAuthGuard` and scoped to the caller's own workspaces.
+ *   Step 3 (this step): `AvatarModule` added (`@Global()`, exports
+ *     `AvatarStorageService`) — backs `UsersModule`'s new
+ *     `POST /users/me/avatar` / `DELETE /users/me/avatar` endpoints.
  */
 @Module({
   imports: [
@@ -42,6 +46,7 @@ import { WorkspacesModule } from "./workspaces/workspaces.module";
     PrismaModule,
     RedisModule,
     MailModule,
+    AvatarModule,
     ThrottlerModule.forRoot([{ name: "default", ttl: 60_000, limit: 60 }]),
     AuthModule,
     UsersModule,

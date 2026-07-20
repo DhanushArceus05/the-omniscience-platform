@@ -19,8 +19,13 @@
 - **Phase 3 — Dashboard & Workspace, Step 1 (Protected Routing and Session Bootstrap)**:
   implemented this session — see the dedicated section at the end of this file.
 - **Phase 3 — Dashboard & Workspace, Step 2 (Workspace Data Model, Ownership Isolation &
-  Dashboard Listing)**: locked and implemented this session — see the dedicated section at the
-  end of this file. Phase 3 Step 3 has not been started.
+  Dashboard Listing)**: locked and implemented — see the dedicated section at the end of this
+  file.
+- **Phase 3 — Dashboard & Workspace, Step 3 (Profile, Avatar, Security & Account Settings
+  Experience)**: locked and implemented this session — see the dedicated section at the end of
+  this file. **Unlike Steps 1/2, `@omniscience/api`'s build/typecheck/test could not be run in
+  this sandbox this session** (see that section's Verification/Known-limitations for the exact
+  reason and the exact commands to run locally). Phase 3 Step 4 has not been started.
 
 ## Phase 1 — Premium UI Foundation
 
@@ -2496,3 +2501,238 @@ results above, all of which ran against the real (if binary-incomplete) generate
 
 Awaiting your local `prisma generate`/migration apply against a real Postgres, and your approval,
 before Phase 3 Step 3.
+
+# Phase 3 Step 3 — Profile, Avatar, Security & Account Settings Experience (implemented; `@omniscience/api` NOT verified in-sandbox this session — local verification required)
+
+## Locked scope (as approved)
+
+One premium settings experience at `/app/settings` (Profile / Security / Sessions / Danger Zone
+tabs — no separate `/app/profile` route). Account menu reduced to "Settings" + "Sign out" (the
+disabled "Profile (coming soon)"/"Settings (coming soon)" entries are gone). Avatar upload/replace/
+remove backed by a new, first-of-its-kind local-disk `AvatarStorageService`. Display-name update,
+change-password, session list/revoke/revoke-all, and account deletion all reuse **already-existing**
+Phase 2 backend endpoints — no new backend logic for those five, only new SDK wiring + UI. No
+in-page 401 refresh-and-retry. No workspace detail/rename/delete, search, notifications, email
+change, chat/RAG/AI/memory/agents. Not starting Phase 3 Step 4.
+
+## Architecture summary
+
+- **Avatar storage** (new): `AvatarStorageService` (`apps/api/src/avatar/`) — local disk under
+  `AVATAR_STORAGE_DIR`, served back out by the API itself via Express static-file serving
+  (`main.ts`'s `app.useStaticAssets(...)` at the `/uploads/avatars` prefix). This repo had no
+  pre-existing pluggable object-storage abstraction to reuse (the `.env.example`
+  `OBJECT_STORAGE_*` vars are unused placeholders from an earlier phase) — this is deliberately the
+  first one, kept behind a narrow `save`/`delete`/`buildPublicUrl` interface so a real
+  object-storage backend (S3-compatible or otherwise) can replace its internals later without any
+  caller changing.
+- **Database**: one new nullable `User.avatarStorageKey` column (a generated filename, never a
+  full URL — the public URL is always *derived* at read time from this key + `AVATAR_PUBLIC_BASE_URL`,
+  so it never goes stale if that base URL changes across environments). No Base64/binary data in
+  Postgres, per the locked scope.
+- **API**: two new authenticated endpoints, `POST /users/me/avatar` (multipart, replaces an
+  existing avatar if any) and `DELETE /users/me/avatar` (idempotent). Five *existing* endpoints
+  (`PATCH /users/me`, `POST /users/me/change-password`, `DELETE /users/me`, `GET /auth/sessions`,
+  `DELETE /auth/sessions/:tokenId`, `POST /auth/sessions/revoke-all`) are unchanged except that
+  every response embedding a user now also carries `avatarUrl`.
+- **SDK**: 8 new methods — `updateProfile`, `uploadAvatar`, `deleteAvatar`, `changePassword`,
+  `deleteAccount`, `listSessions`, `revokeSession`, `revokeAllSessions` — none with built-in
+  401-retry.
+- **Frontend**: `AccountSettingsPage` (`/app/settings`, new `App.tsx` route) →
+  `SettingsExperience` (tabs, lazy-mounted per tab) → `ProfileSection` / `SecuritySection` /
+  `SessionsSection` / `DangerZoneSection` (`apps/web/src/features/account-settings/`).
+  `AuthContext` gained one additive method, `updateUser(patch)`, so a successful
+  name/avatar change reflects in the TopBar/UserMenu immediately with no reload — it does not
+  touch `authStatus`, session bootstrap, or logout.
+
+## Avatar storage strategy (detail)
+
+- **Format allow-list**: JPEG, PNG, WebP only. Enforced twice, independently: (1) the
+  client-declared `Content-Type` must be one of the three, and (2) the file's actual magic bytes
+  (`apps/api/src/avatar/image-signature.ts`) must *also* match one of the three — a spoofed
+  `Content-Type` alone is never sufficient. **No SVG**, ever — this repo has no proven SVG
+  sanitization strategy, so it stays unsupported outright, not merely "not yet allow-listed".
+- **Size cap**: `AVATAR_MAX_UPLOAD_BYTES`, default 5MB, enforced authoritatively in
+  `AvatarStorageService.assertValid` (after buffering); Multer's own `limits.fileSize` (a fixed
+  8MB constant set inline on `UsersController.uploadAvatar`'s `FileInterceptor`, *not*
+  env-configurable on purpose) is only a coarse DoS backstop during upload streaming, translated to
+  the same `AVATAR_TOO_LARGE`/413 response by a small route-scoped `MulterExceptionFilter` if it
+  ever fires first.
+- **Storage keys**: always `${randomUUID()}.<ext>` — never derived from the client's original
+  filename, eliminating path-traversal and filename-collision risk entirely. Every path built from
+  a storage key is re-validated against a strict `^[a-f0-9-]+\.(jpg|png|webp)$` pattern before any
+  filesystem call, even though the only caller (`AvatarStorageService` itself) already only ever
+  produces keys in that exact shape — defense in depth.
+- **Cleanup**: replacing an avatar deletes the old file only *after* the new one is written and the
+  database row updated (so a mid-upload failure never leaves an account with zero avatar files when
+  it previously had one). Deleting an avatar clears the DB column, then removes the file.
+  **Deleting an account** (`UsersService.deleteAccount`) also cleans up its avatar file, after the
+  `User` row itself is deleted — matching the approved scope's lifecycle-cleanup requirement.
+  All deletes are best-effort/idempotent: a missing file (`ENOENT`) is treated as "already gone",
+  never an error.
+- **No path/filesystem leakage**: API responses only ever return the full public URL
+  (`http://.../uploads/avatars/<key>.<ext>`) — never a filesystem path, never the storage
+  directory.
+- **Env vars** (all optional, sensible local-dev defaults — see `.env.example`):
+  `AVATAR_STORAGE_DIR` (default `./storage/avatars`), `AVATAR_PUBLIC_BASE_URL` (default
+  `http://localhost:4000`), `AVATAR_MAX_UPLOAD_BYTES` (default 5MB).
+
+## Database changes
+
+- `apps/api/prisma/schema.prisma`: `User.avatarStorageKey String?` added.
+- `apps/api/prisma/migrations/20260719000000_add_user_avatar_storage_key/migration.sql` (new,
+  hand-authored — see Known limitations): `ALTER TABLE "users" ADD COLUMN "avatarStorageKey" TEXT;`
+
+## API additions
+
+- `POST /users/me/avatar` — `multipart/form-data`, field `file`. `JwtAuthGuard`-protected,
+  20/10min throttle (matches `update-profile`'s existing precedent — a non-credential profile
+  edit). Returns `{ avatarUrl }`.
+- `DELETE /users/me/avatar` — same guard/throttle. Always succeeds; returns `{ avatarUrl: null }`.
+- `PATCH /users/me`, `POST /users/me/change-password`, `DELETE /users/me`, `GET /auth/sessions`,
+  `DELETE /auth/sessions/:tokenId`, `POST /auth/sessions/revoke-all` — **unchanged**, already
+  existed from Phase 2 Steps 6–8; only their response shape gained `avatarUrl` where a user object
+  is embedded.
+
+## SDK additions (`packages/sdk/src/client.ts`)
+
+`updateProfile`, `uploadAvatar` (takes a `Blob`/`File`, builds `FormData` itself, no manual
+`Content-Type` header so `fetch` sets the correct multipart boundary), `deleteAvatar`,
+`changePassword`, `deleteAccount`, `listSessions`, `revokeSession`, `revokeAllSessions`. None retry
+on 401 — same "caller decides" contract every existing method already has.
+
+## Frontend additions
+
+- `apps/web/src/pages/AccountSettingsPage.tsx` (new) — `/app/settings`.
+- `apps/web/src/features/account-settings/` (new): `SettingsExperience` (tabs),
+  `ProfileSection` (avatar preview/upload/replace/remove with client-side pre-validation mirroring
+  the backend's rules for immediate feedback, plus the backend as sole authority; display-name
+  form; read-only email), `SecuritySection` (change password, with a client-only "confirm new
+  password" safeguard never sent to the backend), `SessionsSection` (list/loading/error/empty
+  states; per-session revoke; "sign out of all other sessions"), `DangerZoneSection` (password +
+  typed `DELETE MY ACCOUNT` confirmation — the typed phrase is a UI-only safeguard, never sent to
+  the backend; on success clears the local session via `logout()` and redirects to `/login`),
+  `accountSettingsErrors.ts` (error-code → copy mapping, mirroring
+  `features/workspaces/workspaceErrors.ts`'s existing convention).
+- `apps/web/src/layout/UserMenu.tsx` — real "Settings" (navigates to `/app/settings`) + "Sign out";
+  no more disabled placeholders. Now also renders the real avatar (or initials fallback).
+- `apps/web/src/layout/{AppShell,TopBar}.tsx` — thread `avatarUrl` through to `UserMenu`.
+- `apps/web/src/layout/navItems.ts` (new) — the sidebar nav list, shared between
+  `AppShellPreviewPage` and `AccountSettingsPage` so both render identical navigation (no shared
+  layout/outlet route exists yet — each top-level page still builds its own `<AppShell>`).
+- `apps/web/src/lib/auth/AuthContext.tsx` — added `updateUser(patch)` only; session bootstrap,
+  `setSession`, and `logout` are unchanged.
+- `apps/web/src/App.tsx` — new `/app/settings` route, `ProtectedRoute`-wrapped, same as `/app`.
+
+## Tests added this session
+
+- `packages/config/src/env.test.ts` — avatar env-var defaults/overrides (2 tests).
+- `apps/api/src/avatar/image-signature.spec.ts` — magic-byte detection for JPEG/PNG/WebP, GIF/SVG/
+  spoofed-content rejection, extension mapping, MIME allow-list (13 tests).
+- `apps/api/src/avatar/avatar-storage.service.spec.ts` — real filesystem I/O against a temp
+  directory (no mocks): save/reject-oversized/reject-unsupported-mimetype/reject-spoofed-content/
+  reject-SVG/create-dir-on-first-use/unique-keys, delete (existing/null/already-missing/path-
+  traversal-attempt), `buildPublicUrl`, `getMaxUploadBytes` (18 tests).
+- `apps/api/src/users/users.service.spec.ts` (rewritten) — `updateProfile` (with/without avatar),
+  `uploadAvatar` (saves+updates+returns URL; deletes old avatar *after* the new one is persisted;
+  no delete when there was none; propagates validation failures without touching the DB; stale-
+  session handling), `deleteAvatar` (clears+deletes; no-op when none; stale-session), existing
+  `changePassword`/`deleteAccount` coverage extended for avatar cleanup on deletion (23 tests).
+- `apps/api/src/users/users.controller.spec.ts` (extended) — `uploadAvatar`/`deleteAvatar`
+  delegation, no-file-attached rejection (3 new tests).
+- `apps/api/src/auth/auth.module.spec.ts` / `apps/api/src/users/users.module.spec.ts` (updated) —
+  now also import `AvatarModule` and assert `AvatarStorageService` resolves from the compiled graph.
+- `apps/api/src/auth/auth.service.spec.ts` (updated) — `avatarUrl` derivation from
+  `avatarStorageKey` via `AvatarStorageService.buildPublicUrl`.
+- `apps/api/test/avatar.e2e-spec.ts` (new, real HTTP + real local-disk `AvatarStorageService`, not
+  faked) — valid JPEG/PNG/WebP upload; the uploaded file is actually reachable at its returned URL;
+  unsupported-type rejection; spoofed-Content-Type rejection; oversized-upload rejection;
+  unauthenticated rejection; no-file-attached rejection; replacing an avatar removes the old file
+  from disk; owner-only scoping (another user's `/auth/me` is unaffected); delete removes the file
+  and falls back to `null`; delete is a safe no-op with no prior avatar; unauthenticated rejection.
+- `apps/api/test/{auth-registration,users-profile}.e2e-spec.ts` (updated) — expected response
+  shapes now include `avatarUrl: null`.
+- `apps/api/test/helpers/{create-test-app.ts,fake-prisma.service.ts}` (updated) — real
+  `AvatarStorageService` wired against a dedicated OS temp directory (not faked — it's plain,
+  deterministic disk I/O); static avatar serving mirrored in the test app; `FakeUserRow` gained
+  `avatarStorageKey`.
+- `packages/sdk/src/client.test.ts` (extended) — all 8 new methods: success + structured
+  `ApiClientError` cases, `FormData`/no-manual-Content-Type behavior for `uploadAvatar`, URL-encoding
+  for `revokeSession`, identical-response assertions for `WORKSPACE_NOT_FOUND`-style codes (16 new
+  tests).
+- `apps/web/src/features/account-settings/{ProfileSection,SecuritySection,SessionsSection,
+  DangerZoneSection,SettingsExperience}.test.tsx` (new) — loading/empty/populated/success/
+  validation/API-error states per section; immediate avatar update and initials-fallback-after-
+  removal; typed-confirmation gating for account deletion; tab navigation and lazy per-tab
+  mounting (sessions aren't fetched until the Sessions tab opens).
+- `apps/web/src/layout/UserMenu.test.tsx` (rewritten) — real navigation to `/app/settings`, avatar
+  image vs. initials fallback, no more "(coming soon)" text anywhere.
+
+## Verification — what was actually run this session, and the honest limitation
+
+**Actually run and passing, this session, in this sandbox:**
+
+```
+pnpm --filter @omniscience/schemas test    # 70/70 passed
+pnpm --filter @omniscience/schemas lint    # clean
+pnpm --filter @omniscience/types test      # 2/2 passed
+pnpm --filter @omniscience/config test     # 20/20 passed
+pnpm --filter @omniscience/config lint     # clean
+pnpm --filter @omniscience/sdk test        # 35/35 passed
+pnpm --filter @omniscience/sdk lint        # clean
+pnpm --filter @omniscience/ui test         # 81/81 passed (untouched by this step)
+pnpm --filter @omniscience/ui lint         # clean
+pnpm --filter @omniscience/web build       # succeeded
+pnpm --filter @omniscience/web lint        # clean
+pnpm --filter @omniscience/web typecheck   # clean
+pnpm --filter @omniscience/web test        # 82/82 passed, 15 files
+pnpm --filter @omniscience/api lint        # clean (ESLint only — see limitation below)
+```
+
+Two real bugs were found and fixed via these runs, not just assumed passing: an SDK test asserting
+`FormData.get("file")` returns the exact same object reference (it doesn't — `FormData` wraps a
+`Blob` into a `File` per spec; fixed to assert size/type instead), and a `SettingsExperience` test
+missing a `MemoryRouter` wrapper (`DangerZoneSection` calls `useNavigate()`).
+
+**`@omniscience/api`'s `build`/`typecheck`/`test` could NOT be run in this sandbox.**
+`pnpm --filter @omniscience/api exec prisma generate` fails — `binaries.prisma.sh` (where the
+query/schema-engine binaries are downloaded from) is outside this sandbox's network allowlist
+(403 Forbidden), the same restriction documented since Phase 2 Step 2. **No workaround, stub, or
+fake Prisma client was created or used to route around this** — a hand-written type stub was
+briefly created earlier in this session and was explicitly deleted before this final pass, per
+instruction; nothing sandbox-only remains anywhere in the delivered tree (verified: no
+`node_modules/.prisma`, no `.prisma` stub files, `git`-diff-equivalent review shows only real
+source changes). Without the generated client, `tsc` fails with exactly and only
+`Property 'user'/'workspace' does not exist on type 'PrismaService'` — i.e. purely missing
+generated types, not a reported logic/syntax error — and ESLint (which doesn't require the
+generated client) does pass cleanly across all of `apps/api/src` and `apps/api/test`, including
+every new/changed file this step touches. That is a partial, real signal, not a substitute for
+`tsc`/`ts-jest` actually running.
+
+**Run locally, where `binaries.prisma.sh` is reachable, before trusting `apps/api`:**
+```
+pnpm --filter @omniscience/api exec prisma generate
+pnpm build
+pnpm lint
+pnpm typecheck
+pnpm test
+```
+
+## Known limitations and explicitly deferred work
+
+- **`@omniscience/api` build/typecheck/test require local verification** — see above. This is the
+  primary open item before this step can be considered fully confirmed.
+- **Migration SQL is hand-authored, not CLI-generated** — same caveat as every prior migration in
+  this repo; verify it matches exactly once `prisma generate`/`migrate` run locally.
+- **No device/browser/IP metadata on sessions** — `SessionSummary` is only `{ tokenId, createdAt }`
+  (nothing else is stored server-side); the Sessions tab cannot show "Chrome on Windows"-style
+  labels, and cannot mark "this is your current session" (access tokens don't carry `tokenId`).
+  Both are UI-visible limitations, not silently worked around.
+- **No in-page 401 refresh-and-retry** — explicitly out of scope per your instruction; a stale
+  token surfaces as an ordinary recoverable error in every new section.
+- **No workspace detail/rename/delete, search, notifications, email-change, file management,
+  chat/RAG/AI models/memory/agents** — none touched, exactly as instructed.
+- **Local-disk avatar storage does not horizontally scale** across multiple API instances without
+  a shared volume or a real object-storage backend — `AvatarStorageService`'s narrow interface is
+  designed so that swap can happen later without touching `UsersService`/`UsersController`.
+- **No image resizing/optimization** — the uploaded file is stored as-is (within the 5MB cap); no
+  thumbnailing or format re-encoding.

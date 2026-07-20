@@ -40,6 +40,14 @@ model User {
   passwordHash    String
   name            String
   emailVerifiedAt DateTime?
+  /// Phase 3 Step 3 — the generated (never user-supplied) filename this
+  /// user's avatar is stored under, e.g. `AvatarStorageService`'s own
+  /// `${randomUUID()}.<ext>`. `null` means "no avatar, show initials".
+  /// Deliberately not a full `avatarUrl` column: the public URL is
+  /// derived at read time from this key plus `AVATAR_PUBLIC_BASE_URL`,
+  /// so it can never go stale if that base URL changes across
+  /// environments/deployments — this key is the only source of truth.
+  avatarStorageKey String?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 

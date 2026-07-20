@@ -1,6 +1,7 @@
 import { BadRequestException, UnauthorizedException } from "@nestjs/common";
 import { PasswordHasherService } from "../auth/password-hasher.service";
 import { RefreshTokenStore } from "../auth/refresh-token.store";
+import { AvatarStorageService } from "../avatar/avatar-storage.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { UsersService } from "./users.service";
 
@@ -19,12 +20,20 @@ describe("UsersService", () => {
     revokeAllForUser: jest.fn(),
   } as unknown as RefreshTokenStore;
 
+  const avatarStorage = {
+    save: jest.fn(),
+    delete: jest.fn(),
+    buildPublicUrl: jest.fn((key: string) => `http://localhost:4000/uploads/avatars/${key}`),
+    getMaxUploadBytes: jest.fn(() => 5 * 1024 * 1024),
+  } as unknown as AvatarStorageService;
+
   const buildUser = (overrides: Partial<Record<string, unknown>> = {}) => ({
     id: "user_1",
     email: "user@example.com",
     passwordHash: "hashed-current-password",
     name: "Ada Lovelace",
     emailVerifiedAt: new Date(),
+    avatarStorageKey: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -34,11 +43,11 @@ describe("UsersService", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    service = new UsersService(prisma, passwordHasher, refreshTokens);
+    service = new UsersService(prisma, passwordHasher, refreshTokens, avatarStorage);
   });
 
   describe("updateProfile", () => {
-    it("updates and returns the caller's own profile", async () => {
+    it("updates and returns the caller's own profile, with a null avatarUrl when no avatar is set", async () => {
       (prisma.user.findUnique as jest.Mock).mockResolvedValue(buildUser());
       (prisma.user.update as jest.Mock).mockResolvedValue(
         buildUser({ name: "Ada, Countess of Lovelace" }),
@@ -55,7 +64,20 @@ describe("UsersService", () => {
         id: "user_1",
         email: "user@example.com",
         name: "Ada, Countess of Lovelace",
+        avatarUrl: null,
       });
+    });
+
+    it("derives avatarUrl from avatarStorageKey when the user already has an avatar", async () => {
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(buildUser());
+      (prisma.user.update as jest.Mock).mockResolvedValue(
+        buildUser({ avatarStorageKey: "existing.jpg" }),
+      );
+
+      const result = await service.updateProfile("user_1", "Ada Lovelace");
+
+      expect(result.avatarUrl).toBe("http://localhost:4000/uploads/avatars/existing.jpg");
+      expect(avatarStorage.buildPublicUrl).toHaveBeenCalledWith("existing.jpg");
     });
 
     it("throws UnauthorizedException when the user no longer exists", async () => {
@@ -65,6 +87,117 @@ describe("UsersService", () => {
         UnauthorizedException,
       );
       expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("uploadAvatar", () => {
+    const uploadInput = { buffer: Buffer.from("fake-image"), mimetype: "image/jpeg", size: 10 };
+
+    it("saves the file, updates the user's avatarStorageKey, and returns the new public URL", async () => {
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(buildUser());
+      (avatarStorage.save as jest.Mock).mockResolvedValue({
+        storageKey: "new-key.jpg",
+        publicUrl: "http://localhost:4000/uploads/avatars/new-key.jpg",
+      });
+
+      const result = await service.uploadAvatar("user_1", uploadInput);
+
+      expect(avatarStorage.save).toHaveBeenCalledWith(uploadInput);
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: "user_1" },
+        data: { avatarStorageKey: "new-key.jpg" },
+      });
+      expect(result).toEqual({ avatarUrl: "http://localhost:4000/uploads/avatars/new-key.jpg" });
+    });
+
+    it("deletes the previous avatar after the new one is saved and the row updated", async () => {
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(
+        buildUser({ avatarStorageKey: "old-key.jpg" }),
+      );
+      (avatarStorage.save as jest.Mock).mockResolvedValue({
+        storageKey: "new-key.jpg",
+        publicUrl: "http://localhost:4000/uploads/avatars/new-key.jpg",
+      });
+
+      const callOrder: string[] = [];
+      (prisma.user.update as jest.Mock).mockImplementation(async () => {
+        callOrder.push("update");
+        return buildUser();
+      });
+      (avatarStorage.delete as jest.Mock).mockImplementation(async () => {
+        callOrder.push("delete-old");
+      });
+
+      await service.uploadAvatar("user_1", uploadInput);
+
+      expect(avatarStorage.delete).toHaveBeenCalledWith("old-key.jpg");
+      expect(callOrder).toEqual(["update", "delete-old"]);
+    });
+
+    it("does not attempt to delete anything when there was no previous avatar", async () => {
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(buildUser({ avatarStorageKey: null }));
+      (avatarStorage.save as jest.Mock).mockResolvedValue({
+        storageKey: "new-key.jpg",
+        publicUrl: "http://localhost:4000/uploads/avatars/new-key.jpg",
+      });
+
+      await service.uploadAvatar("user_1", uploadInput);
+
+      expect(avatarStorage.delete).not.toHaveBeenCalled();
+    });
+
+    it("propagates a validation failure from AvatarStorageService.save without touching the database", async () => {
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(buildUser());
+      (avatarStorage.save as jest.Mock).mockRejectedValue(
+        new BadRequestException({ code: "AVATAR_TYPE_UNSUPPORTED", message: "nope" }),
+      );
+
+      await expect(service.uploadAvatar("user_1", uploadInput)).rejects.toMatchObject({
+        response: { code: "AVATAR_TYPE_UNSUPPORTED" },
+      });
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it("throws UnauthorizedException when the user no longer exists", async () => {
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(null);
+
+      await expect(service.uploadAvatar("user_1", uploadInput)).rejects.toThrow(
+        UnauthorizedException,
+      );
+      expect(avatarStorage.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("deleteAvatar", () => {
+    it("clears avatarStorageKey and deletes the stored file when an avatar exists", async () => {
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(
+        buildUser({ avatarStorageKey: "existing.jpg" }),
+      );
+
+      const result = await service.deleteAvatar("user_1");
+
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: "user_1" },
+        data: { avatarStorageKey: null },
+      });
+      expect(avatarStorage.delete).toHaveBeenCalledWith("existing.jpg");
+      expect(result).toEqual({ avatarUrl: null });
+    });
+
+    it("is a no-op (no update, no delete call) when there was no avatar", async () => {
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(buildUser({ avatarStorageKey: null }));
+
+      const result = await service.deleteAvatar("user_1");
+
+      expect(prisma.user.update).not.toHaveBeenCalled();
+      expect(avatarStorage.delete).not.toHaveBeenCalled();
+      expect(result).toEqual({ avatarUrl: null });
+    });
+
+    it("throws UnauthorizedException when the user no longer exists", async () => {
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(null);
+
+      await expect(service.deleteAvatar("user_1")).rejects.toThrow(UnauthorizedException);
     });
   });
 
@@ -142,8 +275,10 @@ describe("UsersService", () => {
   });
 
   describe("deleteAccount", () => {
-    it("verifies the password, deletes the user row, and revokes every session", async () => {
-      (prisma.user.findUnique as jest.Mock).mockResolvedValue(buildUser());
+    it("verifies the password, deletes the user row, revokes every session, and cleans up the avatar file", async () => {
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(
+        buildUser({ avatarStorageKey: "existing.jpg" }),
+      );
       (passwordHasher.verify as jest.Mock).mockResolvedValue(true);
       (prisma.user.delete as jest.Mock).mockResolvedValue(buildUser());
       (refreshTokens.revokeAllForUser as jest.Mock).mockResolvedValue(2);
@@ -156,7 +291,18 @@ describe("UsersService", () => {
       );
       expect(prisma.user.delete).toHaveBeenCalledWith({ where: { id: "user_1" } });
       expect(refreshTokens.revokeAllForUser).toHaveBeenCalledWith("user_1");
+      expect(avatarStorage.delete).toHaveBeenCalledWith("existing.jpg");
       expect(result).toEqual({ deleted: true });
+    });
+
+    it("calls avatarStorage.delete with null (a safe no-op) when there was no avatar", async () => {
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(buildUser({ avatarStorageKey: null }));
+      (passwordHasher.verify as jest.Mock).mockResolvedValue(true);
+      (prisma.user.delete as jest.Mock).mockResolvedValue(buildUser());
+
+      await service.deleteAccount("user_1", "CorrectPassw0rd!");
+
+      expect(avatarStorage.delete).toHaveBeenCalledWith(null);
     });
 
     it("deletes the user row before revoking sessions", async () => {
@@ -186,6 +332,7 @@ describe("UsersService", () => {
       );
       expect(prisma.user.delete).not.toHaveBeenCalled();
       expect(refreshTokens.revokeAllForUser).not.toHaveBeenCalled();
+      expect(avatarStorage.delete).not.toHaveBeenCalled();
     });
 
     it("throws UnauthorizedException when the user no longer exists", async () => {

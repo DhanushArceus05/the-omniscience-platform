@@ -74,6 +74,43 @@ same caveat as Phase 2 Step 2's users-table migration. Awaiting your local `pris
 migration apply against a real Postgres and your approval before Phase 3 Step 3. Do not begin
 Phase 3 Step 3 until that approval lands.
 
+**Phase 3 — Dashboard & Workspace, Step 3 (Profile, Avatar, Security & Account Settings
+Experience): locked and implemented this session.** A single settings experience at
+`/app/settings` (Profile/Security/Sessions/Danger Zone tabs) replaces the account menu's disabled
+"Profile (coming soon)"/"Settings (coming soon)" entries and the sidebar's dead `/app/settings`
+link. Avatar upload/replace/remove is backed by a new `AvatarStorageService`
+(`apps/api/src/avatar/`) — local disk under `AVATAR_STORAGE_DIR`, served back out by the API as
+static files, validated by both declared MIME type and actual magic-byte signature (JPEG/PNG/WebP
+only, no SVG, 5MB cap, safe randomly-generated filenames, old-file cleanup on replace/delete/
+account-deletion) — this repo had no existing pluggable object-storage abstraction, so this is
+deliberately the first one, kept behind a narrow interface for a future real object-storage swap.
+One new nullable column, `User.avatarStorageKey` (never a stored URL — the public URL is always
+derived at read time). Two new endpoints, `POST`/`DELETE /users/me/avatar`; display-name update,
+change-password, session list/revoke/revoke-all, and account deletion all reuse **already-existing**
+Phase 2 Steps 6–8 backend endpoints — this step only added SDK methods (`updateProfile`,
+`uploadAvatar`, `deleteAvatar`, `changePassword`, `deleteAccount`, `listSessions`, `revokeSession`,
+`revokeAllSessions`, none with 401-retry) and the UI to call them. `AuthContext` gained one
+additive `updateUser(patch)` method so a successful name/avatar change reflects in the TopBar/
+UserMenu immediately with no reload; session bootstrap and logout are unchanged. Account deletion
+requires both the current password (backend) and a UI-only typed "DELETE MY ACCOUNT" confirmation,
+then clears the local session and redirects to `/login`. See `claude/CURRENT_PHASE.md`'s "Phase 3
+Step 3" section for full detail. **Verified this session:** `@omniscience/schemas` 70/70,
+`@omniscience/types` 2/2, `@omniscience/config` 20/20, `@omniscience/sdk` 35/35,
+`@omniscience/ui` 81/81 (untouched), `@omniscience/web` 82/82 across 15 files, plus clean
+build/lint/typecheck for `@omniscience/web` and clean lint for `@omniscience/api`. **Not verified
+this session: `@omniscience/api`'s build/typecheck/test.** `prisma generate` cannot complete in
+this sandbox (`binaries.prisma.sh` 403, outside the network allowlist) and — unlike Step 2's
+session — no previously-generated Prisma client happened to exist here this time, so there was
+nothing for `tsc`/`ts-jest` to compile against. No stub or workaround was created or kept to paper
+over this; a hand-written type stub created earlier in the session was deleted before finishing,
+per instruction. Every `tsc` failure this produces is exactly and only a missing-generated-type
+error (`Property 'user'/'workspace' does not exist on type 'PrismaService'`), not a reported logic
+error, and ESLint (which needs no generated client) passes cleanly across all of `apps/api`. Run
+locally, where `binaries.prisma.sh` is reachable, before trusting this package:
+`pnpm --filter @omniscience/api exec prisma generate && pnpm build && pnpm lint && pnpm typecheck
+&& pnpm test`. Awaiting that local verification and your approval before Phase 3 Step 4. Do not
+begin Phase 3 Step 4 until that approval lands.
+
 ### Phase 2 step-by-step history (unchanged from when each step was implemented)
 
 - **Frontend auth integration (post-Step-8, pre-commit)**: `RegisterPage`/`VerifyOtpPage`/

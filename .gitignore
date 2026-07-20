@@ -10,6 +10,10 @@ coverage/
 npm-debug.log*
 pnpm-debug.log*
 
+# Phase 3 Step 3 — local avatar storage (see AVATAR_STORAGE_DIR)
+apps/api/storage/
+storage/avatars/
+
 # Python
 __pycache__/
 *.pyc

@@ -1,10 +1,16 @@
 import type {
+  ChangePasswordRequest,
+  ChangePasswordResponse,
   CreateWorkspaceRequest,
   CreateWorkspaceResponse,
+  DeleteAccountRequest,
+  DeleteAccountResponse,
+  DeleteAvatarResponse,
   ForgotPasswordRequest,
   ForgotPasswordResponse,
   GetWorkspaceResponse,
   HealthCheckResponse,
+  ListSessionsResponse,
   ListWorkspacesQuery,
   ListWorkspacesResponse,
   LoginRequest,
@@ -20,6 +26,11 @@ import type {
   ResendOtpResponse,
   ResetPasswordRequest,
   ResetPasswordResponse,
+  RevokeAllSessionsResponse,
+  RevokeSessionResponse,
+  UpdateProfileRequest,
+  UpdateProfileResponse,
+  UploadAvatarResponse,
   VerifyOtpRequest,
   VerifyOtpResponse,
 } from "@omniscience/types";
@@ -207,6 +218,115 @@ export class OmniscienceClient {
       `${this.apiBaseUrl}/workspaces/${encodeURIComponent(id)}`,
       { method: "GET", headers: { Authorization: `Bearer ${accessToken}` } },
     );
+  }
+
+  /** `PATCH /users/me` — Phase 2 Step 6. Updates the caller's own display name. */
+  async updateProfile(
+    accessToken: string,
+    input: UpdateProfileRequest,
+  ): Promise<UpdateProfileResponse> {
+    return this.request<UpdateProfileResponse>(`${this.apiBaseUrl}/users/me`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify(input),
+    });
+  }
+
+  /**
+   * `POST /users/me/avatar` — Phase 3 Step 3. Uploads (or replaces) the
+   * caller's own avatar as `multipart/form-data`. Deliberately takes a
+   * platform-native `Blob`/`File` rather than a raw `Buffer` — this
+   * runs in the browser, where `FormData`/`File`/`Blob` are the native
+   * types, and building a `FormData` body is the only thing this
+   * method does differently from every other method here: no
+   * `Content-Type` header is set explicitly, since `fetch` sets the
+   * correct `multipart/form-data; boundary=...` value itself only when
+   * the body is a real `FormData` instance — setting it manually would
+   * omit the boundary and break the upload.
+   */
+  async uploadAvatar(accessToken: string, file: Blob): Promise<UploadAvatarResponse> {
+    const formData = new FormData();
+    formData.append("file", file);
+    return this.request<UploadAvatarResponse>(`${this.apiBaseUrl}/users/me/avatar`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}` },
+      body: formData,
+    });
+  }
+
+  /** `DELETE /users/me/avatar` — Phase 3 Step 3. Removes the caller's own avatar, if any. Always succeeds. */
+  async deleteAvatar(accessToken: string): Promise<DeleteAvatarResponse> {
+    return this.request<DeleteAvatarResponse>(`${this.apiBaseUrl}/users/me/avatar`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  /** `POST /users/me/change-password` — Phase 2 Step 6. Requires the caller's current password. */
+  async changePassword(
+    accessToken: string,
+    input: ChangePasswordRequest,
+  ): Promise<ChangePasswordResponse> {
+    return this.request<ChangePasswordResponse>(`${this.apiBaseUrl}/users/me/change-password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify(input),
+    });
+  }
+
+  /**
+   * `DELETE /users/me` — Phase 2 Step 8. Permanently deletes the
+   * caller's own account. Irreversible — there is no undo. Requires
+   * the caller's current password (`input.password`); any additional
+   * "type DELETE MY ACCOUNT to confirm" safeguard is a UI-only
+   * affordance layered on top of this call, not part of the request
+   * contract itself.
+   */
+  async deleteAccount(
+    accessToken: string,
+    input: DeleteAccountRequest,
+  ): Promise<DeleteAccountResponse> {
+    return this.request<DeleteAccountResponse>(`${this.apiBaseUrl}/users/me`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify(input),
+    });
+  }
+
+  /** `GET /auth/sessions` — Phase 2 Step 7. Lists the caller's own active sessions, newest first. */
+  async listSessions(accessToken: string): Promise<ListSessionsResponse> {
+    return this.request<ListSessionsResponse>(`${this.apiBaseUrl}/auth/sessions`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  /**
+   * `DELETE /auth/sessions/:tokenId` — Phase 2 Step 7. Revokes exactly
+   * one of the caller's own sessions. Throws `ApiClientError` with
+   * `code: "SESSION_NOT_FOUND"` (404) both when `tokenId` doesn't exist
+   * at all and when it belongs to a different caller — identical
+   * either way, by design, on the backend (same no-enumeration
+   * convention `getWorkspace`'s `WORKSPACE_NOT_FOUND` already follows).
+   */
+  async revokeSession(accessToken: string, tokenId: string): Promise<RevokeSessionResponse> {
+    return this.request<RevokeSessionResponse>(
+      `${this.apiBaseUrl}/auth/sessions/${encodeURIComponent(tokenId)}`,
+      { method: "DELETE", headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+  }
+
+  /**
+   * `POST /auth/sessions/revoke-all` — Phase 2 Step 7. Revokes every
+   * one of the caller's sessions *except* the one currently making this
+   * call, so "sign out everywhere else" never locks the caller out of
+   * their own active session.
+   */
+  async revokeAllSessions(accessToken: string): Promise<RevokeAllSessionsResponse> {
+    return this.request<RevokeAllSessionsResponse>(`${this.apiBaseUrl}/auth/sessions/revoke-all`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
   }
 
   private async getJson<T>(url: string): Promise<T> {

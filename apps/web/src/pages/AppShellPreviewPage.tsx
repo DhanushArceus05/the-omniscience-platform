@@ -1,14 +1,9 @@
 import type { JSX } from "react";
 import { AppShell } from "../layout/AppShell";
+import { APP_NAV_ITEMS } from "../layout/navItems";
 import { SystemStatusPanel } from "../features/system-status/SystemStatusPanel";
 import { WorkspaceDashboard } from "../features/workspaces/WorkspaceDashboard";
 import { useAuth } from "../lib/auth/AuthContext";
-
-const NAV_ITEMS = [
-  { to: "/app", label: "Overview", icon: "🏠" },
-  { to: "/app/workspace", label: "Workspace", icon: "🗂️" },
-  { to: "/app/settings", label: "Settings", icon: "⚙️" },
-];
 
 /**
  * Reachable at /app (behind ProtectedRoute as of Phase 3 Step 1).
@@ -23,9 +18,10 @@ export function AppShellPreviewPage(): JSX.Element {
 
   return (
     <AppShell
-      navItems={NAV_ITEMS}
+      navItems={APP_NAV_ITEMS}
       breadcrumbs={[{ label: "Overview" }]}
       userName={user?.name ?? "Guest User"}
+      avatarUrl={user?.avatarUrl}
       onSignOut={() => void logout()}
     >
       <div style={{ display: "flex", flexDirection: "column", gap: "var(--omni-space-6)" }}>
@@ -35,4 +31,3 @@ export function AppShellPreviewPage(): JSX.Element {
     </AppShell>
   );
 }
-

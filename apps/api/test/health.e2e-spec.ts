@@ -47,6 +47,14 @@ const testEnv: Env = {
   OTP_TTL_SECONDS: 600,
   OTP_MAX_ATTEMPTS: 5,
   OTP_RESEND_COOLDOWN_SECONDS: 60,
+  // Phase 3 Step 3 — AvatarModule (@Global()) is part of the real
+  // AppModule this suite boots, so AvatarStorageService's constructor
+  // needs these three fields populated (it resolves/normalizes them
+  // immediately), even though this health-only smoke test never
+  // exercises any avatar endpoint.
+  AVATAR_STORAGE_DIR: "./storage/avatars-test",
+  AVATAR_PUBLIC_BASE_URL: "http://localhost:4000",
+  AVATAR_MAX_UPLOAD_BYTES: 5 * 1024 * 1024,
 };
 
 class FakeRedisService {

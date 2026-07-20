@@ -59,6 +59,29 @@ const baseEnvSchema = z.object({
   // Minimum time between OTP sends for the same email (register or
   // resend), to prevent email-bombing a single address.
   OTP_RESEND_COOLDOWN_SECONDS: z.coerce.number().int().positive().default(60),
+
+  // ---- Phase 3 Step 3 — Avatar storage ----
+  // MVP storage strategy: local disk, served back out over HTTP as static
+  // files by the API itself (see `AvatarStorageService`/`main.ts`). There is
+  // no existing pluggable object-storage abstraction in this repo yet (the
+  // `OBJECT_STORAGE_*` vars below are reserved/unused placeholders from an
+  // earlier phase, never implemented) — this is deliberately the first one,
+  // built small and swappable rather than as a permanent architecture. A
+  // future step can replace `AvatarStorageService`'s internals with a real
+  // object-storage (S3-compatible) backend without changing any caller.
+  //
+  // - `AVATAR_STORAGE_DIR`: where uploaded avatar files are written on
+  //   disk. Created automatically if it doesn't exist. Not committed to
+  //   version control (see `.gitignore`).
+  // - `AVATAR_PUBLIC_BASE_URL`: the externally-reachable origin avatar
+  //   URLs are built from (e.g. `https://api.example.com`). Defaults to
+  //   matching `API_PORT`'s own default for local development.
+  // - `AVATAR_MAX_UPLOAD_BYTES`: the hard cap enforced both by Multer
+  //   (a DoS backstop during upload) and, authoritatively, by
+  //   `AvatarStorageService` itself after the file is buffered.
+  AVATAR_STORAGE_DIR: z.string().min(1).default("./storage/avatars"),
+  AVATAR_PUBLIC_BASE_URL: z.string().min(1).default("http://localhost:4000"),
+  AVATAR_MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(5 * 1024 * 1024),
 });
 
 export const envSchema = baseEnvSchema.superRefine((env, ctx) => {

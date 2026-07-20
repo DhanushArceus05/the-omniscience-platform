@@ -4,6 +4,8 @@ import { createLogger } from "@omniscience/utils";
 import type Redis from "ioredis";
 import { AccessTokenService } from "../auth/access-token.service";
 import { AuthModule } from "../auth/auth.module";
+import { AvatarModule } from "../avatar/avatar.module";
+import { AvatarStorageService } from "../avatar/avatar-storage.service";
 import { ENV, LOGGER } from "../config/config.constants";
 import { ConfigModule } from "../config/config.module";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
@@ -26,18 +28,30 @@ const testEnv = {
   JWT_ACCESS_SECRET: "test-access-secret-0123456789abcdef",
   JWT_ACCESS_TTL_SECONDS: 900,
   JWT_REFRESH_TTL_SECONDS: 604800,
+  AVATAR_STORAGE_DIR: "./storage/avatars-test",
+  AVATAR_PUBLIC_BASE_URL: "http://localhost:4000",
+  AVATAR_MAX_UPLOAD_BYTES: 5 * 1024 * 1024,
 } as unknown as Env;
 
 describe("UsersModule", () => {
-  it("compiles and provides UsersService, UsersController, and the AuthModule providers they depend on (including Step 8's RefreshTokenStore)", async () => {
+  it("compiles and provides UsersService, UsersController, and the AuthModule providers they depend on (including Step 8's RefreshTokenStore and Phase 3 Step 3's AvatarStorageService)", async () => {
     const module: TestingModule = await Test.createTestingModule({
       // Same rationale as auth.module.spec.ts: ConfigModule/PrismaModule/
-      // RedisModule/MailModule are all @Global(), but a Nest testing
-      // module only registers global providers that are actually part
-      // of its own compiled graph — they must be imported here even
-      // though UsersModule/AuthModule never import them directly (they
-      // rely on them being global in the real AppModule).
-      imports: [ConfigModule, PrismaModule, RedisModule, MailModule, AuthModule, UsersModule],
+      // RedisModule/MailModule/AvatarModule are all @Global(), but a
+      // Nest testing module only registers global providers that are
+      // actually part of its own compiled graph — they must be
+      // imported here even though UsersModule/AuthModule never import
+      // them directly (they rely on them being global in the real
+      // AppModule).
+      imports: [
+        ConfigModule,
+        PrismaModule,
+        RedisModule,
+        MailModule,
+        AvatarModule,
+        AuthModule,
+        UsersModule,
+      ],
     })
       .overrideProvider(ENV)
       .useValue(testEnv)
@@ -63,6 +77,7 @@ describe("UsersModule", () => {
     expect(module.get(AccessTokenService)).toBeInstanceOf(AccessTokenService);
     expect(module.get(JwtAuthGuard)).toBeInstanceOf(JwtAuthGuard);
     expect(module.get(RefreshTokenStore)).toBeInstanceOf(RefreshTokenStore);
+    expect(module.get(AvatarStorageService)).toBeInstanceOf(AvatarStorageService);
     expect(module.get(UsersService)).toBeInstanceOf(UsersService);
     expect(module.get(UsersController)).toBeInstanceOf(UsersController);
   });

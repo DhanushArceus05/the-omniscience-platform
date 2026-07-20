@@ -10,6 +10,7 @@ import { VerifyOtpPage } from "./pages/VerifyOtpPage";
 import { ForgotPasswordPage } from "./pages/ForgotPasswordPage";
 import { ResetPasswordPage } from "./pages/ResetPasswordPage";
 import { AppShellPreviewPage } from "./pages/AppShellPreviewPage";
+import { AccountSettingsPage } from "./pages/AccountSettingsPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 
 /**
@@ -41,6 +42,14 @@ export function App(): JSX.Element {
               element={
                 <ProtectedRoute>
                   <AppShellPreviewPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/app/settings"
+              element={
+                <ProtectedRoute>
+                  <AccountSettingsPage />
                 </ProtectedRoute>
               }
             />

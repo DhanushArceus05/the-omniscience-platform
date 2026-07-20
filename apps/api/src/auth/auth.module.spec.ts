@@ -4,6 +4,8 @@ import { createLogger } from "@omniscience/utils";
 import type Redis from "ioredis";
 import { ConfigModule } from "../config/config.module";
 import { ENV, LOGGER } from "../config/config.constants";
+import { AvatarModule } from "../avatar/avatar.module";
+import { AvatarStorageService } from "../avatar/avatar-storage.service";
 import { MailModule } from "../mail/mail.module";
 import { MailService } from "../mail/mail.service";
 import { PrismaModule } from "../prisma/prisma.module";
@@ -28,18 +30,21 @@ const testEnv = {
   JWT_ACCESS_SECRET: "test-access-secret-0123456789abcdef",
   JWT_ACCESS_TTL_SECONDS: 900,
   JWT_REFRESH_TTL_SECONDS: 604800,
+  AVATAR_STORAGE_DIR: "./storage/avatars-test",
+  AVATAR_PUBLIC_BASE_URL: "http://localhost:4000",
+  AVATAR_MAX_UPLOAD_BYTES: 5 * 1024 * 1024,
 } as unknown as Env;
 
 describe("AuthModule", () => {
   it("compiles and provides every Step 3 + Step 4 + Step 5 provider plus AuthController", async () => {
     const module: TestingModule = await Test.createTestingModule({
-      // ConfigModule/PrismaModule/RedisModule/MailModule are all
-      // @Global(), but a Nest testing module only registers global
+      // ConfigModule/PrismaModule/RedisModule/MailModule/AvatarModule are
+      // all @Global(), but a Nest testing module only registers global
       // providers that are actually part of its own compiled graph —
       // they must be imported here even though AuthModule itself never
       // imports them directly (it relies on them being global in the
       // real AppModule).
-      imports: [ConfigModule, PrismaModule, RedisModule, MailModule, AuthModule],
+      imports: [ConfigModule, PrismaModule, RedisModule, MailModule, AvatarModule, AuthModule],
     })
       .overrideProvider(ENV)
       .useValue(testEnv)
@@ -68,6 +73,7 @@ describe("AuthModule", () => {
     expect(module.get(RefreshTokenStore)).toBeInstanceOf(RefreshTokenStore);
     expect(module.get(PasswordResetStore)).toBeInstanceOf(PasswordResetStore);
     expect(module.get(JwtAuthGuard)).toBeInstanceOf(JwtAuthGuard);
+    expect(module.get(AvatarStorageService)).toBeInstanceOf(AvatarStorageService);
     expect(module.get(AuthService)).toBeInstanceOf(AuthService);
     expect(module.get(AuthController)).toBeInstanceOf(AuthController);
   });

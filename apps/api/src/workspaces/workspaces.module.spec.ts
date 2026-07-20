@@ -4,6 +4,7 @@ import { createLogger } from "@omniscience/utils";
 import type Redis from "ioredis";
 import { AuthModule } from "../auth/auth.module";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
+import { AvatarModule } from "../avatar/avatar.module";
 import { ENV, LOGGER } from "../config/config.constants";
 import { ConfigModule } from "../config/config.module";
 import { MailModule } from "../mail/mail.module";
@@ -23,16 +24,29 @@ const testEnv = {
   JWT_ACCESS_SECRET: "test-access-secret-0123456789abcdef",
   JWT_ACCESS_TTL_SECONDS: 900,
   JWT_REFRESH_TTL_SECONDS: 604800,
+  AVATAR_STORAGE_DIR: "./storage/avatars-test",
+  AVATAR_PUBLIC_BASE_URL: "http://localhost:4000",
+  AVATAR_MAX_UPLOAD_BYTES: 5 * 1024 * 1024,
 } as unknown as Env;
 
 describe("WorkspacesModule", () => {
   it("compiles and provides WorkspacesService, WorkspacesController, and AuthModule's JwtAuthGuard", async () => {
     const module: TestingModule = await Test.createTestingModule({
       // Same rationale as users.module.spec.ts: ConfigModule/PrismaModule/
-      // RedisModule/MailModule are all @Global(), but a Nest testing
-      // module only registers global providers that are part of its own
-      // compiled graph.
-      imports: [ConfigModule, PrismaModule, RedisModule, MailModule, AuthModule, WorkspacesModule],
+      // RedisModule/MailModule/AvatarModule are all @Global(), but a Nest
+      // testing module only registers global providers that are part of
+      // its own compiled graph — AvatarModule must be imported here too,
+      // since AuthModule's AuthService now depends on AvatarStorageService
+      // (Phase 3 Step 3).
+      imports: [
+        ConfigModule,
+        PrismaModule,
+        RedisModule,
+        MailModule,
+        AvatarModule,
+        AuthModule,
+        WorkspacesModule,
+      ],
     })
       .overrideProvider(ENV)
       .useValue(testEnv)

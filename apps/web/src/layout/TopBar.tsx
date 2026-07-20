@@ -9,10 +9,18 @@ export interface TopBarProps {
   breadcrumbs: BreadcrumbItem[];
   onToggleSidebar: () => void;
   userName: string;
+  /** Phase 3 Step 3 — the signed-in user's current avatar, or `null`/`undefined` to fall back to initials. */
+  avatarUrl?: string | null;
   onSignOut: () => void;
 }
 
-export function TopBar({ breadcrumbs, onToggleSidebar, userName, onSignOut }: TopBarProps): JSX.Element {
+export function TopBar({
+  breadcrumbs,
+  onToggleSidebar,
+  userName,
+  avatarUrl,
+  onSignOut,
+}: TopBarProps): JSX.Element {
   return (
     <header className="omni-app-topbar">
       <button
@@ -32,7 +40,7 @@ export function TopBar({ breadcrumbs, onToggleSidebar, userName, onSignOut }: To
       <div className="omni-app-topbar__actions">
         <ThemeToggle />
         <NotificationButton />
-        <UserMenu name={userName} onSignOut={onSignOut} />
+        <UserMenu name={userName} avatarUrl={avatarUrl} onSignOut={onSignOut} />
       </div>
     </header>
   );

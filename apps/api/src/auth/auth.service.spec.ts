@@ -17,6 +17,7 @@ import { PasswordHasherService } from "./password-hasher.service";
 import { PasswordResetStore, type PasswordResetRecord } from "./password-reset.store";
 import { PendingRegistrationStore } from "./pending-registration.store";
 import { RefreshTokenStore } from "./refresh-token.store";
+import { AvatarStorageService } from "../avatar/avatar-storage.service";
 import { MailService } from "../mail/mail.service";
 import { PrismaService } from "../prisma/prisma.service";
 
@@ -71,6 +72,13 @@ describe("AuthService", () => {
     delete: jest.fn(),
   } as unknown as PasswordResetStore;
 
+  const avatarStorage = {
+    save: jest.fn(),
+    delete: jest.fn(),
+    buildPublicUrl: jest.fn((key: string) => `http://localhost:4000/uploads/avatars/${key}`),
+    getMaxUploadBytes: jest.fn(() => 5 * 1024 * 1024),
+  } as unknown as AvatarStorageService;
+
   const buildResetRecord = (overrides: Partial<PasswordResetRecord> = {}): PasswordResetRecord => ({
     userId: "user_1",
     otpHash: "hashed-reset-otp",
@@ -96,6 +104,7 @@ describe("AuthService", () => {
     passwordHash: "hashed-password",
     name: "Arceus",
     emailVerifiedAt: new Date(),
+    avatarStorageKey: null,
     ...overrides,
   });
 
@@ -116,6 +125,7 @@ describe("AuthService", () => {
       accessTokens,
       refreshTokens,
       passwordResets,
+      avatarStorage,
     );
   });
 
@@ -334,7 +344,7 @@ describe("AuthService", () => {
         accessTokenExpiresInSeconds: 900,
         refreshToken: "token-id.secret",
         refreshTokenExpiresInSeconds: 604800,
-        user: { id: user.id, email: user.email, name: user.name },
+        user: { id: user.id, email: user.email, name: user.name, avatarUrl: null },
       });
     });
 
@@ -429,7 +439,23 @@ describe("AuthService", () => {
       const result = await service.getCurrentUser("user_1");
 
       expect(prisma.user.findUnique).toHaveBeenCalledWith({ where: { id: "user_1" } });
-      expect(result).toEqual({ id: "user_1", email: "user@example.com", name: "Arceus" });
+      expect(result).toEqual({
+        id: "user_1",
+        email: "user@example.com",
+        name: "Arceus",
+        avatarUrl: null,
+      });
+    });
+
+    it("derives avatarUrl from avatarStorageKey via AvatarStorageService when the user has an avatar", async () => {
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(
+        buildUser({ avatarStorageKey: "abc123.jpg" }),
+      );
+
+      const result = await service.getCurrentUser("user_1");
+
+      expect(avatarStorage.buildPublicUrl).toHaveBeenCalledWith("abc123.jpg");
+      expect(result.avatarUrl).toBe("http://localhost:4000/uploads/avatars/abc123.jpg");
     });
 
     it("throws UnauthorizedException when the user no longer exists", async () => {

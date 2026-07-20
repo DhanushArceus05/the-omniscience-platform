@@ -1,5 +1,8 @@
+import * as os from "node:os";
+import * as path from "node:path";
 import type { INestApplication } from "@nestjs/common";
 import { Test, TestingModule } from "@nestjs/testing";
+import type { NestExpressApplication } from "@nestjs/platform-express";
 import type { Env } from "@omniscience/config";
 import { createLogger } from "@omniscience/utils";
 import { AppModule } from "../../src/app.module";
@@ -31,6 +34,15 @@ export const testEnv: Env = {
   OTP_TTL_SECONDS: 600,
   OTP_MAX_ATTEMPTS: 5,
   OTP_RESEND_COOLDOWN_SECONDS: 60,
+  // Phase 3 Step 3 — `AvatarStorageService` is a real (never faked)
+  // global provider: it's plain local-disk I/O, deterministic and fast
+  // enough to run for real in every e2e spec, same as
+  // `AccessTokenService`'s real JWT signing already does. Points at a
+  // dedicated OS temp directory so a test run never touches
+  // `AVATAR_STORAGE_DIR`'s real default/production location.
+  AVATAR_STORAGE_DIR: path.join(os.tmpdir(), "omniscience-api-e2e-avatars"),
+  AVATAR_PUBLIC_BASE_URL: "http://localhost:4000",
+  AVATAR_MAX_UPLOAD_BYTES: 5 * 1024 * 1024,
 };
 
 /**
@@ -71,8 +83,13 @@ export async function createTestApp(): Promise<{
     .useValue(mail)
     .compile();
 
-  const app = moduleFixture.createNestApplication();
+  const app = moduleFixture.createNestApplication<NestExpressApplication>();
   app.useGlobalFilters(new AllExceptionsFilter(createLogger({ service: "api-test" })));
+  // Phase 3 Step 3 — mirrors `main.ts`'s real bootstrap exactly, so
+  // `avatar.e2e-spec.ts` can assert an uploaded avatar is actually
+  // reachable at the URL the API returns, not just that a URL-shaped
+  // string came back.
+  app.useStaticAssets(path.resolve(testEnv.AVATAR_STORAGE_DIR), { prefix: "/uploads/avatars" });
   await app.init();
 
   return { app, mail };

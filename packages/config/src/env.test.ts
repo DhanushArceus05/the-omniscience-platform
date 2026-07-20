@@ -153,4 +153,25 @@ describe("loadEnv", () => {
       expect(isSmtpConfigured(env)).toBe(true);
     });
   });
+
+  describe("Phase 3 Step 3 — avatar storage", () => {
+    it("applies the approved defaults when unset", () => {
+      const env = loadEnv(validEnv);
+      expect(env.AVATAR_STORAGE_DIR).toBe("./storage/avatars");
+      expect(env.AVATAR_PUBLIC_BASE_URL).toBe("http://localhost:4000");
+      expect(env.AVATAR_MAX_UPLOAD_BYTES).toBe(5 * 1024 * 1024);
+    });
+
+    it("allows overriding every avatar-storage variable", () => {
+      const env = loadEnv({
+        ...validEnv,
+        AVATAR_STORAGE_DIR: "/var/data/avatars",
+        AVATAR_PUBLIC_BASE_URL: "https://api.example.com",
+        AVATAR_MAX_UPLOAD_BYTES: "1048576",
+      } as unknown as NodeJS.ProcessEnv);
+      expect(env.AVATAR_STORAGE_DIR).toBe("/var/data/avatars");
+      expect(env.AVATAR_PUBLIC_BASE_URL).toBe("https://api.example.com");
+      expect(env.AVATAR_MAX_UPLOAD_BYTES).toBe(1048576);
+    });
+  });
 });

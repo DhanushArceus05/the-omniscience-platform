@@ -32,6 +32,8 @@ export type {
 export type {
   UpdateProfileRequest,
   UpdateProfileResponse,
+  UploadAvatarResponse,
+  DeleteAvatarResponse,
   ChangePasswordRequest,
   ChangePasswordResponse,
   DeleteAccountRequest,

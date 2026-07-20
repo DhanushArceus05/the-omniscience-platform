@@ -8,6 +8,8 @@ export interface AppShellProps {
   navItems: SidebarNavItem[];
   breadcrumbs: BreadcrumbItem[];
   userName: string;
+  /** Phase 3 Step 3 — the signed-in user's current avatar, or `null`/`undefined` to fall back to initials. */
+  avatarUrl?: string | null;
   onSignOut: () => void;
   children: ReactNode;
 }
@@ -18,7 +20,14 @@ export interface AppShellProps {
  * appShell.css for the responsive rules (mobile / tablet / desktop /
  * ultra-wide).
  */
-export function AppShell({ navItems, breadcrumbs, userName, onSignOut, children }: AppShellProps): JSX.Element {
+export function AppShell({
+  navItems,
+  breadcrumbs,
+  userName,
+  avatarUrl,
+  onSignOut,
+  children,
+}: AppShellProps): JSX.Element {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   return (
@@ -37,6 +46,7 @@ export function AppShell({ navItems, breadcrumbs, userName, onSignOut, children 
           breadcrumbs={breadcrumbs}
           onToggleSidebar={() => setMobileSidebarOpen((prev) => !prev)}
           userName={userName}
+          avatarUrl={avatarUrl}
           onSignOut={onSignOut}
         />
         <main className="omni-app-shell__main omni-motion-fade">{children}</main>

@@ -64,7 +64,7 @@ describe("User profile + change-password (e2e, Phase 2 Step 6)", () => {
 
       expect(response.body).toEqual({
         success: true,
-        data: { id: expect.any(String), email, name: "Updated Name" },
+        data: { id: expect.any(String), email, name: "Updated Name", avatarUrl: null },
       });
 
       const me = await request(app.getHttpServer())

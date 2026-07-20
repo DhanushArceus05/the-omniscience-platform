@@ -13,6 +13,23 @@ export interface UpdateProfileResponse {
   id: string;
   email: string;
   name: string;
+  /** `null` when the user has no avatar set — the UI falls back to initials. */
+  avatarUrl: string | null;
+}
+
+/**
+ * Phase 3 Step 3 — avatar upload/delete. `POST /users/me/avatar` is a
+ * `multipart/form-data` request (a single `file` field) rather than
+ * JSON, so unlike every other request type in this file there is no
+ * corresponding `UploadAvatarRequest` — there's nothing to type beyond
+ * the file itself, which the SDK builds as a `FormData` body directly.
+ */
+export interface UploadAvatarResponse {
+  avatarUrl: string;
+}
+
+export interface DeleteAvatarResponse {
+  avatarUrl: null;
 }
 
 export interface ChangePasswordRequest {

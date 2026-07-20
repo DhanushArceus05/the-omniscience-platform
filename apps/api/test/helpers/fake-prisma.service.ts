@@ -20,6 +20,8 @@ export interface FakeUserRow {
   passwordHash: string;
   name: string;
   emailVerifiedAt: Date | null;
+  /** Phase 3 Step 3 — mirrors `User.avatarStorageKey`; `null` until an avatar is uploaded. */
+  avatarStorageKey: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -61,21 +63,24 @@ export class FakePrismaService {
       const row: FakeUserRow = {
         id: `user_${this.users.length + 1}`,
         ...data,
+        avatarStorageKey: null,
         createdAt: new Date(),
         updatedAt: new Date(),
       };
       this.users.push(row);
       return row;
     },
-    // Partial update covering every field Steps 2–6 currently write:
-    // `passwordHash` (Step 5 `resetPassword`, Step 6 `changePassword`)
-    // and `name` (Step 6 `updateProfile`).
+    // Partial update covering every field Steps 2–6 (and Step 3 of
+    // Phase 3) currently write: `passwordHash` (Step 5 `resetPassword`,
+    // Step 6 `changePassword`), `name` (Step 6 `updateProfile`), and
+    // `avatarStorageKey` (Phase 3 Step 3 `uploadAvatar`/`deleteAvatar`,
+    // which sets it to a new key or explicitly back to `null`).
     update: async ({
       where,
       data,
     }: {
       where: { id: string };
-      data: Partial<Pick<FakeUserRow, "name" | "passwordHash">>;
+      data: Partial<Pick<FakeUserRow, "name" | "passwordHash" | "avatarStorageKey">>;
     }): Promise<FakeUserRow> => {
       const row = this.users.find((u) => u.id === where.id);
       if (!row) {

@@ -361,3 +361,192 @@ describe("OmniscienceClient workspace methods (Phase 3 Step 2)", () => {
   });
 });
 
+describe("OmniscienceClient account/session/avatar methods (Phase 3 Step 3)", () => {
+  it("updateProfile() patches /users/me with a Bearer header and unwraps ApiSuccess.data", async () => {
+    const data = { id: "user_1", email: "user@example.com", name: "New Name", avatarUrl: null };
+    const fetchImpl = mockJsonFetch(200, { success: true, data });
+    const client = makeClient(fetchImpl);
+
+    const result = await client.updateProfile("access-token", { name: "New Name" });
+
+    expect(result).toEqual(data);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://localhost:4000/users/me",
+      expect.objectContaining({
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer access-token" },
+        body: JSON.stringify({ name: "New Name" }),
+      }),
+    );
+  });
+
+  it("uploadAvatar() posts a FormData body to /users/me/avatar without setting Content-Type manually", async () => {
+    const data = { avatarUrl: "http://localhost:4000/uploads/avatars/abc.jpg" };
+    const fetchImpl = mockJsonFetch(200, { success: true, data });
+    const client = makeClient(fetchImpl);
+    const file = new Blob(["fake-image-bytes"], { type: "image/jpeg" });
+
+    const result = await client.uploadAvatar("access-token", file);
+
+    expect(result).toEqual(data);
+    const mockCalls = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    const [url, init] = mockCalls[0] as [string, RequestInit];
+    expect(url).toBe("http://localhost:4000/users/me/avatar");
+    expect(init.method).toBe("POST");
+    expect(init.headers).toEqual({ Authorization: "Bearer access-token" });
+    expect(init.body).toBeInstanceOf(FormData);
+    const submittedFile = (init.body as FormData).get("file") as Blob;
+    expect(submittedFile.size).toBe(file.size);
+    expect(submittedFile.type).toBe(file.type);
+  });
+
+  it("uploadAvatar() surfaces a structured ApiClientError for an unsupported type", async () => {
+    const fetchImpl = mockJsonFetch(415, {
+      success: false,
+      error: { code: "AVATAR_TYPE_UNSUPPORTED", message: "Avatar must be a JPEG, PNG, or WebP image." },
+    });
+    const client = makeClient(fetchImpl);
+    const file = new Blob(["not-an-image"], { type: "image/gif" });
+
+    await expect(client.uploadAvatar("access-token", file)).rejects.toMatchObject({
+      code: "AVATAR_TYPE_UNSUPPORTED",
+      status: 415,
+    });
+  });
+
+  it("uploadAvatar() surfaces a structured ApiClientError for an oversized file", async () => {
+    const fetchImpl = mockJsonFetch(413, {
+      success: false,
+      error: { code: "AVATAR_TOO_LARGE", message: "The uploaded file is too large." },
+    });
+    const client = makeClient(fetchImpl);
+    const file = new Blob(["x"], { type: "image/jpeg" });
+
+    await expect(client.uploadAvatar("access-token", file)).rejects.toMatchObject({
+      code: "AVATAR_TOO_LARGE",
+      status: 413,
+    });
+  });
+
+  it("deleteAvatar() sends a Bearer header and unwraps a null avatarUrl", async () => {
+    const fetchImpl = mockJsonFetch(200, { success: true, data: { avatarUrl: null } });
+    const client = makeClient(fetchImpl);
+
+    const result = await client.deleteAvatar("access-token");
+
+    expect(result).toEqual({ avatarUrl: null });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://localhost:4000/users/me/avatar",
+      expect.objectContaining({ method: "DELETE", headers: { Authorization: "Bearer access-token" } }),
+    );
+  });
+
+  it("changePassword() posts to /users/me/change-password", async () => {
+    const fetchImpl = mockJsonFetch(200, {
+      success: true,
+      data: { email: "user@example.com" },
+    });
+    const client = makeClient(fetchImpl);
+
+    const result = await client.changePassword("access-token", {
+      currentPassword: "OldPassw0rd!",
+      newPassword: "N3wSup3r$ecretPassw0rd!",
+    });
+
+    expect(result).toEqual({ email: "user@example.com" });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://localhost:4000/users/me/change-password",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          currentPassword: "OldPassw0rd!",
+          newPassword: "N3wSup3r$ecretPassw0rd!",
+        }),
+      }),
+    );
+  });
+
+  it("changePassword() surfaces CURRENT_PASSWORD_INCORRECT as a structured ApiClientError", async () => {
+    const fetchImpl = mockJsonFetch(400, {
+      success: false,
+      error: { code: "CURRENT_PASSWORD_INCORRECT", message: "The current password is incorrect." },
+    });
+    const client = makeClient(fetchImpl);
+
+    await expect(
+      client.changePassword("access-token", {
+        currentPassword: "wrong",
+        newPassword: "N3wSup3r$ecretPassw0rd!",
+      }),
+    ).rejects.toMatchObject({ code: "CURRENT_PASSWORD_INCORRECT", status: 400 });
+  });
+
+  it("deleteAccount() sends a DELETE with a JSON body to /users/me", async () => {
+    const fetchImpl = mockJsonFetch(200, { success: true, data: { deleted: true } });
+    const client = makeClient(fetchImpl);
+
+    const result = await client.deleteAccount("access-token", { password: "CorrectPassw0rd!" });
+
+    expect(result).toEqual({ deleted: true });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://localhost:4000/users/me",
+      expect.objectContaining({
+        method: "DELETE",
+        body: JSON.stringify({ password: "CorrectPassw0rd!" }),
+      }),
+    );
+  });
+
+  it("listSessions() sends a Bearer header and returns the session array", async () => {
+    const sessions = [{ tokenId: "token_1", createdAt: "2026-01-01T00:00:00.000Z" }];
+    const fetchImpl = mockJsonFetch(200, { success: true, data: sessions });
+    const client = makeClient(fetchImpl);
+
+    const result = await client.listSessions("access-token");
+
+    expect(result).toEqual(sessions);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://localhost:4000/auth/sessions",
+      expect.objectContaining({ method: "GET", headers: { Authorization: "Bearer access-token" } }),
+    );
+  });
+
+  it("revokeSession() URL-encodes the tokenId and sends DELETE", async () => {
+    const fetchImpl = mockJsonFetch(200, { success: true, data: { revoked: true } });
+    const client = makeClient(fetchImpl);
+
+    const result = await client.revokeSession("access-token", "token/with-slash");
+
+    expect(result).toEqual({ revoked: true });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://localhost:4000/auth/sessions/token%2Fwith-slash",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it("revokeSession() surfaces SESSION_NOT_FOUND identically for a missing or foreign tokenId", async () => {
+    const fetchImpl = mockJsonFetch(404, {
+      success: false,
+      error: { code: "SESSION_NOT_FOUND", message: "Session not found." },
+    });
+    const client = makeClient(fetchImpl);
+
+    await expect(client.revokeSession("access-token", "anything")).rejects.toMatchObject({
+      code: "SESSION_NOT_FOUND",
+      status: 404,
+    });
+  });
+
+  it("revokeAllSessions() posts to /auth/sessions/revoke-all and returns the revoked count", async () => {
+    const fetchImpl = mockJsonFetch(200, { success: true, data: { revokedCount: 3 } });
+    const client = makeClient(fetchImpl);
+
+    const result = await client.revokeAllSessions("access-token");
+
+    expect(result).toEqual({ revokedCount: 3 });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://localhost:4000/auth/sessions/revoke-all",
+      expect.objectContaining({ method: "POST", headers: { Authorization: "Bearer access-token" } }),
+    );
+  });
+});
