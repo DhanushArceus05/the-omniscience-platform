@@ -11,6 +11,7 @@ import { ForgotPasswordPage } from "./pages/ForgotPasswordPage";
 import { ResetPasswordPage } from "./pages/ResetPasswordPage";
 import { AppShellPreviewPage } from "./pages/AppShellPreviewPage";
 import { AccountSettingsPage } from "./pages/AccountSettingsPage";
+import { WorkspacePage } from "./pages/WorkspacePage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 
 /**
@@ -20,8 +21,9 @@ import { NotFoundPage } from "./pages/NotFoundPage";
  * toasts. Phase 3 Step 1 adds `ProtectedRoute`: `/app` now requires a
  * backend-verified session (via `/auth/me`, refreshing once via
  * `/auth/refresh` if needed) instead of being reachable by anyone.
- * Dashboard/workspace logic beyond the existing `/app` shell preview
- * remains later-Phase-3 scope.
+ * Phase 3 Step 4 adds the real `/app/workspace` and
+ * `/app/workspace/:workspaceId` routes (see `WorkspacePage`), replacing
+ * what used to fall through to `NotFoundPage` for both.
  */
 export function App(): JSX.Element {
   const location = useLocation();
@@ -50,6 +52,22 @@ export function App(): JSX.Element {
               element={
                 <ProtectedRoute>
                   <AccountSettingsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/app/workspace"
+              element={
+                <ProtectedRoute>
+                  <WorkspacePage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/app/workspace/:workspaceId"
+              element={
+                <ProtectedRoute>
+                  <WorkspacePage />
                 </ProtectedRoute>
               }
             />

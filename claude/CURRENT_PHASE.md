@@ -25,7 +25,12 @@
   Experience)**: locked and implemented this session — see the dedicated section at the end of
   this file. **Unlike Steps 1/2, `@omniscience/api`'s build/typecheck/test could not be run in
   this sandbox this session** (see that section's Verification/Known-limitations for the exact
-  reason and the exact commands to run locally). Phase 3 Step 4 has not been started.
+  reason and the exact commands to run locally).
+- **Phase 3 — Dashboard & Workspace, Step 4 (Workspace Frontend Experience)**: implemented this
+  session — see the dedicated section at the end of this file. Frontend-only (no backend changes):
+  `GET /workspaces/:id` (Step 2) and the SDK's `getWorkspace` (Step 2) were already in place and
+  are consumed as-is. `pnpm install`/`build`/`lint`/`typecheck`/`test` were all actually run
+  in-sandbox this session (unlike Step 3) — see that section's Verification for full output.
 
 ## Phase 1 — Premium UI Foundation
 
@@ -2736,3 +2741,113 @@ pnpm test
   designed so that swap can happen later without touching `UsersService`/`UsersController`.
 - **No image resizing/optimization** — the uploaded file is stored as-is (within the 5MB cap); no
   thumbnailing or format re-encoding.
+
+# Phase 3 Step 4 — Workspace Frontend Experience (implemented and verified in-sandbox)
+
+## Locked scope (as instructed)
+
+Replace the `/app/workspace` placeholder (previously a dead sidebar link that fell through to
+`NotFoundPage`) with a real workspace page: load and display an existing workspace (name,
+description, owner, created date, metadata) via the already-existing `GET /workspaces/:id` backend
+endpoint and `client.getWorkspace` SDK method (both shipped in Step 2 — nothing new on the backend
+this step), a premium placeholder module grid (AI Assistant, Documents, Knowledge Base, Agents,
+Files, Tasks, Activity — inert, no AI wired up), working navigation from the Overview dashboard,
+loading skeletons, an empty state, an error state, responsive layout, and existing accessibility/
+security conventions preserved. No rename/delete UI (backend doesn't expose those endpoints), no
+AI/chat/RAG functionality behind the module placeholders.
+
+## What was actually ambiguous, and how it was resolved
+
+The sidebar's "Workspace" nav item (`navItems.ts`) points at a single static path, `/app/workspace`
+— no id. But `Workspace` ownership means a caller can have *many* workspaces (`WorkspaceDashboard`
+already lists them all at `/app`), so there is no backend concept of "the" workspace to load at a
+bare `/app/workspace`. Rather than inventing one server-side, this was resolved entirely in the
+frontend with two routes instead of one:
+
+- **`/app/workspace/:workspaceId`** (`WorkspaceDetail`) — the real detail page: fetches exactly one
+  workspace by id via `client.getWorkspace`, renders it, or a not-found/error state.
+- **`/app/workspace`** (`WorkspaceIndex`) — the sidebar's literal link target. Calls
+  `listWorkspaces({ limit: 1 })` (already newest-first) and either forwards (`<Navigate replace>`)
+  to that workspace's real detail route, or — if the caller has none yet — shows an empty state
+  linking back to `/app` (where "Create workspace" already lives; not duplicated here).
+
+Both routes are new; neither existed before this step, so neither one is "completed work" being
+modified — this is purely additive.
+
+## Architecture summary
+
+- **`apps/web/src/features/workspaces/WorkspaceDetail.tsx`** (new) — loads via
+  `client.getWorkspace(accessToken, workspaceId)`. Distinguishes the backend's
+  `WORKSPACE_NOT_FOUND` `code` (identical for a missing id or one owned by someone else — the
+  Step 2 no-enumeration guarantee) as its own dead-end "not found" state with a link back to
+  Overview, from every other failure, which gets the same recoverable `ErrorState` + "Try again"
+  pattern `WorkspaceDashboard` already established. Renders name, description (or an explicit "No
+  description provided." when null), owner (the signed-in `user` from `AuthContext` — there is no
+  `owner` field on `Workspace` itself, since every workspace reachable through this authenticated
+  route is necessarily the caller's own by server-side enforcement, never by hiding a route),
+  created date, last-updated date, and the workspace id, all via `toLocaleString()`-formatted
+  `<dl>` metadata, plus the seven inert module placeholder cards (`Badge` "Coming soon", no
+  `onClick`, no route).
+- **`apps/web/src/features/workspaces/WorkspaceIndex.tsx`** (new) — the landing/redirect described
+  above.
+- **`apps/web/src/pages/WorkspacePage.tsx`** (new) — the `<AppShell>` wrapper for both routes,
+  exactly matching the existing `AppShellPreviewPage`/`AccountSettingsPage` convention (each
+  top-level page builds its own shell instance; no shared layout/outlet route in this app yet).
+  Picks `WorkspaceDetail` vs `WorkspaceIndex` based on whether `useParams().workspaceId` is present.
+- **`apps/web/src/App.tsx`** (edited) — two new `ProtectedRoute`-guarded routes,
+  `/app/workspace` and `/app/workspace/:workspaceId`, both rendering `WorkspacePage`. Neither falls
+  through to `NotFoundPage` anymore for a signed-in caller.
+- **`apps/web/src/features/workspaces/WorkspaceDashboard.tsx`** (edited) — the Overview list's
+  cards (previously static `<Card>`s) are now `<Link to={"/app/workspace/" + id}
+  className="omni-card omni-card--interactive">`, so "open workspace" navigation — explicitly
+  deferred in this file's Step 2/3 docstring — now exists. No other behavior changed: create/list/
+  loading/error/empty states are untouched.
+- **`apps/web/src/layout/navItems.ts`** (edited, comment only) — updated the stale "remains a
+  placeholder" note now that `/app/workspace` is real; the nav item's `to` value itself was already
+  correct and unchanged.
+- **`packages/ui/src/styles/components.css`** (edited) — two new class additions, following the
+  existing `.omni-glass-card--interactive` precedent: `.omni-card--interactive` (a `.omni-card`
+  rendered as a real `<a>` — reset anchor defaults, hover elevation, relies on the shared global
+  `:focus-visible` rule for its focus ring, no new keyboard handling needed) and
+  `.omni-card--placeholder` (subtle dimming for the inert module cards). No existing class was
+  changed.
+
+## Accessibility and responsiveness
+
+- Workspace cards are real anchors (`<Link>`), so they're natively focusable and
+  Enter-activatable — no `role`/`tabIndex`/`onKeyDown` polyfilling, and they pick up the app-wide
+  `:focus-visible` ring automatically.
+- The loading skeleton wrapper carries `aria-busy="true"` and `aria-label="Loading workspace"`
+  (verified in `WorkspaceDetail.test.tsx`); the module grid carries `aria-label="Workspace
+  modules"`; each placeholder module card has `aria-disabled="true"` so it doesn't read as
+  interactive to assistive tech even though it's a `<div>`.
+- Layout uses the same `repeat(auto-fit/auto-fill, minmax(...))` CSS grid pattern already used
+  elsewhere in this codebase (e.g. `WorkspaceDashboard`'s own grid), so the metadata row and the
+  seven module cards reflow from a single column on mobile up through multi-column on desktop
+  without new breakpoints or media queries — consistent with `AppShell`'s existing responsive
+  approach.
+
+## Verification (actually run in-sandbox this session, unlike Step 3)
+
+`pnpm install` succeeded in this environment (this session's sandbox had npm registry egress,
+unlike the Phase 1/Step 3 sessions' documented 403). Full `pnpm build` / `pnpm lint` / `pnpm
+typecheck` / `pnpm test` were then run at the repo root; exact output is in the delivery message
+alongside this ZIP. `apps/api`'s Prisma client generation still fails in-sandbox on
+`binaries.prisma.sh` returning 403 (same standing limitation as every prior session) — this is
+unrelated to and does not block any of this step's frontend-only changes; the affected package's
+tests were confirmed to already be independently skipped/passing before this change and were not
+touched.
+
+## Known limitations and explicitly deferred work
+
+- **No rename/delete/settings UI on the detail page** — the backend doesn't expose those
+  endpoints yet.
+- **The seven module cards are pure UI scaffolding** — no AI Assistant, Documents, Knowledge Base,
+  Agents, Files, Tasks, or Activity functionality behind them, exactly as instructed.
+- **No in-page 401 refresh-and-retry** — same standing limitation as `WorkspaceDashboard` and the
+  Step 3 settings sections; a stale token surfaces as the ordinary recoverable `ErrorState`.
+- **The sidebar's "Workspace" link does not stay visually "active" once `WorkspaceIndex` redirects
+  to `/app/workspace/:id`** — `Sidebar`'s `NavLink` uses `end` matching (needed so `/app` doesn't
+  stay highlighted on every `/app/*` page), and `/app/workspace/:id` is a different path from
+  `/app/workspace`. Cosmetic only; navigation itself is correct and was not judged worth widening
+  `Sidebar`'s shared active-match behavior for.

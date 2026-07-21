@@ -124,6 +124,41 @@
   border-color: var(--omni-color-accent);
 }
 
+/**
+ * Phase 3 Step 4 — a `.omni-card` rendered as a real link (e.g. a
+ * workspace-list entry navigating to its detail page). `display: block`
+ * plus resetting anchor defaults lets `<a class="omni-card
+ * omni-card--interactive">` look identical to the static `<Card>` while
+ * staying natively focusable/keyboard-activatable — no `role`/`tabIndex`/
+ * `onKeyDown` polyfilling required. Focus ring comes from the shared
+ * `:focus-visible` rule in base.css.
+ */
+.omni-card--interactive {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    border-color var(--omni-duration-fast) var(--omni-ease-standard),
+    box-shadow var(--omni-duration-fast) var(--omni-ease-standard),
+    transform var(--omni-duration-fast) var(--omni-ease-standard);
+}
+
+.omni-card--interactive:hover {
+  border-color: var(--omni-color-accent);
+  box-shadow: var(--omni-shadow-md);
+  transform: translateY(-1px);
+}
+
+/**
+ * A `.omni-card` standing in for a not-yet-built module (AI Assistant,
+ * Documents, etc. on the workspace dashboard) — visually present, but
+ * explicitly non-interactive so it never looks clickable.
+ */
+.omni-card--placeholder {
+  opacity: 0.72;
+}
+
 /* ---------- Input ---------- */
 
 .omni-field {

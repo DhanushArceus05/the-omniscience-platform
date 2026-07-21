@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState, type FormEvent, type JSX } from "react";
+import { Link } from "react-router-dom";
 import { createWorkspaceRequestSchema } from "@omniscience/schemas";
 import type { Workspace } from "@omniscience/types";
-import { Alert, Button, Card, EmptyState, ErrorState, Input, Modal, Spinner } from "@omniscience/ui";
+import { Alert, Button, EmptyState, ErrorState, Input, Modal, Spinner } from "@omniscience/ui";
 import { useAuth } from "../../lib/auth/AuthContext";
 import { getFieldErrors, type FieldErrors } from "../../lib/auth/authErrors";
 import { validateWithSchema } from "../../lib/auth/validateWithSchema";
@@ -20,9 +21,13 @@ const UNCONFIGURED_MESSAGE = "Workspaces are unavailable right now — the API i
  * (newest first, one bounded page — no infinite scroll/"load more" UI
  * yet, that's a later step) and create new ones from a modal form.
  *
+ * Phase 3 Step 4 adds one thing on top of the Step 2 behavior above:
+ * each card now links to that workspace's real detail route
+ * (`/app/workspace/:id`, via `WorkspacePage`/`WorkspaceDetail`) instead
+ * of being inert.
+ *
  * Deliberately NOT included here (all explicitly deferred to later
  * steps — see `claude/CURRENT_PHASE.md`):
- * - No "open workspace" navigation/detail route — nothing to navigate to yet.
  * - No update/delete UI — the backend doesn't expose those endpoints yet.
  * - No automatic 401-refresh-and-retry: a stale/expired access token
  *   surfaces as the same recoverable `ErrorState` any other failure
@@ -154,7 +159,11 @@ export function WorkspaceDashboard(): JSX.Element {
       ) : (
         <div style={{ display: "grid", gap: "var(--omni-space-4)" }} aria-label="Workspace list">
           {state.workspaces.map((workspace) => (
-            <Card key={workspace.id}>
+            <Link
+              key={workspace.id}
+              to={`/app/workspace/${encodeURIComponent(workspace.id)}`}
+              className="omni-card omni-card--interactive"
+            >
               <p style={{ margin: 0, fontWeight: 600 }}>{workspace.name}</p>
               {workspace.description && (
                 <p
@@ -163,7 +172,7 @@ export function WorkspaceDashboard(): JSX.Element {
                   {workspace.description}
                 </p>
               )}
-            </Card>
+            </Link>
           ))}
         </div>
       )}

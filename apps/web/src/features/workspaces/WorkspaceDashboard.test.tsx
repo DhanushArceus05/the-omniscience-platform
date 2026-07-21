@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiClientError, OmniscienceClient } from "@omniscience/sdk";
 import { AuthProvider } from "../../lib/auth/AuthContext";
@@ -40,9 +41,14 @@ function seedSession() {
 
 function renderDashboard() {
   return render(
-    <AuthProvider>
-      <WorkspaceDashboard />
-    </AuthProvider>,
+    <MemoryRouter initialEntries={["/app"]}>
+      <AuthProvider>
+        <Routes>
+          <Route path="/app" element={<WorkspaceDashboard />} />
+          <Route path="/app/workspace/:workspaceId" element={<div>Workspace detail page</div>} />
+        </Routes>
+      </AuthProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -181,6 +187,21 @@ describe("WorkspaceDashboard", () => {
 
     await waitFor(() => expect(screen.getByText("Workspace name is required")).toBeTruthy());
     expect(createWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("opens a workspace's detail route when its card is activated", async () => {
+    seedSession();
+    const getMe = vi.fn().mockResolvedValue(USER);
+    const listWorkspaces = vi.fn().mockResolvedValue({ workspaces: [workspace], nextCursor: null });
+    mockClient({ getMe, listWorkspaces });
+    renderDashboard();
+
+    await waitFor(() => expect(screen.getByText("Research")).toBeTruthy());
+    const card = screen.getByRole("link", { name: /Research/ });
+    expect(card.getAttribute("href")).toBe("/app/workspace/workspace_1");
+
+    fireEvent.click(card);
+    await waitFor(() => expect(screen.getByText("Workspace detail page")).toBeTruthy());
   });
 
   it("shows a recoverable API error inside the modal when creation fails, keeping the modal open", async () => {
