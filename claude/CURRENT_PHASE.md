@@ -1,6 +1,6 @@
-# Phase 3 — Dashboard & Workspace
+# Phase 4 — OmniProvider & Model Manager (previously Phase 3 — Dashboard & Workspace)
 
-## Current status (updated — see "Phase 3 Step 1" section at the end of this file for full detail)
+## Current status (updated — see "Phase 4 Step 1" section at the end of this file for full detail)
 
 - **Phase 0 — Foundation**: complete.
 - **Phase 1 — Premium UI Foundation**: complete (see that phase's section below, unchanged).
@@ -2851,3 +2851,190 @@ touched.
   stay highlighted on every `/app/*` page), and `/app/workspace/:id` is a different path from
   `/app/workspace`. Cosmetic only; navigation itself is correct and was not judged worth widening
   `Sidebar`'s shared active-match behavior for.
+
+- **Phase 3 — Dashboard & Workspace: complete.** Steps 1–4 above (protected routing/session
+  bootstrap, workspace data model/ownership isolation/dashboard listing, profile/avatar/security/
+  account settings, and the workspace frontend experience) are all implemented, locally verified,
+  and pushed — see each step's dedicated section above for detail. Deferred out of Phase 3 entirely
+  (unchanged by Phase 4 Step 1): workspace update/delete, workspace settings UI,
+  chats/files/reports/memory/agents/analytics/timeline modules, and centralized in-page 401
+  refresh-and-retry.
+- **Phase 4 — OmniProvider & Model Manager, Step 1 (Provider Foundation & Domain Architecture)**:
+  implemented this session — see the dedicated section at the end of this file. `pnpm install` /
+  `build` / `lint` / `typecheck` / `test` were all actually run in-sandbox this session (this
+  session's sandbox had npm registry egress) — see that section's Verification for full output.
+  As with every prior session, `apps/api`'s `prisma generate` still cannot reach
+  `binaries.prisma.sh` in-sandbox; this is unrelated to and does not block Step 1, which adds no
+  Prisma schema changes at all.
+
+## Phase 4 — OmniProvider & Model Manager, Step 1 (Provider Foundation & Domain Architecture)
+
+Scope, as approved: the provider-neutral registry/catalog/selection **architecture only**. No
+real vendor SDK is integrated and no real external AI API call happens anywhere in this step
+(see "Explicitly deferred" below). Three stub provider descriptors (Gemini, OpenAI, Anthropic)
+were included, by explicit approval, purely as metadata so the registry/catalog/endpoints have
+real, non-empty content to operate on.
+
+### Architecture summary
+
+- **`packages/types/src/ai-provider.ts`** (new) — shared domain types: `ProviderId`, `ModelId`,
+  `ProviderCapability`/`ModelCapability` (one shared vocabulary), `ProviderConfigStatus`,
+  `ModelAvailability`, `ModelMetadata`, `ProviderMetadata`, `ModelSelectionRequest`,
+  `ModelSelectionResult`, `ProviderExecutionMetadata` (reserved for a future phase's real
+  execution telemetry), `ListProvidersResponse`, `ListModelsResponse`. Exported from
+  `packages/types/src/index.ts`.
+- **`packages/schemas/src/ai-provider.ts`** (new) — `capabilitySchema`/`capabilityValues` (the
+  same eight-capability vocabulary, kept in sync with `@omniscience/types` by a dedicated test)
+  and `listModelsQuerySchema` (`GET /ai/models`'s optional `capability`/`provider` query filters,
+  `.strict()` like every other Phase 3 request schema). Exported from
+  `packages/schemas/src/index.ts`.
+- **`packages/config/src/env.ts`** (edited) — three new, fully optional, mutually independent
+  env vars: `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`. Unlike SMTP, there is no
+  all-or-nothing `superRefine` rule and no production-mandatory rule — a provider with no key is
+  simply `"not-configured"`, in every `NODE_ENV`. `.env.example` updated with placeholder-only
+  entries.
+- **`apps/api/src/ai/ai-provider.interface.ts`** (new) — the `OmniProvider` contract (provider
+  id/display name/capabilities/priority, `configStatus()`, `isReady()`, `listModels()`, and the
+  three execution methods `generateText`/`generateStructured`/`embed`), plus the domain error
+  vocabulary (`AiDomainErrorCode`) and `aiDomainError()`, which builds the exact `HttpException`
+  every throw site in this module uses — `{ code, message }`, mapped through the existing
+  `AllExceptionsFilter` exactly like `WorkspacesService`'s `WORKSPACE_NOT_FOUND`. No new
+  error-handling abstraction was introduced.
+- **`apps/api/src/ai/provider-registry.service.ts`** (new) — in-memory `Map<ProviderId,
+  OmniProvider>`: `register()` (throws `DUPLICATE_PROVIDER`), `getById()` (throws
+  `PROVIDER_NOT_FOUND`), `list()`, `filterByCapabilities()`, `listMetadata()` (the exact,
+  secret-free shape `GET /ai/providers` returns).
+- **`apps/api/src/ai/model-catalog.service.ts`** (new) — in-memory `Map<"providerId::modelId",
+  ModelMetadata>` (composite key, since a `modelId` is only unique within its own provider):
+  `register()` (throws `DUPLICATE_MODEL`), `getOne()` (throws `MODEL_NOT_FOUND`), `list()`,
+  `listByProvider()`, `filterByCapabilities()`. Deliberately not database-backed — the roadmap
+  docs don't require persistence for this step, and re-registering from each provider's own
+  `listModels()` at bootstrap means the catalog can never drift from what a provider actually
+  reports.
+- **`apps/api/src/ai/model-selector.service.ts`** (new) — `ModelSelectorService.select()`, the
+  deterministic algorithm (full detail below).
+- **`apps/api/src/ai/providers/stub-provider.base.ts`** (new) — `StubProviderDescriptor`, the
+  shared abstract base every stub adapter extends: `configStatus()`/`isReady()` derived from a
+  single `hasCredential()` hook, `listModels()` returning a subclass-declared static list, and
+  `generateText`/`generateStructured`/`embed` all implemented once as `async` methods that
+  immediately throw the shared `notImplementedError()` — extracted here specifically so this
+  "refuse to execute" behavior can only ever drift in one place, not three.
+- **`apps/api/src/ai/providers/{gemini,openai,anthropic}.provider.ts`** (new) — one file each,
+  differing only in `providerId`/`displayName`/`capabilities`/`priority`/`models`/which env var
+  `hasCredential()` reads. No `@google/generative-ai`, `openai`, or `@anthropic-ai/sdk` package
+  was added to `apps/api/package.json` — these are metadata-only descriptors, not real vendor
+  clients.
+- **`apps/api/src/ai/ai-provider-seed.service.ts`** (new) — `AiProviderSeedService`, an
+  `OnModuleInit` that registers the three stub descriptors (and each one's models) into the
+  registry/catalog exactly once at boot. This is the **only** file in the module that imports a
+  concrete provider class by name; the controller and selector depend solely on the
+  `OmniProvider` interface and the registry/catalog.
+- **`apps/api/src/ai/ai.controller.ts`** (new) — `GET /ai/providers`, `GET /ai/models`, both
+  behind `@UseGuards(JwtAuthGuard)` (reused from `AuthModule`, same convention
+  `WorkspacesController` established), no `@Throttle()` override (authenticated reads, no
+  credential involved — the app-wide 60/60s default applies). `GET /ai/models` supports
+  `?capability=` and `?provider=` query filters via `ZodValidationPipe(listModelsQuerySchema)`.
+- **`apps/api/src/ai/ai.module.ts`** (new) — wires all of the above; exports
+  `ProviderRegistryService`/`ModelCatalogService`/`ModelSelectorService` for a future module
+  (e.g. Phase 5's OmniCore) to consume without re-implementing any of this.
+- **`apps/api/src/app.module.ts`** (edited) — `AiModule` added to the root module's imports, with
+  an updated doc comment; no other module's registration changed.
+
+### Model-selection algorithm
+
+`ModelSelectorService.select(request: ModelSelectionRequest): ModelSelectionResult` depends only
+on metadata already in the catalog/registry — required capabilities, each model's own
+`availability`, each model's owning provider's `isReady()`, an optional preferred provider id, an
+optional preferred model id, and each candidate's numeric `priority` (lower = higher priority).
+It never branches on a vendor name.
+
+1. Build the eligible set: every catalog model that (a) satisfies every capability in
+   `request.requiredCapabilities`, (b) has `availability === "available"`, and (c) whose owning
+   provider's `isReady()` returns `true` (so a model can be marked "available" in its own static
+   metadata but still be correctly excluded if its provider has no credentials configured).
+2. **`preferred-model`** — if `request.preferredModelId` is set, filter the eligible set to that
+   exact `modelId` (further narrowed to `request.preferredProviderId` if that's also set). If any
+   remain, return the lowest-`priority` one (ties broken by catalog registration order).
+3. **`preferred-provider`** — else, if `request.preferredProviderId` is set, filter the eligible
+   set to that provider. If any remain, return the lowest-`priority` one.
+4. **`priority-fallback`** — else, return the lowest-`priority` model across the entire eligible
+   set.
+5. If no rule ever produces a candidate, throw `NO_COMPATIBLE_MODEL`.
+
+`ModelSelectionResult.matchedRule` reports which rule matched, purely for observability/testing
+— it never changes behavior. `costPerMillionTokens`/`averageLatencyMs`/`contextWindowTokens` are
+carried on `ModelMetadata` and readable by callers, but this step's algorithm does not yet weigh
+them; extending the tiebreak is left to a future phase without needing to change this service's
+public contract.
+
+### Security decisions
+
+- `GEMINI_API_KEY`/`OPENAI_API_KEY`/`ANTHROPIC_API_KEY` are read only inside each stub provider's
+  own `hasCredential()` check; the key's actual value is never passed to, stored on, or returned
+  from any other object. `ProviderRegistryService.listMetadata()` and `ModelCatalogService.list()`
+  — the exact data `GET /ai/providers`/`GET /ai/models` return — only ever construct the fixed
+  `ProviderMetadata`/`ModelMetadata` shapes, which have no field capable of carrying a credential.
+- Both endpoints sit behind the existing `JwtAuthGuard` — unauthenticated requests get the
+  standard `401 UNAUTHORIZED`.
+- Every domain error (`PROVIDER_NOT_FOUND`, `MODEL_NOT_FOUND`, `DUPLICATE_PROVIDER`,
+  `DUPLICATE_MODEL`, `NO_COMPATIBLE_MODEL`, `PROVIDER_NOT_CONFIGURED`, `CAPABILITY_NOT_SUPPORTED`,
+  `NOT_IMPLEMENTED`) carries only its code and a generic message — never a provider's internal
+  state or any environment value.
+- `stub-providers.spec.ts` includes a dedicated test asserting that a live credential value never
+  appears in the JSON-serialized surface of any of a stub provider's public methods.
+
+### Explicitly deferred (per approved scope)
+
+- Any real vendor SDK integration (Gemini/OpenAI/Anthropic or otherwise) and any real network
+  call to an external AI API — every execution method throws `NOT_IMPLEMENTED`.
+- The Omniscience Assistant, chat, streaming chat UI, RAG, vector database logic, agent
+  execution, vision/speech processing, billing/usage tracking, an admin provider-settings UI, and
+  a user-selectable model UI — all out of scope for Phase 4 Step 1, per the roadmap.
+- Database persistence for the provider/model catalog — kept in-memory this step; the approved
+  docs don't require persistence yet, and this avoids a schema change with no consumer yet.
+- A fourth ("local/self-hosted") provider descriptor — the interface and registry already support
+  adding one later without touching any other file in this module, but only Gemini/OpenAI/
+  Anthropic were in the approved scope for this step.
+
+### Known limitations
+
+- `apps/api`'s `pnpm db:generate` (`prisma generate`) still cannot reach
+  `binaries.prisma.sh` in this sandbox (`403 Forbidden`, same standing limitation as every prior
+  session). This step adds no Prisma schema changes and does not touch any Prisma-dependent code
+  path, so it does not block anything below — noted here only for completeness.
+- The three stub provider descriptors' model lists (e.g. `gemini-1.5-flash`, `gpt-4o`,
+  `claude-sonnet-5`) are static, hand-entered metadata for this step's own testing/demonstration
+  purposes — they are not fetched from any vendor's live model-listing API and should be treated
+  as illustrative, not authoritative, until a future phase adds real provider integration.
+
+### Verification (actually run in-sandbox this session)
+
+This session's sandbox had npm registry egress. `pnpm install` succeeded (818 packages; the only
+non-fatal warning was `@prisma/client`'s postinstall failing to fetch its engine checksum from
+`binaries.prisma.sh`, matching the standing limitation above — install itself completed).
+
+- **`pnpm build`** — all 9 packages built successfully, including `@omniscience/api`
+  (`nest build`) and `@omniscience/web` (`tsc --noEmit && vite build`). One real bug was caught
+  and fixed during this step: the stub provider base class initially declared
+  `generateText(modelId)` instead of matching `OmniProvider`'s full
+  `generateText(modelId, prompt)` signature, which failed `tsc` with "Expected 1 arguments, but
+  got 2" wherever a concrete provider's method was called with its real arguments. Fixed by
+  giving the base class's three execution methods their full, `OmniProvider`-matching parameter
+  lists (unused parameters prefixed `_` and lint-suppressed on that specific line, matching this
+  repo's existing pattern for intentionally-unused-but-required parameters).
+- **`pnpm lint`** — all 15 lint tasks passed, zero errors, zero warnings, including the new `ai`
+  module files and the underscore-prefixed unused parameters above.
+- **`pnpm typecheck`** — all 15 typecheck tasks passed after the fix above.
+- **`pnpm test`** — full monorepo: 15/15 tasks succeeded.
+  `@omniscience/prompts` 4/4, `@omniscience/config` 23/23, `@omniscience/types` 5/5,
+  `@omniscience/utils` 5/5, `@omniscience/schemas` 78/78, `@omniscience/sdk` 35/35,
+  `@omniscience/ui` 81/81, `@omniscience/web` 105/105, `@omniscience/api` **330/330** (42 test
+  suites, all passing, including every Phase 0–3 spec/e2e-spec unchanged and green). One real,
+  self-authored test bug was caught and fixed during this step:
+  `provider-registry.service.spec.ts`'s "never leaks a credential" test used a fixture provider
+  id of `"secretive-provider"`, whose own substring `"secret"` tripped the very
+  `/key|secret|token/i` regex the test was using to detect a leaked credential — a false
+  positive, not an implementation defect. Fixed by renaming the fixture id and asserting against
+  an actual fake credential value instead of a naive keyword regex.
+
+Total across the monorepo: **666 tests, 666 passing.**

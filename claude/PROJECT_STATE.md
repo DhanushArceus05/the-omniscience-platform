@@ -111,6 +111,38 @@ locally, where `binaries.prisma.sh` is reachable, before trusting this package:
 && pnpm test`. Awaiting that local verification and your approval before Phase 3 Step 4. Do not
 begin Phase 3 Step 4 until that approval lands.
 
+**Phase 3 — Dashboard & Workspace, Step 4 (Workspace Frontend Experience): implemented and
+Phase 3 is now complete.** Frontend-only — no backend files changed. See
+`claude/CURRENT_PHASE.md`'s "Phase 3 Step 4" section for full detail.
+
+**Phase 4 — OmniProvider & Model Manager, Step 1 (Provider Foundation & Domain Architecture):
+implemented this session, fully verified in-sandbox** (this session's sandbox had working
+npm/pnpm network egress). Provider-neutral registry/catalog/deterministic-selector foundation
+only — no real vendor SDK, no real external AI API call anywhere in this step. Three
+metadata-only stub provider descriptors (Gemini, OpenAI, Anthropic) were included by explicit
+approval so the new `GET /ai/providers`/`GET /ai/models` diagnostic endpoints (both behind the
+existing `JwtAuthGuard`) have real, non-empty content; every execution method
+(`generateText`/`generateStructured`/`embed`) throws a typed `NOT_IMPLEMENTED` domain error
+rather than calling any vendor. New shared types (`packages/types/src/ai-provider.ts`) and
+request schemas (`packages/schemas/src/ai-provider.ts`); three new, fully independent, optional
+env vars (`GEMINI_API_KEY`/`OPENAI_API_KEY`/`ANTHROPIC_API_KEY` — never mandatory, never
+crash-on-absence, never logged); a new `apps/api/src/ai/` module (`ProviderRegistryService`,
+`ModelCatalogService`, `ModelSelectorService`, the three stub provider classes, a bootstrap seed
+service, and `AiController`), registered into `app.module.ts`. Selection is deterministic and
+depends only on capabilities/availability/provider-readiness/priority/preferred-provider/
+preferred-model — never a hardcoded vendor name; see `claude/CURRENT_PHASE.md`'s "Phase 4 Step 1"
+section for the exact algorithm, architecture, security decisions, and deferred work. **Verified
+this session:** `pnpm install --frozen-lockfile` (818 packages), `pnpm build`/`lint`/`typecheck`
+all green across all 9 packages, `pnpm test` green across the full monorepo — 666/666 tests
+passing (`@omniscience/api` 330/330 across 42 suites, every pre-existing Phase 0–3 spec/e2e-spec
+unchanged and still green). Two real, self-authored bugs were caught and fixed in-session (not
+reported as pre-existing or masked): a stub-provider method-signature mismatch caught by
+`tsc`, and a test-fixture-naming false positive in the "never leaks a credential" test caught by
+`jest` — both detailed in `claude/CURRENT_PHASE.md`'s Verification section. `prisma generate`
+still cannot reach `binaries.prisma.sh` in this sandbox (same standing limitation as every prior
+session); irrelevant here, since this step makes no Prisma schema changes. Awaiting your review
+and approval before Phase 4 Step 2.
+
 ### Phase 2 step-by-step history (unchanged from when each step was implemented)
 
 - **Frontend auth integration (post-Step-8, pre-commit)**: `RegisterPage`/`VerifyOtpPage`/

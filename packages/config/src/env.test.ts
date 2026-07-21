@@ -174,4 +174,38 @@ describe("loadEnv", () => {
       expect(env.AVATAR_MAX_UPLOAD_BYTES).toBe(1048576);
     });
   });
+
+  describe("Phase 4 Step 1 — OmniProvider credentials", () => {
+    it("succeeds with none of the three provider keys set", () => {
+      const env = loadEnv(validEnv);
+      expect(env.GEMINI_API_KEY).toBeUndefined();
+      expect(env.OPENAI_API_KEY).toBeUndefined();
+      expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    });
+
+    it("allows configuring any subset of provider keys independently", () => {
+      const env = loadEnv({
+        ...validEnv,
+        GEMINI_API_KEY: "gemini-key",
+      } as unknown as NodeJS.ProcessEnv);
+      expect(env.GEMINI_API_KEY).toBe("gemini-key");
+      expect(env.OPENAI_API_KEY).toBeUndefined();
+      expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    });
+
+    it("succeeds in production with no provider keys set (unlike SMTP, these are never mandatory)", () => {
+      const env = loadEnv({
+        ...validEnv,
+        NODE_ENV: "production",
+        SMTP_HOST: "smtp.example.com",
+        SMTP_PORT: "587",
+        SMTP_USER: "user",
+        SMTP_PASSWORD: "pass",
+        SMTP_FROM: "noreply@example.com",
+      } as unknown as NodeJS.ProcessEnv);
+      expect(env.GEMINI_API_KEY).toBeUndefined();
+      expect(env.OPENAI_API_KEY).toBeUndefined();
+      expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    });
+  });
 });

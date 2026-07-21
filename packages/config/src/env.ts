@@ -82,6 +82,20 @@ const baseEnvSchema = z.object({
   AVATAR_STORAGE_DIR: z.string().min(1).default("./storage/avatars"),
   AVATAR_PUBLIC_BASE_URL: z.string().min(1).default("http://localhost:4000"),
   AVATAR_MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(5 * 1024 * 1024),
+
+  // ---- Phase 4 Step 1 — OmniProvider credentials (foundation only) ----
+  // All three are optional: this step never calls a real vendor API, and
+  // a provider whose key is absent simply reports `configStatus:
+  // "not-configured"` (see `apps/api/src/ai/providers/*.provider.ts`)
+  // rather than crashing API startup. There is deliberately no
+  // `superRefine` all-or-nothing rule here like SMTP's — each provider is
+  // independent, so a missing `OPENAI_API_KEY` must never block Gemini
+  // or Anthropic from being usable. Never logged (see
+  // `env.test.ts`'s "never appears in a loaded Env's own enumerable
+  // logging surface" style assertions for the equivalent pattern).
+  GEMINI_API_KEY: z.string().min(1).optional(),
+  OPENAI_API_KEY: z.string().min(1).optional(),
+  ANTHROPIC_API_KEY: z.string().min(1).optional(),
 });
 
 export const envSchema = baseEnvSchema.superRefine((env, ctx) => {

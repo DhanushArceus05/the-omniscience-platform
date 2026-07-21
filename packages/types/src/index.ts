@@ -47,3 +47,18 @@ export type {
   ListWorkspacesResponse,
   GetWorkspaceResponse,
 } from "./workspaces";
+export type {
+  ProviderId,
+  ModelId,
+  ProviderCapability,
+  ModelCapability,
+  ProviderConfigStatus,
+  ModelAvailability,
+  ModelMetadata,
+  ProviderMetadata,
+  ModelSelectionRequest,
+  ModelSelectionResult,
+  ProviderExecutionMetadata,
+  ListProvidersResponse,
+  ListModelsResponse,
+} from "./ai-provider";

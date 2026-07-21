@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { APP_GUARD } from "@nestjs/core";
 import { ThrottlerGuard, ThrottlerModule } from "@nestjs/throttler";
+import { AiModule } from "./ai/ai.module";
 import { AuthModule } from "./auth/auth.module";
 import { AvatarModule } from "./avatar/avatar.module";
 import { ConfigModule } from "./config/config.module";
@@ -39,6 +40,11 @@ import { WorkspacesModule } from "./workspaces/workspaces.module";
  *   Step 3 (this step): `AvatarModule` added (`@Global()`, exports
  *     `AvatarStorageService`) — backs `UsersModule`'s new
  *     `POST /users/me/avatar` / `DELETE /users/me/avatar` endpoints.
+ * Phase 4 — OmniProvider & Model Manager:
+ *   Step 1 (this step): `AiModule` added — `GET /ai/providers`,
+ *     `GET /ai/models`, both behind `JwtAuthGuard`. Provider-neutral
+ *     registry/catalog/selector foundation only; no real vendor API
+ *     calls happen anywhere in this module.
  */
 @Module({
   imports: [
@@ -51,6 +57,7 @@ import { WorkspacesModule } from "./workspaces/workspaces.module";
     AuthModule,
     UsersModule,
     WorkspacesModule,
+    AiModule,
     HealthModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
