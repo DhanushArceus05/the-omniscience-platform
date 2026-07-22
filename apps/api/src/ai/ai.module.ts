@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 import { AuthModule } from "../auth/auth.module";
 import { AiController } from "./ai.controller";
 import { AiProviderSeedService } from "./ai-provider-seed.service";
+import { AiService } from "./ai.service";
 import { ModelCatalogService } from "./model-catalog.service";
 import { ModelSelectorService } from "./model-selector.service";
 import { anthropicClientProvider } from "./providers/anthropic-client.provider";
@@ -33,6 +34,13 @@ import { ProviderRegistryService } from "./provider-registry.service";
  * `@anthropic-ai/sdk` client while tests can override the same token
  * with a fake. Gemini and OpenAI remain Step 1 metadata-only stubs,
  * unchanged.
+ * Phase 4 Step 3: `AiService` is the thin, vendor-neutral orchestration
+ * `AiController`'s new `POST /ai/generate` route depends on — it's the
+ * only new file added to `providers` this step; `AiController`,
+ * `ModelSelectorService`, `ProviderRegistryService`, and every provider
+ * adapter registered below are unchanged. `AiService` is not exported:
+ * it's reachable only through `AiController` within this module, same
+ * as every concrete provider class already was.
  */
 @Module({
   imports: [AuthModule],
@@ -46,6 +54,7 @@ import { ProviderRegistryService } from "./provider-registry.service";
     anthropicClientProvider,
     AnthropicProvider,
     AiProviderSeedService,
+    AiService,
   ],
   exports: [ProviderRegistryService, ModelCatalogService, ModelSelectorService],
 })

@@ -125,3 +125,28 @@ export interface ListProvidersResponse {
 export interface ListModelsResponse {
   readonly models: readonly ModelMetadata[];
 }
+
+/**
+ * `POST /ai/generate` request body (Phase 4 Step 3). Deliberately just
+ * a prompt — routing fields (`requiredCapabilities`,
+ * `preferredProviderId`, `preferredModelId`) are an internal
+ * `AiService` concern, never a public input; see
+ * `packages/schemas/src/ai-provider.ts`'s `.strict()` schema, which
+ * rejects any of those fields if a caller sends them.
+ */
+export interface GenerateTextRequest {
+  readonly prompt: string;
+}
+
+/**
+ * `POST /ai/generate` response — the generated text plus which
+ * provider/model actually served it. Deliberately excludes
+ * `matchedRule` and any other internal routing/debug metadata from
+ * `ModelSelectionResult`.
+ */
+export interface GenerateTextResponse {
+  readonly text: string;
+  readonly providerId: ProviderId;
+  readonly modelId: ModelId;
+}
+

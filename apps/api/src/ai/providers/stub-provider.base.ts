@@ -1,4 +1,5 @@
 import type {
+  ModelCapability,
   ModelId,
   ModelMetadata,
   ProviderCapability,
@@ -41,6 +42,20 @@ export abstract class StubProviderDescriptor implements OmniProvider {
 
   listModels(): readonly ModelMetadata[] {
     return this.models;
+  }
+
+  /**
+   * A metadata-only stub never has a real execution path for any
+   * capability — every execution method below just throws
+   * `NOT_IMPLEMENTED`. Always `false`, regardless of `capability` or of
+   * whether `hasCredential()`/`isReady()` currently say the provider is
+   * configured. This is what stops `ModelSelectorService` from ever
+   * routing a request to a stub provider just because a caller happens
+   * to have set its API key env var.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  supportsExecution(_capability: ModelCapability): boolean {
+    return false;
   }
 
   // `async` (rather than a plain function that throws) so callers always

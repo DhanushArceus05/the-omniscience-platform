@@ -43,3 +43,23 @@ export const listModelsQuerySchema = z
 
 export type CapabilitySchema = z.infer<typeof capabilitySchema>;
 export type ListModelsQuerySchema = z.infer<typeof listModelsQuerySchema>;
+
+/**
+ * `POST /ai/generate` body (Phase 4 Step 3). `.strict()` rejects any
+ * unknown field — in particular `requiredCapabilities`,
+ * `preferredProviderId`, and `preferredModelId`, which are internal
+ * `AiService` routing concerns and must never be settable by a public
+ * caller. `prompt` is trimmed before its length is checked, so
+ * whitespace-only input is rejected the same way empty input is.
+ */
+export const generateTextRequestSchema = z
+  .object({
+    prompt: z
+      .string()
+      .trim()
+      .min(1, "prompt is required")
+      .max(8_000, "prompt must be at most 8000 characters"),
+  })
+  .strict();
+
+export type GenerateTextRequestSchema = z.infer<typeof generateTextRequestSchema>;

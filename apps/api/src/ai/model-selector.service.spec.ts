@@ -4,7 +4,7 @@ import { ModelCatalogService } from "./model-catalog.service";
 import { ModelSelectorService } from "./model-selector.service";
 import { ProviderRegistryService } from "./provider-registry.service";
 
-function makeProvider(providerId: string, ready = true): OmniProvider {
+function makeProvider(providerId: string, ready = true, executable = true): OmniProvider {
   return {
     providerId,
     displayName: providerId,
@@ -13,6 +13,7 @@ function makeProvider(providerId: string, ready = true): OmniProvider {
     configStatus: (): ProviderConfigStatus => (ready ? "configured" : "not-configured"),
     isReady: (): boolean => ready,
     listModels: (): readonly ModelMetadata[] => [],
+    supportsExecution: (): boolean => executable,
     generateText: (): Promise<string> => Promise.reject(new Error("not implemented")),
     generateStructured: (): Promise<unknown> => Promise.reject(new Error("not implemented")),
     embed: (): Promise<readonly number[]> => Promise.reject(new Error("not implemented")),
@@ -119,5 +120,52 @@ describe("ModelSelectorService", () => {
     expect(() => selector.select({ requiredCapabilities: ["text-generation"] })).toThrow(
       expect.objectContaining({ response: expect.objectContaining({ code: "NO_COMPATIBLE_MODEL" }) }),
     );
+  });
+
+  it("excludes a ready, credentialed provider that has no real execution path for the capability (stub guard)", () => {
+    // Regression test for the Phase 4 Step 3 execution-eligibility
+    // guarantee: a configured API key (isReady() === true) must never
+    // be enough on its own to select a metadata-only stub provider for
+    // real execution.
+    registry.register(makeProvider("stub-provider", true, false));
+    registry.register(makeProvider("real-provider", true, true));
+    const stubModel = makeModel({ providerId: "stub-provider", modelId: "stub-model", priority: 1 });
+    const realModel = makeModel({ providerId: "real-provider", modelId: "real-model", priority: 50 });
+    catalog.register(stubModel);
+    catalog.register(realModel);
+
+    const result = selector.select({ requiredCapabilities: ["text-generation"] });
+
+    expect(result.model).toEqual(realModel);
+  });
+
+  it("throws NO_COMPATIBLE_MODEL when every ready provider lacks a real execution path", () => {
+    registry.register(makeProvider("stub-provider", true, false));
+    catalog.register(makeModel({ providerId: "stub-provider", modelId: "stub-model" }));
+
+    expect(() => selector.select({ requiredCapabilities: ["text-generation"] })).toThrow(
+      expect.objectContaining({ response: expect.objectContaining({ code: "NO_COMPATIBLE_MODEL" }) }),
+    );
+  });
+
+  it("honors an explicit preferred-model request even when that provider is a non-executable stub, by still excluding it", () => {
+    // A preference never overrides the execution-eligibility guard —
+    // it only changes *which* eligible candidate wins.
+    registry.register(makeProvider("stub-provider", true, false));
+    registry.register(makeProvider("real-provider", true, true));
+    const stubModel = makeModel({ providerId: "stub-provider", modelId: "preferred", priority: 1 });
+    const realModel = makeModel({ providerId: "real-provider", modelId: "other", priority: 50 });
+    catalog.register(stubModel);
+    catalog.register(realModel);
+
+    const result = selector.select({
+      requiredCapabilities: ["text-generation"],
+      preferredModelId: "preferred",
+    });
+
+    // The preferred model is not eligible (its provider can't execute
+    // it), so selection falls through to priority-fallback.
+    expect(result.matchedRule).toBe("priority-fallback");
+    expect(result.model).toEqual(realModel);
   });
 });

@@ -11,6 +11,7 @@ function makeProvider(overrides: Partial<OmniProvider> = {}): OmniProvider {
     configStatus: (): ProviderConfigStatus => "configured",
     isReady: (): boolean => true,
     listModels: (): readonly ModelMetadata[] => [],
+    supportsExecution: (): boolean => true,
     generateText: (): Promise<string> => Promise.reject(new Error("not implemented")),
     generateStructured: (): Promise<unknown> => Promise.reject(new Error("not implemented")),
     embed: (): Promise<readonly number[]> => Promise.reject(new Error("not implemented")),

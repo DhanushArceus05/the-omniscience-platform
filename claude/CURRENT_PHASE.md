@@ -2873,6 +2873,16 @@ touched.
   Gemini and OpenAI remain unchanged Step 1 metadata-only stubs. `pnpm install` / `build` /
   `lint` / `typecheck` / `test` were all actually run in-sandbox this session — all green
   (357/357 tests in `@omniscience/api`) — see that section's Verification for full output.
+- **Phase 4 — OmniProvider & Model Manager, Step 3 (`POST /ai/generate`)**: implemented this
+  session — see the dedicated section at the end of this file. The first endpoint that actually
+  executes a model: `AiController` → new `AiService` → `ModelSelectorService` →
+  `ProviderRegistryService` → `OmniProvider.generateText()`. Adds a new, vendor-neutral
+  `OmniProvider.supportsExecution(capability)` interface method (and a corresponding
+  `ModelSelectorService` eligibility check) so a configured-but-stub provider (Gemini/OpenAI) can
+  never be selected for real execution just because its API key happens to be set. `pnpm install`
+  / `build` / `lint` / `typecheck` / `test` were all actually run in-sandbox this session — all
+  green (378/378 tests in `@omniscience/api`; 726/726 across the full monorepo) — see that
+  section's Verification for full output.
 
 ## Phase 4 — OmniProvider & Model Manager, Step 1 (Provider Foundation & Domain Architecture)
 
@@ -3216,3 +3226,180 @@ real, already-generated Prisma client types from this session's own `pnpm instal
 - The two Anthropic model ids registered (`claude-sonnet-5`, `claude-haiku-4-5`) remain
   hand-entered static metadata, same caveat Step 1 already logged — not fetched from any live
   model-listing API.
+
+## Phase 4 — OmniProvider & Model Manager, Step 3 (`POST /ai/generate`)
+
+Scope, as approved (already proposed and reviewed prior to implementation — see the source ZIP's
+accompanying instructions for this step). Adds exactly one authenticated, production-grade
+endpoint, `POST /ai/generate`, connecting the existing `ModelSelectorService`/
+`ProviderRegistryService` to the existing real Anthropic `generateText` execution path (Step 2)
+through a new, thin, vendor-neutral `AiService`.
+
+### What was added
+
+- **`packages/types/src/ai-provider.ts`** (edited, additive only) — `GenerateTextRequest`
+  (`{ prompt: string }`) and `GenerateTextResponse` (`{ text, providerId, modelId }`), the exact
+  public request/response shapes `POST /ai/generate` uses. Exported from
+  `packages/types/src/index.ts`.
+- **`packages/schemas/src/ai-provider.ts`** (edited, additive only) — `generateTextRequestSchema`:
+  `.strict()` (so `requiredCapabilities`/`preferredProviderId`/`preferredModelId` are rejected as
+  unknown fields rather than silently ignored), `prompt` trimmed then required to be 1–8,000
+  characters after trimming. New tests in `ai-provider.test.ts`. Exported from
+  `packages/schemas/src/index.ts`.
+- **`apps/api/src/ai/ai-provider.interface.ts`** (edited, additive only) — added
+  `supportsExecution(capability: ModelCapability): boolean` to the `OmniProvider` interface. This
+  is the execution-eligibility guarantee the approved scope asked for: distinct from
+  `capabilities` (which only ever *advertises* what a provider aims to support),
+  `supportsExecution()` reports whether a provider has a genuinely executable implementation for
+  one specific capability right now.
+- **`apps/api/src/ai/providers/stub-provider.base.ts`** (edited, additive only) —
+  `StubProviderDescriptor.supportsExecution()` always returns `false`, regardless of capability or
+  of whether `hasCredential()`/`isReady()` currently say the provider is configured. Gemini and
+  OpenAI inherit this unchanged — neither file was touched.
+- **`apps/api/src/ai/providers/anthropic.provider.ts`** (edited, additive only) — overrides
+  `supportsExecution()` to return `true` only for `"text-generation"` (still `false` for anything
+  else, matching `generateStructured`/`embed` still being `NOT_IMPLEMENTED`).
+- **`apps/api/src/ai/model-selector.service.ts`** (edited) — `isEligible()` now also requires
+  `provider.supportsExecution(capability)` for every capability in `requiredCapabilities`, in
+  addition to the existing capability/availability/provider-readiness checks. This is the fix for
+  the exact failure mode the approved scope named: a configured API key (`isReady() === true`)
+  alone is no longer sufficient for a provider to be selected — a metadata-only stub can never be
+  routed to for real execution again, regardless of priority or an explicit preference.
+- **`apps/api/src/ai/ai.service.ts`** (new) — `AiService.generate(prompt)`: calls
+  `ModelSelectorService.select({ requiredCapabilities: ["text-generation"] })` (the one and only
+  place this capability list is set — never caller-supplied), looks up the selected model's
+  provider via `ProviderRegistryService.getById()`, calls `provider.generateText(modelId,
+  prompt)`, and returns `{ text, providerId, modelId }`. No vendor name, provider id, or model id
+  is hardcoded; no try/catch — every error from the selector or the provider propagates unchanged.
+- **`apps/api/src/ai/ai.controller.ts`** (edited) — new `POST /ai/generate` route: `JwtAuthGuard`
+  (same convention as the existing two `GET`s), `@Throttle({ default: { limit: 10, ttl: 600_000
+  } })` (a new, explicit, tighter limit — the existing two `GET`s keep no override, but this route
+  is vendor-billed), `ZodValidationPipe(generateTextRequestSchema)` on the body, delegates to the
+  new `AiService`, returns `{ success: true, data: { text, providerId, modelId } }` — never
+  `matchedRule` or any other internal routing/debug metadata.
+- **`apps/api/src/ai/ai.module.ts`** (edited, additive only) — `AiService` added to `providers`;
+  not exported (reachable only through `AiController` within this module, same as every concrete
+  provider class already was). No other provider, controller, or export changed.
+- **Tests** — `ai.service.spec.ts` (new): requests only `["text-generation"]` from the selector,
+  calls `registry.getById`/`provider.generateText` with the selected model's exact ids and the
+  given prompt, returns only `{ text, providerId, modelId }`, and propagates both a selector error
+  (`NO_COMPATIBLE_MODEL`) and a provider execution error unchanged. `model-selector.service.spec.ts`
+  (edited): the shared `makeProvider()` test factory grew a `supportsExecution` parameter, plus new
+  cases proving a ready, credentialed, but non-executable stub provider is excluded even when it's
+  the only or the explicitly-preferred candidate, falling through to `NO_COMPATIBLE_MODEL` or to a
+  real provider as appropriate. `provider-registry.service.spec.ts` (edited): its own `makeProvider()`
+  factory updated for the new interface member (`supportsExecution: () => true`) — no test logic
+  changed. `stub-providers.spec.ts` (edited): new case asserting Gemini/OpenAI's
+  `supportsExecution()` is `false` for every one of their advertised capabilities even once their
+  API key is configured. `anthropic.provider.spec.ts` (edited): new case asserting
+  `supportsExecution("text-generation") === true` and `false` for every other capability.
+  `ai.controller.spec.ts` (edited): new `generate()` describe block — delegates to `AiService` with
+  the validated prompt, wraps the result in `ApiSuccess`, returns only the three public fields, and
+  propagates an `AiService` error unchanged. `ai.module.spec.ts` (edited): asserts `AiService`
+  resolves from the compiled module. `packages/schemas/src/ai-provider.test.ts` (edited): new
+  `generateTextRequestSchema` describe block covering trimming, the empty/whitespace-only/
+  over-8000-character/missing-prompt rejections, and rejection of each internal routing field
+  (`requiredCapabilities`, `preferredProviderId`, `preferredModelId`).
+- **`apps/api/test/ai-generate.e2e-spec.ts`** (new) — exercises the real HTTP surface: the real
+  (never-overridden) `JwtAuthGuard` and `ThrottlerGuard`, the real `ZodValidationPipe`/
+  `generateTextRequestSchema`, and the real `AiService` → `ModelSelectorService` →
+  `ProviderRegistryService` → `AnthropicProvider.generateText()` chain — end to end, against a
+  fake `ANTHROPIC_CLIENT` override (same technique `anthropic.provider.spec.ts` already uses at
+  the unit level), so no test in this file makes a live vendor network call. Covers: 401 without a
+  token; 400 for an empty/whitespace-only prompt, an over-8,000-character prompt, and each
+  internal routing field; 422 `NO_COMPATIBLE_MODEL` when no provider is configured; a full success
+  path returning exactly `{ text, providerId, modelId }`; and 429 once the route's 10-per-10-minute
+  throttle limit is exceeded.
+
+### Architecture summary
+
+`AiController`'s two Step 1 `GET` routes are completely unchanged. The new `POST /ai/generate`
+route is a thin pass-through into `AiService`, which is itself a thin pass-through into
+`ModelSelectorService`/`ProviderRegistryService`/`OmniProvider` — no new abstraction layer, no
+duplicated selection logic, and no controller-level knowledge of providers or models. The only
+architectural addition beyond the new service is `supportsExecution()` on the `OmniProvider`
+interface, which slots into the selector's existing eligibility check alongside
+capability/availability/readiness — a single, centrally-enforced rule rather than a special case
+in the controller or the service.
+
+### Security summary
+
+- The public request body accepts only `prompt`; `generateTextRequestSchema` is `.strict()`, so
+  `requiredCapabilities`/`preferredProviderId`/`preferredModelId` are rejected outright rather
+  than silently ignored — a caller cannot force a specific provider or model, or claim a
+  capability `AiService` didn't itself request.
+- The public response is `{ text, providerId, modelId }` only — `ModelSelectionResult.matchedRule`
+  and any other internal routing/debug metadata never reach a caller.
+- `POST /ai/generate` sits behind the same `JwtAuthGuard` as every other authenticated route, plus
+  a new, explicit `@Throttle({ default: { limit: 10, ttl: 600_000 } })` — tighter than the app-wide
+  default and than the existing two `GET`s, specifically because every call is vendor-billed.
+- No prompt is ever logged — `AiService`/`AiController` pass it straight through to
+  `AnthropicProvider.generateText()`, which (per Step 2) never logs its arguments either.
+- Every domain error already normalized by Step 1/2 (`NO_COMPATIBLE_MODEL`,
+  `PROVIDER_NOT_FOUND`, `PROVIDER_NOT_CONFIGURED`, `MODEL_NOT_FOUND`, `PROVIDER_AUTH_FAILED`,
+  `PROVIDER_RATE_LIMITED`, `PROVIDER_TIMEOUT`, `PROVIDER_REQUEST_INVALID`, `PROVIDER_UNAVAILABLE`,
+  `PROVIDER_RESPONSE_INVALID`) propagates through `AiService`/`AiController` completely unchanged
+  — no new error code was added, and no broad try/catch wraps or reinterprets any of them.
+- The execution-eligibility guarantee (`supportsExecution()`) is itself a security-relevant fix:
+  without it, setting only `GEMINI_API_KEY` or `OPENAI_API_KEY` (with no real adapter behind
+  either) would have let a request be routed to a provider that could only ever throw
+  `NOT_IMPLEMENTED` — a functional bug, not a data-leak, but exactly the failure mode the approved
+  scope called out by name.
+
+### Explicitly deferred (per approved scope)
+
+- A chat UI, streaming, conversation history, system prompts, structured output, embeddings, RAG,
+  agents, vision, speech, another real provider (Gemini/OpenAI still Step 1 metadata-only stubs),
+  circuit breakers, health persistence, and billing/usage tracking — all explicitly out of scope
+  for this step, per the approved requirements.
+- A configurable `max_tokens`/per-request generation parameters — `AnthropicProvider`'s Step 2
+  fixed `DEFAULT_MAX_TOKENS` (4096) is unchanged; `POST /ai/generate` has no field for it.
+- Any caching of generated responses.
+- Restoring `generateStructured`/`embed` capabilities on Anthropic's advertised capability list —
+  unchanged from Step 2, tied to whichever future step actually implements each one.
+
+### Verification (actually run in-sandbox this session)
+
+This session's sandbox had npm registry egress (confirmed the same way as Step 1/2's sessions).
+
+```
+pnpm install          # succeeded — 824 packages. @prisma/client's postinstall failed to fetch its
+                       # query-engine checksum from binaries.prisma.sh (403) — same standing,
+                       # unrelated limitation as every prior session; install still completed.
+pnpm typecheck        # 15/15 turbo tasks — succeeded.
+pnpm lint             # 15/15 turbo tasks — succeeded after one real, self-authored bug was found
+                       # and fixed: the new test/ai-generate.e2e-spec.ts initially imported
+                       # Node's `os` module for a temp-directory helper that was refactored away,
+                       # leaving an unused import — `@typescript-eslint/no-unused-vars` caught it;
+                       # fixed by deleting the unused import (no logic changed).
+pnpm build            # 9/9 packages — succeeded, including @omniscience/api (`nest build`) and
+                       # @omniscience/web (`tsc --noEmit && vite build`).
+pnpm test             # 15/15 turbo tasks — succeeded. @omniscience/api: 46/46 suites, 378/378
+                       # tests (up from Step 2's 44/357 — +21: the new ai.service.spec.ts, the new
+                       # ai-generate.e2e-spec.ts, plus new cases added to
+                       # model-selector.service.spec.ts, stub-providers.spec.ts,
+                       # anthropic.provider.spec.ts, ai.controller.spec.ts, and ai.module.spec.ts).
+                       # @omniscience/schemas: 86/86 (up from 78/78 — +8 new
+                       # generateTextRequestSchema cases). @omniscience/web 105/105,
+                       # @omniscience/ui 81/81, @omniscience/sdk 35/35, @omniscience/config 27/27,
+                       # @omniscience/types 5/5, @omniscience/utils 5/5, @omniscience/prompts 4/4
+                       # — all unchanged and passing.
+```
+
+Total across the monorepo this session: **726 tests, 726 passing.**
+
+`apps/api`'s `prisma generate` was not re-run this session — this step adds no Prisma schema
+change, and the standing `binaries.prisma.sh` network-allowlist limitation (documented in every
+prior session) is unrelated to and does not block any of the above.
+
+### Known limitations
+
+- `POST /ai/generate`'s 10-per-10-minute throttle limit is a first, reasonable value for a
+  vendor-billed endpoint — no per-user cost tracking or budget enforcement exists yet (out of
+  scope for this step, per "billing or usage tracking" in the explicitly-deferred list above).
+- The execution-eligibility guarantee (`supportsExecution()`) is currently a static, per-provider,
+  per-capability boolean — it does not yet account for a provider that is failing every real call
+  despite valid credentials (that remains the Step 2 "known limitation" about no health/circuit-
+  breaking, unchanged by this step).
+- No caching, request deduplication, or streaming — a plain, synchronous request/response round
+  trip only, matching the approved scope.

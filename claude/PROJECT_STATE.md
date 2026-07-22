@@ -177,6 +177,53 @@ before any implementation code was written against them, rather than assumed fro
 `binaries.prisma.sh` limitation as every prior session, unrelated to this step). Awaiting your
 review and approval before Phase 4 Step 3.
 
+**Phase 4 — OmniProvider & Model Manager, Step 3 (`POST /ai/generate`): implemented this
+session, fully verified in-sandbox.** The first public endpoint that actually executes a model:
+`AiController` → new `AiService.generate()` → `ModelSelectorService.select()` →
+`ProviderRegistryService` lookup → `OmniProvider.generateText()`. The public request body is
+just `{ prompt: string }` (`.strict()` `generateTextRequestSchema` — trimmed, 1–8000 chars,
+unknown fields rejected); `AiService` is the only place `requiredCapabilities: ["text-generation"]`
+is set — a caller can never send `requiredCapabilities`/`preferredProviderId`/`preferredModelId`
+directly, since sending any of them now fails validation instead of being silently accepted. The
+public response is `{ text, providerId, modelId }` only — `matchedRule` and every other internal
+routing/debug field is deliberately excluded.
+
+The core architectural risk flagged in the approved scope — "a configured API key must never
+cause a metadata-only stub provider to be selected for real execution and then fail with
+`NOT_IMPLEMENTED`" — was real: Gemini/OpenAI's Step 1 stub descriptors advertise `text-generation`
+on `available` models with lower `priority` numbers than Anthropic's, so setting e.g.
+`GEMINI_API_KEY` alone would have made `isReady()` return `true` and the old selector would have
+routed a real request straight into a stub's `NOT_IMPLEMENTED` throw. Fixed with one new,
+vendor-neutral interface method: `OmniProvider.supportsExecution(capability): boolean`.
+`StubProviderDescriptor` (Gemini/OpenAI's shared base) always returns `false`; `AnthropicProvider`
+overrides it to return `true` only for `"text-generation"` (still `false` for anything else, since
+`generateStructured`/`embed` remain unimplemented). `ModelSelectorService.isEligible()` now
+requires `provider.supportsExecution(capability)` for every required capability, in addition to
+the existing capability/availability/readiness checks — a stub can never be selected for real
+execution again, regardless of what its own metadata or a caller's preference says.
+
+No vendor name, provider id, or model id is hardcoded anywhere in `AiService` or the selector
+change — both remain generic over the `OmniProvider` interface. `@Throttle({ default: { limit:
+10, ttl: 600_000 } })` was added to the new route specifically because, unlike the two existing
+`GET` diagnostics, every call is vendor-billed. See `claude/CURRENT_PHASE.md`'s "Phase 4 Step 3"
+section for the exact architecture, security summary, and deferred work.
+
+**Verified this session:** `pnpm install` (824 packages, same standing `@prisma/client`
+postinstall-checksum limitation as every prior session), `pnpm build`/`lint`/`typecheck` all green
+across all 9 packages (one real lint bug caught and fixed in-session: an unused `os` import left
+over from an earlier draft of the new e2e spec), `pnpm test` green across the full monorepo — 726
+tests passing, 0 failing (`@omniscience/api` 46/46 suites, 378/378 tests, up from Step 2's
+44/357). New coverage this step: `ai.service.spec.ts` (new), execution-eligibility unit tests
+added to `model-selector.service.spec.ts`, `supportsExecution` assertions added to
+`stub-providers.spec.ts` and `anthropic.provider.spec.ts`, `POST /ai/generate` coverage added to
+`ai.controller.spec.ts`, an `AiService` resolution check added to `ai.module.spec.ts`, new
+`generateTextRequestSchema` tests in `packages/schemas`, and a new e2e spec
+(`test/ai-generate.e2e-spec.ts`) exercising the real `JwtAuthGuard`/`ThrottlerGuard`/
+`ZodValidationPipe` stack plus the full selector→registry→provider path against a fake injected
+`ANTHROPIC_CLIENT` — no test in the repository makes a live vendor network call.
+`prisma generate` was not re-run this session (no Prisma schema change; same standing
+`binaries.prisma.sh` limitation). Awaiting your review and approval before Phase 4 Step 4.
+
 ### Phase 2 step-by-step history (unchanged from when each step was implemented)
 
 - **Frontend auth integration (post-Step-8, pre-commit)**: `RegisterPage`/`VerifyOtpPage`/

@@ -34,6 +34,14 @@ import { ProviderRegistryService } from "./provider-registry.service";
  *   - every capability in `request.requiredCapabilities`
  *   - `model.availability === "available"`
  *   - its provider is currently ready (`OmniProvider.isReady()`)
+ *   - its provider genuinely has a real execution path for every
+ *     required capability (`OmniProvider.supportsExecution()`, Phase 4
+ *     Step 3) — a configured API key is not enough on its own: a
+ *     metadata-only stub provider (e.g. Gemini/OpenAI before their own
+ *     real adapters exist) can be `isReady() === true` yet still
+ *     correctly excluded here, so it can never be selected only to
+ *     fail with `NOT_IMPLEMENTED` once `AiService` calls
+ *     `generateText`.
  *
  * If no rule produces an eligible candidate, throws `NO_COMPATIBLE_MODEL`.
  */
@@ -92,7 +100,14 @@ export class ModelSelectorService {
     // yield a usable model, regardless of what the model's own static
     // `availability` metadata says.
     const provider = this.registry.list().find((candidate) => candidate.providerId === model.providerId);
-    return provider !== undefined && provider.isReady();
+    if (provider === undefined || !provider.isReady()) {
+      return false;
+    }
+    // Nor can a provider that is ready-by-configuration but has no
+    // genuine execution implementation for one of the required
+    // capabilities — see the class doc comment's execution-eligibility
+    // note above.
+    return requiredCapabilities.every((capability) => provider.supportsExecution(capability));
   }
 }
 

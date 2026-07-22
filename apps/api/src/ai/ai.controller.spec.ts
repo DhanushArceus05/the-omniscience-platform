@@ -1,7 +1,8 @@
 import { Test, TestingModule } from "@nestjs/testing";
-import type { ModelMetadata, ProviderMetadata } from "@omniscience/types";
+import type { GenerateTextResponse, ModelMetadata, ProviderMetadata } from "@omniscience/types";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { AiController } from "./ai.controller";
+import { AiService } from "./ai.service";
 import { ModelCatalogService } from "./model-catalog.service";
 import { ProviderRegistryService } from "./provider-registry.service";
 
@@ -9,6 +10,7 @@ describe("AiController", () => {
   let controller: AiController;
   const registry = { listMetadata: jest.fn() };
   const catalog = { list: jest.fn(), filterByCapabilities: jest.fn() };
+  const aiService = { generate: jest.fn() };
 
   const providerMetadata: ProviderMetadata = {
     providerId: "gemini",
@@ -34,6 +36,7 @@ describe("AiController", () => {
       providers: [
         { provide: ProviderRegistryService, useValue: registry },
         { provide: ModelCatalogService, useValue: catalog },
+        { provide: AiService, useValue: aiService },
       ],
     })
       .overrideGuard(JwtAuthGuard)
@@ -89,6 +92,42 @@ describe("AiController", () => {
       const result = controller.getModels({ provider: "gemini" });
 
       expect(result).toEqual({ success: true, data: { models: [modelMetadata] } });
+    });
+  });
+
+  describe("generate()", () => {
+    it("delegates to AiService.generate with the validated prompt and wraps the result in ApiSuccess", async () => {
+      const response: GenerateTextResponse = {
+        text: "Hello, world!",
+        providerId: "anthropic",
+        modelId: "claude-sonnet-5",
+      };
+      aiService.generate.mockResolvedValue(response);
+
+      const result = await controller.generate({ prompt: "Say hello" });
+
+      expect(aiService.generate).toHaveBeenCalledWith("Say hello");
+      expect(result).toEqual({ success: true, data: response });
+    });
+
+    it("returns only text, providerId, and modelId — never matchedRule or other internal metadata", async () => {
+      const response: GenerateTextResponse = {
+        text: "Hello, world!",
+        providerId: "anthropic",
+        modelId: "claude-sonnet-5",
+      };
+      aiService.generate.mockResolvedValue(response);
+
+      const result = await controller.generate({ prompt: "Say hello" });
+
+      expect(Object.keys(result.data)).toEqual(["text", "providerId", "modelId"]);
+    });
+
+    it("propagates an AiService error unchanged", async () => {
+      const error = { response: { code: "NO_COMPATIBLE_MODEL" } };
+      aiService.generate.mockRejectedValue(error);
+
+      await expect(controller.generate({ prompt: "Say hello" })).rejects.toBe(error);
     });
   });
 });

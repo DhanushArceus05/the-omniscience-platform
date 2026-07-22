@@ -40,6 +40,22 @@ export interface OmniProvider {
   /** All models this provider currently exposes, regardless of capability. */
   listModels(): readonly ModelMetadata[];
 
+  /**
+   * Whether this provider has a genuinely executable implementation of
+   * `capability` right now — as opposed to `capabilities`/a model's own
+   * `capabilities`, which only *advertise* what a provider aims to
+   * support. Added in Phase 4 Step 3 so `ModelSelectorService` can
+   * never select a metadata-only stub provider for real execution: a
+   * configured API key makes `isReady()` return `true`, but that alone
+   * must never be enough to route a request to a provider whose
+   * `generateText`/etc. would just throw `NOT_IMPLEMENTED`. Every stub
+   * descriptor (`StubProviderDescriptor`) returns `false` for every
+   * capability; a real adapter (e.g. `AnthropicProvider`) overrides
+   * this to return `true` only for the capability it actually
+   * implements.
+   */
+  supportsExecution(capability: ModelCapability): boolean;
+
   generateText(modelId: ModelId, prompt: string): Promise<string>;
   generateStructured(modelId: ModelId, prompt: string, schemaName: string): Promise<unknown>;
   embed(modelId: ModelId, input: string): Promise<readonly number[]>;

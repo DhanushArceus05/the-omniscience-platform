@@ -52,5 +52,10 @@ export type {
   ListWorkspacesQuerySchema,
   WorkspaceIdParamSchema,
 } from "./workspaces";
-export { capabilityValues, capabilitySchema, listModelsQuerySchema } from "./ai-provider";
-export type { CapabilitySchema, ListModelsQuerySchema } from "./ai-provider";
+export {
+  capabilityValues,
+  capabilitySchema,
+  listModelsQuerySchema,
+  generateTextRequestSchema,
+} from "./ai-provider";
+export type { CapabilitySchema, ListModelsQuerySchema, GenerateTextRequestSchema } from "./ai-provider";

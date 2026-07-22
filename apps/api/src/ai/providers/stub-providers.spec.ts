@@ -74,4 +74,12 @@ describe.each([
 
     expect(surface).not.toContain(secretValue);
   });
+
+  it("never reports a real execution path, even when its API key is configured (Phase 4 Step 3 execution-eligibility guard)", () => {
+    const provider = new Provider(makeEnv({ [envKey]: "test-key-value" } as Partial<Env>));
+    expect(provider.isReady()).toBe(true);
+    for (const capability of provider.capabilities) {
+      expect(provider.supportsExecution(capability)).toBe(false);
+    }
+  });
 });

@@ -1,6 +1,6 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { Env } from "@omniscience/config";
-import type { ModelId, ModelMetadata, ProviderCapability } from "@omniscience/types";
+import type { ModelCapability, ModelId, ModelMetadata, ProviderCapability } from "@omniscience/types";
 import { ENV } from "../../config/config.constants";
 import { aiDomainError } from "../ai-provider.interface";
 import { ANTHROPIC_CLIENT, type AnthropicMessagesClient } from "./anthropic-client.provider";
@@ -81,6 +81,17 @@ export class AnthropicProvider extends StubProviderDescriptor {
 
   protected hasCredential(): boolean {
     return this.env.ANTHROPIC_API_KEY !== undefined;
+  }
+
+  /**
+   * Unlike the inherited stub default (always `false`), this adapter
+   * has a genuinely executable `generateText` — but only that one
+   * capability; `generateStructured`/`embed` remain inherited,
+   * unimplemented `NOT_IMPLEMENTED` throws (see the class doc comment),
+   * so this must stay narrow rather than mirroring `capabilities`.
+   */
+  override supportsExecution(capability: ModelCapability): boolean {
+    return capability === "text-generation";
   }
 
   /**

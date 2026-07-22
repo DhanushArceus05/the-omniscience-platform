@@ -61,4 +61,6 @@ export type {
   ProviderExecutionMetadata,
   ListProvidersResponse,
   ListModelsResponse,
+  GenerateTextRequest,
+  GenerateTextResponse,
 } from "./ai-provider";

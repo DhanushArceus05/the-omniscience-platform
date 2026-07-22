@@ -15,6 +15,7 @@ import { RedisModule } from "../redis/redis.module";
 import { RedisService } from "../redis/redis.service";
 import { AiController } from "./ai.controller";
 import { AiModule } from "./ai.module";
+import { AiService } from "./ai.service";
 import { ModelCatalogService } from "./model-catalog.service";
 import { ModelSelectorService } from "./model-selector.service";
 import { ProviderRegistryService } from "./provider-registry.service";
@@ -59,6 +60,7 @@ describe("AiModule", () => {
 
     expect(module.get(JwtAuthGuard)).toBeInstanceOf(JwtAuthGuard);
     expect(module.get(AiController)).toBeInstanceOf(AiController);
+    expect(module.get(AiService)).toBeInstanceOf(AiService);
 
     const registry = module.get(ProviderRegistryService);
     const catalog = module.get(ModelCatalogService);

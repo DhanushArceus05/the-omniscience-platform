@@ -79,6 +79,17 @@ describe("AnthropicProvider", () => {
       expect(surface).not.toContain(secretValue);
     });
 
+    it("reports a real execution path only for text-generation (Phase 4 Step 3 execution-eligibility)", () => {
+      const provider = new AnthropicProvider(
+        makeEnv({ ANTHROPIC_API_KEY: "test-key" }),
+        makeClient(),
+      );
+      expect(provider.supportsExecution("text-generation")).toBe(true);
+      expect(provider.supportsExecution("embeddings")).toBe(false);
+      expect(provider.supportsExecution("vision")).toBe(false);
+      expect(provider.supportsExecution("structured-output")).toBe(false);
+    });
+
     it("still throws NOT_IMPLEMENTED for generateStructured and embed", async () => {
       const provider = new AnthropicProvider(
         makeEnv({ ANTHROPIC_API_KEY: "test-key" }),
