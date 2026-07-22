@@ -143,6 +143,40 @@ still cannot reach `binaries.prisma.sh` in this sandbox (same standing limitatio
 session); irrelevant here, since this step makes no Prisma schema changes. Awaiting your review
 and approval before Phase 4 Step 2.
 
+**Phase 4 — OmniProvider & Model Manager, Step 2 (Anthropic Real Execution — `generateText`
+only): implemented this session, fully verified in-sandbox.** Anthropic is now the first *real*
+`OmniProvider` adapter — `generateText` makes a genuine `@anthropic-ai/sdk` call, injected via a
+new `ANTHROPIC_CLIENT` DI token so production resolves a real SDK client while every test injects
+a fake one (no live vendor network call in any test). `generateStructured`/`embed` remain
+`NOT_IMPLEMENTED`; Gemini and OpenAI are untouched Step 1 metadata-only stubs. Four adjustments
+were required to Claude's own proposed scope before implementation began, all applied: no
+provider-local circuit breaker (readiness stays configuration-only, exactly Step 1's check); no
+custom retry loop (retries are handled entirely by the official SDK's own `timeout`/`maxRetries`
+options, sourced from two new optional env vars, `AI_REQUEST_TIMEOUT_MS`/`AI_MAX_RETRIES`); the
+SDK client is DI-injectable via a token rather than constructed inline; and pre-execution
+validation checks credential presence (`PROVIDER_NOT_CONFIGURED`) then model registration/
+ownership (`MODEL_NOT_FOUND` — a single membership check against Anthropic's own static model
+list rejects both unknown ids and ids belonging to a different provider). Six new domain error
+codes normalize every SDK failure category (auth, rate-limit, timeout, invalid-request,
+unavailable, invalid-response) — the raw SDK error message/body/headers are never forwarded to a
+caller. Anthropic's advertised capabilities were trimmed to `text-generation` only, since Step 1
+had claimed `structured-output`/`vision`/`tool-calling` with nothing backing those claims once
+real execution exists. No new public HTTP endpoint was added. See `claude/CURRENT_PHASE.md`'s
+"Phase 4 Step 2" section for the exact adjustments, architecture, security summary, and deferred
+work. **Verified this session:** `pnpm install` (824 packages), `pnpm build`/`lint`/`typecheck`
+all green across all 9 packages, `pnpm test` green across the full monorepo —
+`@omniscience/api` 44/44 suites, 357/357 tests (up from Step 1's 330/330). Two real,
+self-authored issues were caught and fixed in-session (not masked or reported as pre-existing): a
+test-fixture typing issue (`jest.Mocked<AnthropicMessagesClient>` didn't deep-map the nested
+`messages.create` mock as expected — fixed with an explicit fake-client interface) and one wrong
+expected-value in a new multi-text-block-joining test (the implementation was already correct).
+`@anthropic-ai/sdk@^0.112.4` is the only new dependency; its real error-class hierarchy, response
+shapes, and client-constructor behavior were confirmed via a standalone scratch-directory install
+before any implementation code was written against them, rather than assumed from training data.
+`prisma generate` was not re-run this session (no Prisma schema change; same standing
+`binaries.prisma.sh` limitation as every prior session, unrelated to this step). Awaiting your
+review and approval before Phase 4 Step 3.
+
 ### Phase 2 step-by-step history (unchanged from when each step was implemented)
 
 - **Frontend auth integration (post-Step-8, pre-commit)**: `RegisterPage`/`VerifyOtpPage`/

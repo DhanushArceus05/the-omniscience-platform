@@ -1,5 +1,4 @@
 import type { Env } from "@omniscience/config";
-import { AnthropicProvider } from "./anthropic.provider";
 import { GeminiProvider } from "./gemini.provider";
 import { OpenAiProvider } from "./openai.provider";
 
@@ -7,10 +6,18 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
   return { ...overrides } as unknown as Env;
 }
 
+// `AnthropicProvider` is no longer a pure metadata-only stub as of
+// Phase 4 Step 2 — its `generateText` makes a real (injected-client)
+// call and its constructor now also requires an `ANTHROPIC_CLIENT`,
+// so it no longer fits this shared "throws NOT_IMPLEMENTED from every
+// execution method" contract or this suite's single-argument
+// `new Provider(env)` construction. See `anthropic.provider.spec.ts`
+// for its own, dedicated coverage — including the same
+// not-configured/not-ready and never-leaks-a-credential guarantees
+// this suite still checks for Gemini/OpenAI below.
 describe.each([
   { Provider: GeminiProvider, envKey: "GEMINI_API_KEY", providerId: "gemini" },
   { Provider: OpenAiProvider, envKey: "OPENAI_API_KEY", providerId: "openai" },
-  { Provider: AnthropicProvider, envKey: "ANTHROPIC_API_KEY", providerId: "anthropic" },
 ] as const)("$providerId stub provider descriptor", ({ Provider, envKey, providerId }) => {
   it("reports not-configured / not-ready when its API key env var is unset", () => {
     const provider = new Provider(makeEnv());

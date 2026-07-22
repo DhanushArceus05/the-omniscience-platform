@@ -208,4 +208,32 @@ describe("loadEnv", () => {
       expect(env.ANTHROPIC_API_KEY).toBeUndefined();
     });
   });
+
+  describe("Phase 4 Step 2 — Anthropic execution timeout & retry", () => {
+    it("applies the default timeout and retry count when unset", () => {
+      const env = loadEnv(validEnv);
+      expect(env.AI_REQUEST_TIMEOUT_MS).toBe(30_000);
+      expect(env.AI_MAX_RETRIES).toBe(2);
+    });
+
+    it("allows overriding both independently", () => {
+      const env = loadEnv({
+        ...validEnv,
+        AI_REQUEST_TIMEOUT_MS: "15000",
+        AI_MAX_RETRIES: "0",
+      } as unknown as NodeJS.ProcessEnv);
+      expect(env.AI_REQUEST_TIMEOUT_MS).toBe(15000);
+      expect(env.AI_MAX_RETRIES).toBe(0);
+    });
+
+    it("rejects a negative retry count", () => {
+      const broken = { ...validEnv, AI_MAX_RETRIES: "-1" } as unknown as NodeJS.ProcessEnv;
+      expect(() => loadEnv(broken)).toThrow(/AI_MAX_RETRIES/);
+    });
+
+    it("rejects a non-positive timeout", () => {
+      const broken = { ...validEnv, AI_REQUEST_TIMEOUT_MS: "0" } as unknown as NodeJS.ProcessEnv;
+      expect(() => loadEnv(broken)).toThrow(/AI_REQUEST_TIMEOUT_MS/);
+    });
+  });
 });

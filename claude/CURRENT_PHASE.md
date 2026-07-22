@@ -2866,6 +2866,13 @@ touched.
   As with every prior session, `apps/api`'s `prisma generate` still cannot reach
   `binaries.prisma.sh` in-sandbox; this is unrelated to and does not block Step 1, which adds no
   Prisma schema changes at all.
+- **Phase 4 — OmniProvider & Model Manager, Step 2 (Anthropic Real Execution — `generateText`
+  only)**: implemented this session — see the dedicated section at the end of this file.
+  Anthropic is now the first *real* `OmniProvider` adapter (`generateText`, via the official
+  `@anthropic-ai/sdk`, injected through a DI token so tests never make a live vendor call);
+  Gemini and OpenAI remain unchanged Step 1 metadata-only stubs. `pnpm install` / `build` /
+  `lint` / `typecheck` / `test` were all actually run in-sandbox this session — all green
+  (357/357 tests in `@omniscience/api`) — see that section's Verification for full output.
 
 ## Phase 4 — OmniProvider & Model Manager, Step 1 (Provider Foundation & Domain Architecture)
 
@@ -3038,3 +3045,174 @@ non-fatal warning was `@prisma/client`'s postinstall failing to fetch its engine
   an actual fake credential value instead of a naive keyword regex.
 
 Total across the monorepo: **666 tests, 666 passing.**
+
+## Phase 4 — OmniProvider & Model Manager, Step 2 (Anthropic Real Execution — `generateText` only)
+
+Scope, as approved (with four required adjustments to Claude's own proposal — see below): give
+exactly one provider (Anthropic) a real, production-grade execution path for exactly one
+capability (`generateText`), behind the same `OmniProvider` interface Step 1 defined. No other
+provider, no other method, no new public endpoint, no chat UI/RAG/agents/streaming/vision.
+
+### Adjustments required before implementation (all applied)
+
+1. **No provider-local circuit breaker this step.** `configStatus()`/`isReady()` remain exactly
+   Step 1's configuration-only check (`ANTHROPIC_API_KEY` present or not) — no health tracking,
+   no cooldown window. Deferred to a dedicated later Phase 4 step.
+2. **No custom retry/backoff loop.** `AnthropicProvider` never retries anything itself — the
+   official `@anthropic-ai/sdk` client's own `timeout`/`maxRetries` constructor options (`Env`'s
+   new `AI_REQUEST_TIMEOUT_MS`/`AI_MAX_RETRIES`) are the sole retry mechanism.
+3. **The SDK client is DI-injectable via a token, not constructed inline.** `ANTHROPIC_CLIENT`
+   (`providers/anthropic-client.provider.ts`) resolves to a real `Anthropic` client in
+   production and a fake object (implementing the same narrow `AnthropicMessagesClient`
+   interface) in every test — no test makes a live vendor network call.
+4. **Pre-execution validation, in this order:** missing credential → `PROVIDER_NOT_CONFIGURED`;
+   model not registered under Anthropic (unknown id, or a real id belonging to Gemini/OpenAI) →
+   `MODEL_NOT_FOUND`. Enforced by a single membership check against the provider's own static
+   model list — an arbitrary/unregistered model id can never reach the SDK call.
+
+### What was added
+
+- **`packages/config/src/env.ts`** — `AI_REQUEST_TIMEOUT_MS` (default 30000) and `AI_MAX_RETRIES`
+  (default 2), both optional, independent of whether `ANTHROPIC_API_KEY` is set. `.env.example`
+  documents both under a new "Phase 4 Step 2" section.
+- **`apps/api/src/ai/ai-provider.interface.ts`** (edited, additive only) — six new
+  `AiDomainErrorCode` values for real-execution failures: `PROVIDER_AUTH_FAILED` (422),
+  `PROVIDER_RATE_LIMITED` (429), `PROVIDER_TIMEOUT` (504), `PROVIDER_REQUEST_INVALID` (400),
+  `PROVIDER_UNAVAILABLE` (503), `PROVIDER_RESPONSE_INVALID` (502). Every existing Step 1 code/
+  status pair is unchanged.
+- **`apps/api/src/ai/providers/anthropic-client.provider.ts`** (new) — the `ANTHROPIC_CLIENT` DI
+  token, the narrow `AnthropicMessagesClient` interface (one method: `messages.create`), and
+  `anthropicClientProvider` (a Nest `useFactory` provider reading `Env` via the existing `ENV`
+  token). The factory always passes a concrete string to the SDK's `apiKey` option — never
+  `undefined` — specifically so a missing `ANTHROPIC_API_KEY` can never make the SDK constructor
+  behave unpredictably (env-var fallback / lazy credential-chain resolution); `hasCredential()`/
+  `isReady()` gate every real execution attempt long before this client is ever called.
+- **`apps/api/src/ai/providers/anthropic-error-mapper.ts`** (new) — `mapAnthropicError()`, the
+  only place in this module that references `@anthropic-ai/sdk`-specific error types. Maps every
+  SDK error (`AuthenticationError`/`PermissionDeniedError` → auth-failed;
+  `RateLimitError` → rate-limited; `BadRequestError`/`UnprocessableEntityError` → request-invalid;
+  `InternalServerError` and any other `APIError` status → unavailable;
+  `APIConnectionTimeoutError` → timeout; `APIConnectionError` → unavailable; anything
+  unrecognized → unavailable) to the new domain codes via the existing `aiDomainError()` builder.
+  Never includes the SDK error's own `message`, response body, or headers in the thrown message.
+- **`apps/api/src/ai/providers/anthropic.provider.ts`** (rewritten) — `AnthropicProvider` still
+  extends `StubProviderDescriptor` (unchanged `configStatus()`/`isReady()` derivation), but now
+  overrides `generateText` with a real implementation: credential check → model-registration
+  check → `client.messages.create({ model, max_tokens: 4096, messages: [...] })` → SDK errors
+  routed through `mapAnthropicError` → response text extracted from every `text` content block,
+  trimmed, and rejected as `PROVIDER_RESPONSE_INVALID` if empty. `capabilities` (both the
+  provider's own and each model's) trimmed to `["text-generation"]` only — Step 1 had claimed
+  `structured-output`/`vision`/`tool-calling` here with nothing backing those claims once real
+  execution exists. `generateStructured`/`embed` remain inherited, unchanged `NOT_IMPLEMENTED`.
+- **`apps/api/src/ai/ai.module.ts`** (edited, additive only) — `anthropicClientProvider` added to
+  `providers`; doc comment extended. Gemini/OpenAI provider registration and every export are
+  unchanged.
+- **`apps/api/package.json`** — added `@anthropic-ai/sdk@^0.112.4` (the only new dependency).
+- **`apps/api/src/ai/providers/stub-providers.spec.ts`** (edited) — Anthropic removed from the
+  shared "throws `NOT_IMPLEMENTED` from every execution method" `describe.each` (its contract
+  legitimately changed — its constructor now also requires an injected client, and `generateText`
+  no longer throws). Gemini/OpenAI coverage in this file is otherwise untouched.
+- **`apps/api/src/ai/providers/anthropic.provider.spec.ts`** (new) — dedicated unit tests against
+  a fake injected client: metadata/capability trimming, credential-never-leaked, `NOT_IMPLEMENTED`
+  still correct for `generateStructured`/`embed`, pre-execution validation (missing credential,
+  unregistered model, a real model id belonging to a different provider — each asserting the SDK
+  client is never called), success (including multi-block joining/trimming), empty/whitespace-only
+  response rejection, and one parameterized case per SDK error type mapping to its expected code.
+- **`apps/api/src/ai/providers/anthropic-error-mapper.spec.ts`** (new) — isolated coverage of
+  every mapping branch (including the generic-`APIError`-status catch-all via
+  `Anthropic.APIError.generate(404, ...)`) plus an explicit "never leaks the raw error body" test.
+
+### Architecture summary
+
+`AnthropicProvider` is the first `OmniProvider` adapter with a real vendor call, but the
+architecture Step 1 established is unchanged: it's still discovered only through
+`ProviderRegistryService`/`ModelCatalogService`, still seeded once by `AiProviderSeedService`,
+and still exposes nothing beyond the `OmniProvider` interface to `AiController`/
+`ModelSelectorService` — neither of those two files changed at all this step. The only new moving
+part is the `ANTHROPIC_CLIENT` DI token sitting between `AnthropicProvider` and the concrete SDK
+client, which is what makes "real in production, fake in tests" possible without any
+environment-detection branching inside the provider itself.
+
+### Security summary
+
+- `ANTHROPIC_API_KEY`'s value is read in exactly two places: `hasCredential()` (a boolean check)
+  and `anthropicClientProvider`'s factory (handed straight to the SDK constructor). It is never
+  logged, never included in any thrown error, and never returned from any public method — the
+  existing Step 1 "never leaks a credential" test pattern is extended in
+  `anthropic.provider.spec.ts` to cover the same guarantee for the now-real provider.
+- Every SDK-level failure (auth, rate limit, timeout, invalid request, upstream 5xx/overloaded,
+  connection failure) is normalized to a fixed, generic message per category — the raw SDK error
+  message, response body, and headers are never forwarded to a caller. Verified by dedicated
+  "never leaks the raw error body" tests in both new spec files.
+- Model-id validation is structural, not a format check: a `modelId` must be a member of
+  `AnthropicProvider`'s own static model list, which simultaneously rejects unregistered ids and
+  ids belonging to a different provider — there is no path from a caller-supplied string straight
+  to the SDK call.
+- No new public endpoint was added — `generateText` is not yet reachable from outside the `ai`
+  module; today it's only exercised by tests, exactly like Step 1 left `generateText` unreachable
+  via HTTP.
+
+### Explicitly deferred (per approved scope)
+
+- `generateStructured`/`embed` for Anthropic (real tool-use/embedding integration).
+- Gemini and OpenAI real integration — both remain Step 1 metadata-only stubs.
+- Streaming responses.
+- Restoring `structured-output`/`vision`/`tool-calling` on Anthropic's advertised capabilities —
+  tied to whichever future step actually implements each one.
+- Provider health tracking / circuit-breaking (explicitly ruled out for this step in the approved
+  adjustments above).
+- Any caching, cost tracking, or usage/billing metering.
+- Persisting provider/model catalog or health state to a database (still in-memory, unchanged
+  from Step 1).
+- A new public HTTP endpoint exposing `generateText` — deliberately not added this step.
+
+### Verification (actually run in-sandbox this session)
+
+This session's sandbox had npm registry egress (confirmed via `corepack prepare pnpm@9.12.0
+--activate` succeeding, then a standalone scratch-directory install of `@anthropic-ai/sdk` to
+confirm its real error-class hierarchy, response shapes, and constructor behavior *before* writing
+any implementation code against assumptions).
+
+```
+pnpm install         # succeeded — 824 packages added. @prisma/client's postinstall failed to
+                      # fetch its query-engine checksum from binaries.prisma.sh (403) — same
+                      # standing, unrelated limitation as every prior session; install still
+                      # completed and did not block anything below.
+pnpm typecheck        # 15/15 turbo tasks — succeeded (one real fixture-typing issue found and
+                      # fixed during this session: the fake injected Anthropic client needed an
+                      # explicit interface exposing jest's `mockResolvedValue`/`mockRejectedValue`
+                      # rather than `jest.Mocked<AnthropicMessagesClient>`, which didn't deep-map
+                      # the nested `messages.create` method as expected)
+pnpm lint             # 15/15 turbo tasks — succeeded, zero errors/warnings
+pnpm build            # 9/9 packages — succeeded, including @omniscience/api (`nest build`) and
+                      # @omniscience/web (`tsc --noEmit && vite build`)
+pnpm test             # 15/15 turbo tasks — succeeded after one real, self-authored test-fixture
+                      # bug was found and fixed (an incorrect expected string in the new
+                      # multi-text-block-joining test — the implementation was already correct;
+                      # the test's own expectation was wrong). @omniscience/api: 44/44 suites,
+                      # 357/357 tests (up from Step 1's 330/330 — +14 tests: the new
+                      # anthropic.provider.spec.ts and anthropic-error-mapper.spec.ts files, plus
+                      # env.test.ts's 4 new AI_REQUEST_TIMEOUT_MS/AI_MAX_RETRIES cases, net of
+                      # Anthropic's 1 removed case from the shared stub-providers.spec.ts
+                      # describe.each). @omniscience/web 105/105, @omniscience/ui 81/81,
+                      # @omniscience/config (incl. the 4 new env cases), @omniscience/schemas,
+                      # @omniscience/sdk, @omniscience/types, @omniscience/utils, and
+                      # @omniscience/prompts all unchanged and passing.
+```
+
+`apps/api`'s `prisma generate` was not re-run this session — this step adds no Prisma schema
+change, and the standing `binaries.prisma.sh` network-allowlist limitation (documented in every
+prior session) is unrelated to and does not block any of the above, all of which ran against the
+real, already-generated Prisma client types from this session's own `pnpm install`.
+
+### Known limitations
+
+- `AnthropicProvider`'s `max_tokens` (4096) is a fixed constant, not yet configurable per-request
+  or per-model — no requirement asked for that in this step; a natural addition once
+  `generateText` actually has a caller.
+- No health/circuit-breaking, by explicit instruction — `isReady()` can still say "ready" for a
+  provider whose credentials are valid but which is actively failing every real call (e.g. an
+  ongoing vendor outage); the model-selector has no way to route around that yet.
+- The two Anthropic model ids registered (`claude-sonnet-5`, `claude-haiku-4-5`) remain
+  hand-entered static metadata, same caveat Step 1 already logged — not fetched from any live
+  model-listing API.

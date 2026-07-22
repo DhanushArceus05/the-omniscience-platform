@@ -96,6 +96,19 @@ const baseEnvSchema = z.object({
   GEMINI_API_KEY: z.string().min(1).optional(),
   OPENAI_API_KEY: z.string().min(1).optional(),
   ANTHROPIC_API_KEY: z.string().min(1).optional(),
+
+  // ---- Phase 4 Step 2 — Anthropic real execution (timeout & retry) ----
+  // Passed directly into the official `@anthropic-ai/sdk` client's own
+  // `timeout`/`maxRetries` constructor options (see
+  // `apps/api/src/ai/providers/anthropic-client.provider.ts`). There is
+  // deliberately no custom retry/backoff loop anywhere in this codebase —
+  // the SDK's own retry behavior (which already knows which failures are
+  // safe to retry, e.g. 429/5xx/network errors, and which are not, e.g.
+  // 400/401) is the single source of truth. Both optional with
+  // production-reasonable defaults; independent of whether
+  // `ANTHROPIC_API_KEY` is set, so they never block API startup.
+  AI_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+  AI_MAX_RETRIES: z.coerce.number().int().min(0).default(2),
 });
 
 export const envSchema = baseEnvSchema.superRefine((env, ctx) => {

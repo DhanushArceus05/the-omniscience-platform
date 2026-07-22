@@ -61,7 +61,18 @@ export type AiDomainErrorCode =
   | "NO_COMPATIBLE_MODEL"
   | "PROVIDER_NOT_CONFIGURED"
   | "CAPABILITY_NOT_SUPPORTED"
-  | "NOT_IMPLEMENTED";
+  | "NOT_IMPLEMENTED"
+  // ---- Phase 4 Step 2 — real-execution error normalization ----
+  // Added for `AnthropicProvider.generateText` (the first real vendor
+  // call site in this module). Every vendor-specific error a real
+  // adapter can encounter collapses into exactly one of these — never
+  // a raw SDK exception, header, or response body reaches a caller.
+  | "PROVIDER_AUTH_FAILED"
+  | "PROVIDER_RATE_LIMITED"
+  | "PROVIDER_TIMEOUT"
+  | "PROVIDER_REQUEST_INVALID"
+  | "PROVIDER_UNAVAILABLE"
+  | "PROVIDER_RESPONSE_INVALID";
 
 /**
  * Builds the one `HttpException` every `ai` module error site should
@@ -78,6 +89,12 @@ const AI_DOMAIN_ERROR_STATUS: Readonly<Record<AiDomainErrorCode, HttpStatus>> = 
   PROVIDER_NOT_CONFIGURED: HttpStatus.UNPROCESSABLE_ENTITY,
   CAPABILITY_NOT_SUPPORTED: HttpStatus.UNPROCESSABLE_ENTITY,
   NOT_IMPLEMENTED: HttpStatus.NOT_IMPLEMENTED,
+  PROVIDER_AUTH_FAILED: HttpStatus.UNPROCESSABLE_ENTITY,
+  PROVIDER_RATE_LIMITED: HttpStatus.TOO_MANY_REQUESTS,
+  PROVIDER_TIMEOUT: HttpStatus.GATEWAY_TIMEOUT,
+  PROVIDER_REQUEST_INVALID: HttpStatus.BAD_REQUEST,
+  PROVIDER_UNAVAILABLE: HttpStatus.SERVICE_UNAVAILABLE,
+  PROVIDER_RESPONSE_INVALID: HttpStatus.BAD_GATEWAY,
 };
 
 export function aiDomainError(code: AiDomainErrorCode, message: string): HttpException {
