@@ -1,22 +1,22 @@
 import type { Env } from "@omniscience/config";
-import { GeminiProvider } from "./gemini.provider";
 import { OpenAiProvider } from "./openai.provider";
 
 function makeEnv(overrides: Partial<Env> = {}): Env {
   return { ...overrides } as unknown as Env;
 }
 
-// `AnthropicProvider` is no longer a pure metadata-only stub as of
-// Phase 4 Step 2 — its `generateText` makes a real (injected-client)
-// call and its constructor now also requires an `ANTHROPIC_CLIENT`,
-// so it no longer fits this shared "throws NOT_IMPLEMENTED from every
+// `AnthropicProvider` (Phase 4 Step 2) and `GeminiProvider` (Phase 4
+// Step 4) are no longer pure metadata-only stubs — each one's
+// `generateText` makes a real (injected-client) call and each
+// constructor now also requires its own vendor client token, so
+// neither fits this shared "throws NOT_IMPLEMENTED from every
 // execution method" contract or this suite's single-argument
 // `new Provider(env)` construction. See `anthropic.provider.spec.ts`
-// for its own, dedicated coverage — including the same
-// not-configured/not-ready and never-leaks-a-credential guarantees
-// this suite still checks for Gemini/OpenAI below.
+// and `gemini.provider.spec.ts` for their own, dedicated coverage —
+// including the same not-configured/not-ready and
+// never-leaks-a-credential guarantees this suite still checks for
+// OpenAI below.
 describe.each([
-  { Provider: GeminiProvider, envKey: "GEMINI_API_KEY", providerId: "gemini" },
   { Provider: OpenAiProvider, envKey: "OPENAI_API_KEY", providerId: "openai" },
 ] as const)("$providerId stub provider descriptor", ({ Provider, envKey, providerId }) => {
   it("reports not-configured / not-ready when its API key env var is unset", () => {

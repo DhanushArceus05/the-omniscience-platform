@@ -7,6 +7,7 @@ import { createLogger } from "@omniscience/utils";
 import request from "supertest";
 import { AppModule } from "../src/app.module";
 import { ANTHROPIC_CLIENT } from "../src/ai/providers/anthropic-client.provider";
+import { GEMINI_CLIENT } from "../src/ai/providers/gemini-client.provider";
 import { AllExceptionsFilter } from "../src/common/filters/all-exceptions.filter";
 import { ENV } from "../src/config/config.constants";
 import { MailService } from "../src/mail/mail.service";
@@ -19,23 +20,28 @@ import { FakePrismaService } from "./helpers/fake-prisma.service";
 import { FakeRedisService } from "./helpers/fake-redis.service";
 
 /**
- * Exercises the real HTTP surface of `POST /ai/generate` (Phase 4
- * Step 3) — the real `JwtAuthGuard`, the real (never-overridden)
- * `ThrottlerGuard`, the real `ZodValidationPipe`/`generateTextRequestSchema`,
- * and the real `AiService` → `ModelSelectorService` →
- * `ProviderRegistryService` → `AnthropicProvider.generateText()` chain.
+ * Exercises the real HTTP surface of `POST /ai/generate` — the real
+ * `JwtAuthGuard`, the real (never-overridden) `ThrottlerGuard`, the
+ * real `ZodValidationPipe`/`generateTextRequestSchema`, and the real
+ * `AiService` → `ModelSelectorService` → `ProviderRegistryService` →
+ * `OmniProvider.generateText()` chain — originally written for
+ * `AnthropicProvider` (Phase 4 Step 3) and extended with an equivalent
+ * `GeminiProvider` case in Phase 4 Step 4, proving the same HTTP-level
+ * path is genuinely vendor-neutral rather than incidentally only
+ * exercised against one adapter.
  *
  * No test in this file makes a live vendor network call: the
- * `ANTHROPIC_CLIENT` DI token is overridden with a fake object
- * implementing `AnthropicMessagesClient` (same technique
- * `anthropic.provider.spec.ts` uses at the unit level), so even the
- * "success" test never leaves the process.
+ * `ANTHROPIC_CLIENT`/`GEMINI_CLIENT` DI tokens are each overridden with
+ * a fake object implementing the corresponding narrow client interface
+ * (same technique `anthropic.provider.spec.ts`/`gemini.provider.spec.ts`
+ * use at the unit level), so even the "success" tests never leave the
+ * process.
  *
  * Each test gets its own fresh `INestApplication` — same reasoning as
  * `workspaces.e2e-spec.ts` — so per-route throttle counters never leak
  * between tests.
  */
-describe("POST /ai/generate (e2e, Phase 4 Step 3)", () => {
+describe("POST /ai/generate (e2e, Phase 4 Steps 3-4)", () => {
   const password = "Sup3r$ecretPassw0rd!";
 
   interface FakeAnthropicClient {
@@ -46,20 +52,32 @@ describe("POST /ai/generate (e2e, Phase 4 Step 3)", () => {
     return { messages: { create: jest.fn() } };
   }
 
+  interface FakeGeminiClient {
+    readonly models: { readonly generateContent: jest.Mock };
+  }
+
+  function makeFakeGeminiClient(): FakeGeminiClient {
+    return { models: { generateContent: jest.fn() } };
+  }
+
   /**
    * Builds a fresh app from the real `AppModule`, optionally with
-   * `ANTHROPIC_API_KEY` configured and the `ANTHROPIC_CLIENT` token
-   * overridden with a fake — everything else identical to
-   * `helpers/create-test-app.ts`'s `createTestApp()`.
+   * `ANTHROPIC_API_KEY`/`GEMINI_API_KEY` configured and the
+   * `ANTHROPIC_CLIENT`/`GEMINI_CLIENT` tokens overridden with fakes —
+   * everything else identical to `helpers/create-test-app.ts`'s
+   * `createTestApp()`.
    */
   async function buildApp(options: {
     anthropicApiKey?: string;
     anthropicClient?: FakeAnthropicClient;
+    geminiApiKey?: string;
+    geminiClient?: FakeGeminiClient;
   }): Promise<{ app: INestApplication; mail: FakeMailService }> {
     const mail = new FakeMailService();
     const env: Env = {
       ...testEnv,
       ANTHROPIC_API_KEY: options.anthropicApiKey,
+      GEMINI_API_KEY: options.geminiApiKey,
     } as Env;
 
     let builder = Test.createTestingModule({ imports: [AppModule] })
@@ -74,6 +92,9 @@ describe("POST /ai/generate (e2e, Phase 4 Step 3)", () => {
 
     if (options.anthropicClient) {
       builder = builder.overrideProvider(ANTHROPIC_CLIENT).useValue(options.anthropicClient);
+    }
+    if (options.geminiClient) {
+      builder = builder.overrideProvider(GEMINI_CLIENT).useValue(options.geminiClient);
     }
 
     const moduleFixture: TestingModule = await builder.compile();
@@ -231,6 +252,41 @@ describe("POST /ai/generate (e2e, Phase 4 Step 3)", () => {
     });
     expect(Object.keys(response.body.data).sort()).toEqual(["modelId", "providerId", "text"]);
     expect(fakeClient.messages.create).toHaveBeenCalledTimes(1);
+
+    await app.close();
+  });
+
+  it("generates text through Gemini when only Gemini is configured (Phase 4 Step 4)", async () => {
+    const fakeClient = makeFakeGeminiClient();
+    fakeClient.models.generateContent.mockResolvedValue({ text: "Hello from Gemini!" });
+
+    const { app, mail } = await buildApp({
+      geminiApiKey: "test-key",
+      geminiClient: fakeClient,
+    });
+    const accessToken = await registerVerifyAndLogin(
+      app,
+      mail,
+      "generate-gemini-success@example.com",
+      password,
+      "Generator",
+    );
+
+    const response = await request(app.getHttpServer())
+      .post("/ai/generate")
+      .set("Authorization", `Bearer ${accessToken}`)
+      .send({ prompt: "Say hello" })
+      .expect(200);
+
+    expect(response.body).toEqual({
+      success: true,
+      data: {
+        text: "Hello from Gemini!",
+        providerId: "gemini",
+        modelId: expect.any(String),
+      },
+    });
+    expect(fakeClient.models.generateContent).toHaveBeenCalledTimes(1);
 
     await app.close();
   });

@@ -7,6 +7,7 @@ import { ModelCatalogService } from "./model-catalog.service";
 import { ModelSelectorService } from "./model-selector.service";
 import { anthropicClientProvider } from "./providers/anthropic-client.provider";
 import { AnthropicProvider } from "./providers/anthropic.provider";
+import { geminiClientProvider } from "./providers/gemini-client.provider";
 import { GeminiProvider } from "./providers/gemini.provider";
 import { OpenAiProvider } from "./providers/openai.provider";
 import { ProviderRegistryService } from "./provider-registry.service";
@@ -36,11 +37,19 @@ import { ProviderRegistryService } from "./provider-registry.service";
  * unchanged.
  * Phase 4 Step 3: `AiService` is the thin, vendor-neutral orchestration
  * `AiController`'s new `POST /ai/generate` route depends on — it's the
- * only new file added to `providers` this step; `AiController`,
+ * only new file added to `providers` that step; `AiController`,
  * `ModelSelectorService`, `ProviderRegistryService`, and every provider
- * adapter registered below are unchanged. `AiService` is not exported:
+ * adapter registered below were unchanged. `AiService` is not exported:
  * it's reachable only through `AiController` within this module, same
  * as every concrete provider class already was.
+ * Phase 4 Step 4: `GeminiProvider` is now the second *real* adapter
+ * (`generateText` only — see that class's doc comment), following the
+ * exact same shape Step 2 established for Anthropic. It depends on
+ * `GEMINI_CLIENT`, provided here by `geminiClientProvider`
+ * (`providers/gemini-client.provider.ts`) via a `useFactory` reading the
+ * validated `Env`, so production resolves a real `@google/genai` client
+ * while tests can override the same token with a fake. OpenAI remains a
+ * Step 1 metadata-only stub, unchanged.
  */
 @Module({
   imports: [AuthModule],
@@ -49,6 +58,7 @@ import { ProviderRegistryService } from "./provider-registry.service";
     ProviderRegistryService,
     ModelCatalogService,
     ModelSelectorService,
+    geminiClientProvider,
     GeminiProvider,
     OpenAiProvider,
     anthropicClientProvider,

@@ -2874,7 +2874,12 @@ touched.
   `lint` / `typecheck` / `test` were all actually run in-sandbox this session — all green
   (357/357 tests in `@omniscience/api`) — see that section's Verification for full output.
 - **Phase 4 — OmniProvider & Model Manager, Step 3 (`POST /ai/generate`)**: implemented this
-  session — see the dedicated section at the end of this file. The first endpoint that actually
+  session — see the dedicated section at the end of this file.
+- **Phase 4 — OmniProvider & Model Manager, Step 4 (Google Gemini Real Execution)**: implemented
+  this session — see the dedicated section at the end of this file. Backend-only, per the approved
+  scope: `GeminiProvider` becomes the second real, execution-capable `OmniProvider` adapter
+  (`generateText` only), following the exact pattern Step 2 established for Anthropic. No frontend
+  file was touched. The first endpoint that actually
   executes a model: `AiController` → new `AiService` → `ModelSelectorService` →
   `ProviderRegistryService` → `OmniProvider.generateText()`. Adds a new, vendor-neutral
   `OmniProvider.supportsExecution(capability)` interface method (and a corresponding
@@ -3403,3 +3408,270 @@ prior session) is unrelated to and does not block any of the above.
   breaking, unchanged by this step).
 - No caching, request deduplication, or streaming — a plain, synchronous request/response round
   trip only, matching the approved scope.
+
+## Phase 4 — OmniProvider & Model Manager, Step 4 (Google Gemini Real Execution)
+
+Approved scope (backend only, no frontend/chat UI/streaming/RAG/agents/vision/speech/billing):
+integrate Google Gemini as the second real execution-capable `OmniProvider` — production-grade
+adapter, DI, registration, execution support, authentication/config, error normalization, unit
+tests, integration/e2e tests, docs. Follows the exact shape Phase 4 Step 2 established for
+`AnthropicProvider` — no new abstraction, no change to `ModelSelectorService`, `AiService`,
+`AiController`, or any frontend file.
+
+### What changed
+
+- **`apps/api/src/ai/providers/gemini-client.provider.ts`** (new) — the `GEMINI_CLIENT` DI token,
+  a narrow `GeminiModelsClient` interface (one method: `models.generateContent`), and a
+  `useFactory` Nest provider building a real `@google/genai` `GoogleGenAI` client from the
+  validated `Env`. Mirrors `anthropic-client.provider.ts` for the credential-handling shape:
+  `apiKey` always receives a concrete string (`env.GEMINI_API_KEY ?? "not-configured"`, never
+  `undefined`). **Superseded by "Post-verification fix #2" below**: this factory only ever
+  configures `httpOptions.timeout` (from `AI_REQUEST_TIMEOUT_MS`); it deliberately does not
+  configure `httpOptions.retryOptions`, and `AI_MAX_RETRIES` is intentionally not applied to
+  Gemini's client at all — see that section for the full root-cause trace of why. An external,
+  status-aware retry loop for Gemini remains a deferred item.
+- **`apps/api/src/ai/providers/gemini-error-mapper.ts`** (new) — `mapGeminiError()`, normalizing
+  every failure `GeminiProvider.generateText` can encounter into the module's existing
+  `AiDomainErrorCode`s. Unlike `@anthropic-ai/sdk` (a distinct exception subclass per HTTP status),
+  `@google/genai` raises a single `ApiError` class and exposes only a numeric `status` — so this
+  mapper branches on `status` (401/403 → `PROVIDER_AUTH_FAILED`, 429 → `PROVIDER_RATE_LIMITED`,
+  400 → `PROVIDER_REQUEST_INVALID`, ≥500 → `PROVIDER_UNAVAILABLE`, any other status →
+  `PROVIDER_UNAVAILABLE` as a catch-all) rather than on distinct classes. A request timeout
+  surfaces as a DOM `AbortError`/`TimeoutError` (no `ApiError`, since no HTTP response was ever
+  received) and is detected by `error.name` → `PROVIDER_TIMEOUT`. Never includes the SDK error's
+  own `message` (which can echo back request content) in the thrown message — same "no vendor
+  internal detail ever reaches a caller" guarantee Anthropic's mapper already established.
+- **`apps/api/src/ai/providers/gemini.provider.ts`** (rewritten from Step 1's metadata-only stub
+  into a real adapter) — `generateText` now makes a genuine `client.models.generateContent({
+  model, contents: prompt, config: { maxOutputTokens: 4096 } })` call; `generateStructured`/`embed`
+  remain inherited `NOT_IMPLEMENTED` throws from `StubProviderDescriptor`, so `capabilities` (and
+  each model's own `capabilities`) is trimmed to `["text-generation"]` only — vision/structured-
+  output/tool-calling/streaming, all advertised by Step 1's stub, are removed until a future step
+  actually implements one of them, exactly as Step 2 trimmed Anthropic's. `supportsExecution()` is
+  overridden to return `true` only for `"text-generation"`. The two registered models were changed
+  from Step 1's placeholder `gemini-1.5-flash`/`gemini-1.5-pro` (now vendor-discontinued — every
+  request to either returns a 404 as of this step) to `gemini-3.5-flash` (priority 10) and
+  `gemini-2.5-pro` (priority 20), both current, generally-available, callable models as of this
+  session — a real adapter must be registered against models that actually work.
+  `configStatus()`/`isReady()` are unchanged (still purely `GEMINI_API_KEY`-presence-based).
+- **`apps/api/src/ai/ai.module.ts`** (edited) — registers the new `geminiClientProvider` alongside
+  the unchanged `anthropicClientProvider`; `GeminiProvider` is otherwise wired exactly as it was in
+  Step 1 (still constructed by `AiProviderSeedService`, still exported nowhere outside this
+  module). No other provider, service, or controller in this module changed.
+- **`apps/api/src/ai/providers/stub-providers.spec.ts`** (edited) — `GeminiProvider` removed from
+  the shared "throws `NOT_IMPLEMENTED` from every execution method" suite, for the identical reason
+  `AnthropicProvider` was removed in Step 2: it no longer fits that contract or that suite's
+  single-argument `new Provider(env)` construction. Only `OpenAiProvider` remains in this suite.
+- **`apps/api/src/ai/providers/gemini.provider.spec.ts`** (new) — dedicated unit coverage mirroring
+  `anthropic.provider.spec.ts`: metadata/capability trimming, not-configured/not-ready and
+  never-leaks-a-credential guarantees, execution-eligibility (`supportsExecution`),
+  `NOT_IMPLEMENTED` for `generateStructured`/`embed`, pre-execution validation (missing credential,
+  unregistered model id, a foreign provider's model id — each verified to never call the client),
+  a success path asserting the exact SDK request shape, whitespace trimming, empty/undefined-text
+  handling, and the full SDK-error-normalization table.
+- **`apps/api/src/ai/providers/gemini-error-mapper.spec.ts`** (new) — dedicated unit coverage for
+  every `ApiError` status bucket, the two timeout-error-name cases, a generic network-level
+  `Error`, a completely unrecognized thrown value, and a check that the raw SDK message is never
+  present in the normalized response.
+- **`apps/api/test/ai-generate.e2e-spec.ts`** (edited) — added a `GEMINI_CLIENT` override path
+  alongside the existing `ANTHROPIC_CLIENT` one, and a new e2e case: "generates text through Gemini
+  when only Gemini is configured", exercising the real `JwtAuthGuard`/`ThrottlerGuard`/
+  `ZodValidationPipe`/`AiService`/`ModelSelectorService`/`ProviderRegistryService` chain end to end
+  against a fake `GEMINI_CLIENT`, proving the same HTTP surface is genuinely vendor-neutral rather
+  than incidentally only ever exercised against Anthropic. No existing test in this file changed
+  behavior: the Anthropic-only success test still configures no `GEMINI_API_KEY`, so Gemini stays
+  `not-configured`/ineligible and Anthropic is still selected, exactly as before.
+- **`apps/api/package.json`** (edited) — added the `@google/genai` dependency (the current, actively
+  maintained Google Gen AI SDK; the older `@google/generative-ai` package is deprecated and was
+  never added).
+- **`.env.example`** (edited) — documents that `GEMINI_API_KEY` now enables real execution (not
+  just `configStatus()`). **Superseded by "Post-verification fix #2" below**: `AI_MAX_RETRIES` is
+  documented as Anthropic-only; `AI_REQUEST_TIMEOUT_MS` remains shared by both real adapters.
+
+### Architecture summary
+
+`GeminiProvider` slots into the exact same `OmniProvider` interface every other adapter already
+implements — `ModelSelectorService`, `ProviderRegistryService`, `AiService`, and `AiController` are
+completely unchanged by this step, byte for byte. No vendor name, provider id, or model id is
+hardcoded anywhere in those four files; `AiService.generate()` still requests only
+`["text-generation"]` and lets `ModelSelectorService`'s existing capability/availability/readiness/
+execution-eligibility algorithm decide which provider actually runs. With both `ANTHROPIC_API_KEY`
+and `GEMINI_API_KEY` configured, a plain (no-preference) `POST /ai/generate` request may now be
+routed to either provider depending on the selector's existing priority/registration-order
+tiebreak — this is the intended, pre-existing, vendor-neutral behavior the algorithm already
+specified in Step 1, not a new decision made in this step.
+
+### Security considerations
+
+- `GEMINI_API_KEY` is read only from the validated `Env` (never `process.env` directly), passed
+  straight into the SDK constructor, and never logged, returned from any endpoint, or included in
+  any normalized error message — same guarantee `gemini.provider.spec.ts`'s
+  "never returns its own API key value from any public method" test enforces, matching
+  `anthropic.provider.spec.ts`'s equivalent test.
+- `mapGeminiError()` never surfaces the SDK's raw error `message` (which can echo back parts of
+  the request) — only a fixed, generic description per normalized category, exactly as
+  `mapAnthropicError()` already guarantees for Anthropic. No stack trace, response body, or header
+  ever reaches a caller.
+- The execution-eligibility guarantee (`supportsExecution()`, Step 3) already stopped a configured-
+  but-unimplemented Gemini stub from being routed to for real execution; this step is the adapter
+  Step 3's own comment anticipated ("Gemini/OpenAI before their own real adapters exist") — no
+  change to that guard was needed, it already worked correctly and continues to.
+- `POST /ai/generate`'s existing `JwtAuthGuard` + `@Throttle({ limit: 10, ttl: 600_000 })` apply
+  identically regardless of which provider ends up selected — the route has no provider-specific
+  branch of any kind.
+- No prompt is ever logged by `GeminiProvider` — same as `AnthropicProvider`.
+
+### Explicitly deferred (per approved scope)
+
+- A chat UI, streaming, conversation history, RAG, agents, vision, speech, and billing/usage
+  tracking — all out of scope per the approved scope for this step (identical to Step 3's deferred
+  list; Gemini's own `generateContentStream`/multimodal/tool-calling capabilities exist in the SDK
+  but are deliberately not wired up here).
+- `generateStructured`/`embed` for Gemini — still `NOT_IMPLEMENTED`, tied to whichever future step
+  actually implements either one (same standing note Step 2 left for Anthropic).
+- A configurable `max_tokens`/`maxOutputTokens` per-request generation parameter — fixed at 4096,
+  identical to Anthropic's own fixed `DEFAULT_MAX_TOKENS`.
+- Any caching, request deduplication, or health/circuit-breaking for Gemini specifically — these
+  remain cross-provider, dedicated future-step work, not something to bolt on per adapter.
+- OpenAI remains an unimplemented Step 1 metadata-only stub — not in scope for this step.
+
+### Verification (commands to run locally)
+
+This session's sandbox did not have npm registry egress for a full `pnpm install` against the
+newly-added `@google/genai` dependency (see Known limitations below) — the following must be run
+and confirmed locally before this step is committed, per the locked workflow:
+
+```
+pnpm install --frozen-lockfile
+pnpm typecheck
+pnpm lint
+pnpm build
+pnpm test
+```
+
+### Expected results
+
+- `pnpm typecheck` — 15/15 turbo tasks green; `GeminiModelsClient`/`GeminiGenerateContentParams`/
+  `GeminiGenerateContentResult` are structurally compatible with `@google/genai`'s own
+  `GoogleGenAI`/`GenerateContentResponse` types, mirroring how `AnthropicMessagesClient` already
+  relates to the `@anthropic-ai/sdk` client.
+- `pnpm lint` — 15/15 turbo tasks green; no new `any`, no unused imports.
+- `pnpm build` — 9/9 packages green, including `@omniscience/api` (`nest build`).
+- `pnpm test` — full monorepo green. `@omniscience/api` gains: `gemini.provider.spec.ts` (new,
+  ~16 cases), `gemini-error-mapper.spec.ts` (new, ~11 cases), one new e2e case in
+  `ai-generate.e2e-spec.ts`, and the `stub-providers.spec.ts` suite now runs only against
+  `OpenAiProvider` (its Gemini `describe.each` branch removed, not merely skipped). Every other
+  package (`@omniscience/web`, `@omniscience/ui`, `@omniscience/sdk`, `@omniscience/schemas`,
+  `@omniscience/config`, `@omniscience/types`, `@omniscience/utils`, `@omniscience/prompts`) is
+  untouched by this step and should show identical counts to Step 3's last recorded run.
+
+### Known limitations
+
+- **Could not run `pnpm install`/`build`/`lint`/`typecheck`/`test` in this sandbox this session** —
+  same standing network-egress constraint documented in several prior sessions (this environment's
+  network allowlist for the container this work was done in did not include full npm-registry
+  install access for the newly-added `@google/genai` package at the time of implementation).
+  Everything above reflects careful manual review against the real `@google/genai` package's own
+  published TypeScript type declarations (installed and inspected directly from the npm registry to
+  confirm `GoogleGenAI`'s constructor shape, `ApiError`'s fields, and `GenerateContentResponse.text`'s
+  exact undefined-safe behavior) — not a tool run. You must run the commands above locally and
+  report the result before this step is committed, per the locked workflow.
+- No health tracking or circuit-breaking for Gemini specifically — same standing limitation Step 2
+  logged for Anthropic, deferred to a future cross-provider step.
+- `gemini-3.5-flash`/`gemini-2.5-pro` are today's current, generally-available model ids as of this
+  session — like any vendor's model lineup, Google may rename or retire either in the future; this
+  step does not add any registry-refresh or model-discovery mechanism, matching Anthropic's own
+  static, hardcoded model list.
+
+### Post-verification fix: `mapGeminiError` no longer relies on `error instanceof ApiError`
+
+A real local run (`ANTHROPIC_API_KEY` unset, `GEMINI_API_KEY=not-configured`) surfaced a genuine
+gap: the invalid Gemini credential produced an error that did not satisfy
+`error instanceof ApiError`, so `mapGeminiError` fell through to the generic
+`PROVIDER_UNAVAILABLE` bucket instead of `PROVIDER_AUTH_FAILED`.
+
+- **`gemini-error-mapper.ts`** was rewritten to classify by *structural* (duck-typed) shape instead
+  of nominal class identity: `extractStatusInfo()` reads a numeric `status` directly off the thrown
+  value, and — if absent — off up to five levels of `.cause` (cycle-safe), regardless of which
+  concrete class produced it. This is strictly more robust than the `instanceof` check it replaces
+  and still covers the nominal case (a real `ApiError` has an own `status`, found on the first,
+  zero-`cause`-traversal check) — it also now tolerates the SDK's own retry layer rethrowing the
+  original error wrapped in a differently-named error exposing it via `.cause`, and a
+  monorepo-hoisting scenario where two structurally-identical classes end up as distinct runtime
+  identities.
+- A second, Gemini-specific gap was fixed alongside it: Google's backend does not reliably use
+  401/403 for an invalid API key — it commonly returns a **400** whose message reads "API key not
+  valid. Please pass a valid API key." A bare `status === 400` branch would have misclassified that
+  as `PROVIDER_REQUEST_INVALID` even after the `instanceof` fix. A 400 is now checked (internally
+  only, via `AUTH_FAILURE_MESSAGE_PATTERN`) against known auth-failure wording before falling back
+  to `PROVIDER_REQUEST_INVALID` — the message itself is still never included in the response either
+  way.
+- **`gemini-error-mapper.spec.ts`** gained a regression suite: a duck-typed error with a foreign
+  prototype, a plain object literal, a `PermanentError`-style `.cause`-wrapped `ApiError` (the
+  closest reconstruction of the real failure shape), two-level `.cause` unwrapping, a cyclic-`.cause`
+  safety check, and the 400-as-auth-failure quirk (both the plain-text and machine-readable
+  `API_KEY_INVALID` forms), plus confirmation an ordinary 400 with no auth wording still maps to
+  `PROVIDER_REQUEST_INVALID` and that the auth-detection message text is never leaked.
+- No other file changed — `gemini.provider.ts`, `gemini-client.provider.ts`, `ai.module.ts`, and
+  every other Step 4 file are untouched by this fix.
+
+### Post-verification fix #2: the real root cause was `gemini-client.provider.ts`'s `retryOptions`, not the mapper
+
+A second real local run (`ANTHROPIC_API_KEY` unset, `GEMINI_API_KEY=not-configured`) showed the
+*same* `PROVIDER_UNAVAILABLE` response even after the structural-detection fix above — proving that
+fix, while a genuine improvement, was not the actual root cause. Tracing the exact installed
+`@google/genai@2.13.0` bundle (`dist/node/index.cjs`) end to end (rather than reasoning from the
+public `.d.ts` types alone) found it: `ApiClient.apiCall()` only returns the raw HTTP `Response` —
+which its caller then checks via `throwErrorIfNotOK()`, the function that builds the real,
+informative `ApiError` carrying `.status` and the parsed JSON error body — when
+`httpOptions.retryOptions` is **absent**. As soon as `retryOptions` is configured (which the
+previous version of `gemini-client.provider.ts` did, to honor `AI_MAX_RETRIES`), `apiCall()` instead
+routes every request through the SDK's bundled `p-retry@4.6.2` dependency: a non-retryable status
+(e.g. 400 for a bad API key) throws `p-retry`'s own `AbortError`, which `p-retry`'s own source
+(`node_modules/p-retry/index.js`) immediately unwraps via `reject(error.originalError)` — and
+`originalError` is a **plain `new Error(message)`** with no `.status`, no `.cause`, and a message
+containing only the bare HTTP reason phrase (e.g. `"Non-retryable exception Bad Request sending
+request"`), never the actual response body. A retryable status that exhausts its retries similarly
+surfaces as a plain `Error('Retryable HTTP Error: ' + statusText)`. Either way, for *every* HTTP
+status — not just auth failures — the structured information the mapper needs is destroyed before
+the mapper ever sees it, no matter how thoroughly it inspects the error's own shape or `.cause`
+chain. (No live call to Google's API was made to observe this directly — this sandbox has no network
+egress to `generativelanguage.googleapis.com` — so this was confirmed by reading the exact shipped
+source of the installed `@google/genai@2.13.0` and `p-retry@4.6.2` packages, which is what actually
+executes at runtime, rather than by guessing from a reconstructed fixture.)
+
+- **`gemini-client.provider.ts`**: `httpOptions.retryOptions` removed entirely from the
+  `GoogleGenAI` client construction. `httpOptions.timeout` is unaffected and still reads
+  `AI_REQUEST_TIMEOUT_MS` (timeout is applied to the underlying `fetch` independently of the
+  `retryOptions` branch in `apiCall()`, confirmed from the same source trace). `AI_MAX_RETRIES`
+  remains defined in `Env` and still governs Anthropic's client unchanged; it is now intentionally
+  *not* applied to Gemini's, since doing so is fundamentally incompatible with this SDK version
+  ever surfacing a classifiable error. The trade-off (Gemini requests no longer get the SDK's own
+  automatic retry-on-429/5xx) is deliberate and documented in-line and as a deferred item below —
+  correct error classification is a hard requirement of this step; the SDK's internal retry
+  convenience is not.
+- **`gemini-error-mapper.ts`**: gained a second, defense-in-depth fallback,
+  `extractStatusFromRetryWrapperMessage()`, which recognizes the two *exact* lossy message templates
+  above and reverses `fetch`'s standard HTTP reason phrase back to a numeric status — confirmed
+  against the real `p-retry@4.6.2` source, not guessed. This only ever recovers a bare status (the
+  real response body is unrecoverable by the time `p-retry` unwraps its `AbortError`), so it cannot
+  feed the 400-as-auth-message heuristic — it exists purely so a future accidental reintroduction of
+  `retryOptions` degrades to a merely-generic status-based classification rather than silently
+  collapsing back to `PROVIDER_UNAVAILABLE` for everything. With `retryOptions` now removed, this
+  fallback is not on the primary path for any real request today.
+- **`gemini-error-mapper.spec.ts`**: gained a dedicated regression suite reproducing the exact
+  `p-retry`-shaped plain `Error` (no `.status`, no `.cause`) for both message templates, confirming
+  400→`PROVIDER_REQUEST_INVALID` (the auth-specific body text is unrecoverable in this shape, so this
+  is the correct, documented ceiling for this fallback — not a bug), 401-reason-phrase→
+  `PROVIDER_AUTH_FAILED`, 429/503-reason-phrase→`PROVIDER_RATE_LIMITED`/`PROVIDER_UNAVAILABLE`, a
+  non-matching message correctly falling through to the catch-all, and no reason-phrase text leaking
+  into the normalized response.
+- `gemini.provider.ts`, `ai.module.ts`, `gemini.provider.spec.ts`, and every other Step 4 file are
+  unchanged by this fix — the real, structured `ApiError` path this file's earlier tests already
+  cover (401/403/429/400/5xx, plus the 400-as-auth-message quirk) is now what genuinely executes in
+  production, since `retryOptions` no longer diverts requests through the lossy path.
+
+**New deferred item**: an external, response-status-aware retry loop for Gemini that doesn't depend
+on this SDK version's own (error-information-destroying) `retryOptions` implementation. Not
+implemented in this step — Gemini currently makes a single attempt per call, same as it would with
+`retryOptions` configured to `1` attempt.
