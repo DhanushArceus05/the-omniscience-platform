@@ -275,4 +275,55 @@ describe("mapGeminiError", () => {
       expect(JSON.stringify(response)).not.toContain("sending request");
     });
   });
+
+  // Phase 4 Step 5: the optional `logger` param exists purely so a
+  // future unrecognized error shape is visible in production logs
+  // immediately, rather than requiring another manual investigation
+  // like the one that produced this file's regression suite.
+  describe("optional logger (Phase 4 Step 5 production hardening)", () => {
+    it("warns exactly once, with a secret-free structural fingerprint, only when every classification attempt fails", () => {
+      const logger = { warn: jest.fn() };
+      const error = new Error("a completely unrecognized shape");
+
+      mapGeminiError(error, context, logger);
+
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerId: "gemini",
+          modelId: "gemini-3.5-flash",
+          errorName: "Error",
+        }),
+        expect.stringContaining("unrecognized error shape"),
+      );
+    });
+
+    it("never calls the logger when the error is successfully classified", () => {
+      const logger = { warn: jest.fn() };
+      mapGeminiError(new ApiError({ message: "x", status: 401 }), context, logger);
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
+    it("never calls the logger when classified as a timeout", () => {
+      const logger = { warn: jest.fn() };
+      const timeoutError = new Error("timed out");
+      timeoutError.name = "TimeoutError";
+      mapGeminiError(timeoutError, context, logger);
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
+    it("never includes the raw error message in the logged fingerprint", () => {
+      const logger = { warn: jest.fn() };
+      const secret = "leaked-internal-detail-should-never-appear";
+      mapGeminiError(new Error(secret), context, logger);
+      expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(secret);
+    });
+
+    it("works exactly as before when no logger is given (fully optional, no throw)", () => {
+      expect(() => mapGeminiError(new Error("unrecognized"), context)).not.toThrow();
+      expect(mapGeminiError(new Error("unrecognized"), context).getResponse()).toEqual(
+        expect.objectContaining({ code: "PROVIDER_UNAVAILABLE" }),
+      );
+    });
+  });
 });

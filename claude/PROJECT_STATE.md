@@ -282,6 +282,42 @@ typecheck`/`lint`/`build`/`test` were rerun after this fix, all green — see `c
 external, response-status-aware retry loop for Gemini, since the SDK's own retry mechanism is no
 longer used.
 
+**Phase 4 — OmniProvider & Model Manager, Step 5 (Production Hardening — final Phase 4 step):
+implemented this session, per your approved scope** (a complete production-hardening review of the
+AI provider layer — provider abstraction consistency, selection logic, config validation,
+health/status reporting, timeout behavior, error normalization, logging quality, maintainability,
+extensibility, technical-debt removal, remaining edge cases — small, justified improvements only,
+no breaking changes, no architecture redesign). Every file in `apps/api/src/ai/` was read end to
+end before any change; `packages/config/src/env.ts` and `packages/schemas/src/ai-provider.ts` were
+also reviewed and found already solid (no change needed). What changed: a new
+`provider-error-utils.ts` shares the structural error-detection logic
+(`extractStatusInfo`/`isTimeoutErrorByName`) Step 4's post-verification fixes added for Gemini,
+now also used by `anthropic-error-mapper.ts` as a defense-in-depth fallback after its existing
+`instanceof` chain (unchanged, still primary) — closing an inconsistency where only one of the two
+real adapters had this resilience. Both mappers gained an optional `logger` parameter that
+warn-logs a secret-free structural fingerprint (never the raw message) only when every
+classification attempt fails — exactly what would have surfaced Step 4's original incident
+immediately in production logs. `GeminiProvider`/`AnthropicProvider` both gained an optional,
+`@Optional()`-injected `LOGGER`, forwarded to their mapper calls, so every existing test
+constructing either class with just `(env, client)` is unaffected. `AiProviderSeedService` now
+logs an info-level provider-registration summary (ids + `configStatus()`, never a credential) at
+boot, and a warn if zero registered providers are both ready and genuinely execution-capable —
+directly useful in this session's environment (Anthropic present but out of credits; Gemini
+configured), verified to correctly warn only when *no* provider is usable. `AiService` now logs
+the selected provider/model at debug on success only (deliberately not on failure, since
+`AllExceptionsFilter` already logs every error centrally — avoiding double-logging). A small
+`ProviderRegistryService.tryGetById()` replaced a duplicated linear-scan lookup in
+`ModelSelectorService`. No public API contract, response shape, or existing classification
+behavior changed. New tests: `provider-error-utils.spec.ts`, `ai-provider-seed.service.spec.ts`,
+plus new `describe` blocks in five existing spec files. `pnpm install`/`typecheck`/`lint`/`build`/
+`test` were all actually run in-sandbox this session — all green, including a real typecheck catch
+(the logger param was initially typed as the full pino `Logger`, narrowed to `Pick<Logger, "warn">`
+to match actual usage and fix a test-fake incompatibility). `@omniscience/api`: 50 suites / 465
+tests (up from Step 4's 419). Full monorepo: 767 tests, all green. See `claude/CURRENT_PHASE.md`'s
+"Phase 4 Step 5" section for the full changed-file list, what was reviewed and deliberately left
+unchanged, security considerations, and deferred items. **This is Phase 4's final step — Phase 5
+has not been started.**
+
 ### Phase 2 step-by-step history (unchanged from when each step was implemented)
 
 - **Frontend auth integration (post-Step-8, pre-commit)**: `RegisterPage`/`VerifyOtpPage`/

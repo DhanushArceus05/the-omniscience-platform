@@ -2888,6 +2888,16 @@ touched.
   / `build` / `lint` / `typecheck` / `test` were all actually run in-sandbox this session — all
   green (378/378 tests in `@omniscience/api`; 726/726 across the full monorepo) — see that
   section's Verification for full output.
+- **Phase 4 — OmniProvider & Model Manager, Step 5 (Production Hardening — final Phase 4 step)**:
+  implemented this session — see the dedicated section at the end of this file. Backend-only,
+  additive-only production hardening across the AI provider layer: a shared structural
+  error-detection utility used by both real adapters' error mappers; the same defense-in-depth
+  fallback Gemini's mapper already had, now added to Anthropic's too; secret-free warn-level
+  diagnostic logging on any future unrecognized error shape; provider-registry-seeded and
+  successful-generation logging via the app's existing structured `pino` logger; and a small
+  registry lookup cleanup. No public API contract, response shape, or existing classification
+  behavior changed — every addition is opt-in/additive and covered by new tests alongside the full
+  existing suite. This is Phase 4's final step.
 
 ## Phase 4 — OmniProvider & Model Manager, Step 1 (Provider Foundation & Domain Architecture)
 
@@ -3675,3 +3685,206 @@ executes at runtime, rather than by guessing from a reconstructed fixture.)
 on this SDK version's own (error-information-destroying) `retryOptions` implementation. Not
 implemented in this step — Gemini currently makes a single attempt per call, same as it would with
 `retryOptions` configured to `1` attempt.
+
+## Phase 4 — OmniProvider & Model Manager, Step 5 (Production Hardening — final Phase 4 step)
+
+Approved scope: a complete production-hardening review of the entire AI provider layer built across
+Steps 1–4 — provider abstraction consistency, selection logic, configuration validation, health/
+status reporting, timeout behavior, error normalization, logging quality, maintainability,
+extensibility for future providers, technical-debt removal, and remaining edge cases. Explicitly
+no breaking API changes, no architecture redesign, no change to public contracts — small,
+justified improvements only. This is the final step of Phase 4.
+
+### Review method
+
+Every file in `apps/api/src/ai/` was read end to end before any change was made:
+`ai-provider.interface.ts`, `provider-registry.service.ts`, `model-catalog.service.ts`,
+`model-selector.service.ts`, `ai-provider-seed.service.ts`, `ai.service.ts`, `ai.controller.ts`,
+`ai.module.ts`, `stub-provider.base.ts`, `openai.provider.ts`, `anthropic.provider.ts`,
+`anthropic-client.provider.ts`, `anthropic-error-mapper.ts`, `gemini.provider.ts`,
+`gemini-client.provider.ts`, `gemini-error-mapper.ts` — plus `packages/config/src/env.ts` (already
+solid: every provider key is `.min(1).optional()`, timeout/retry are validated
+positive-int/non-negative-int with sane defaults; no change needed there) and
+`packages/schemas/src/ai-provider.ts` (prompt validation already rejects empty/whitespace-only
+input; no change needed there either). Findings that didn't justify a change are recorded below
+alongside the ones that did, so this review's reasoning is auditable later.
+
+### What changed
+
+- **`apps/api/src/ai/providers/provider-error-utils.ts`** (new) — `extractStatusInfo()` and
+  `isTimeoutErrorByName()`, extracted from Step 4's post-verification fixes to
+  `gemini-error-mapper.ts`, now shared by both real adapters' mappers. Also adds
+  `describeUnrecognizedError()`, a secret-free structural fingerprint (error name, constructor
+  name, whether a `.cause` is present — never `.message`) used by the new warn-logging below.
+  **Why**: Step 4's incident showed nominal `instanceof` checks against a third-party SDK's error
+  classes can silently fail (SDK retry/wrapper layers rethrowing via `.cause`; monorepo
+  dependency-hoisting producing a structurally-identical but nominally-distinct class). That risk
+  is generic to *any* vendor SDK, not specific to `@google/genai` — leaving the fix only in
+  Gemini's mapper while Anthropic's had no fallback at all was an inconsistency between the two
+  real adapters worth closing, and duplicating the same cause-chain-walking logic in two files
+  independently was exactly the kind of technical debt this step asked to remove.
+- **`apps/api/src/ai/providers/gemini-error-mapper.ts`** (refactored, no behavior change) — now
+  imports `extractStatusInfo`/`isTimeoutErrorByName` from the shared module instead of defining its
+  own copies. The Gemini-specific `p-retry`-message fallback and the 400-as-auth-message heuristic
+  stay local to this file (both are genuinely `@google/genai`-specific, not general-purpose).
+- **`apps/api/src/ai/providers/anthropic-error-mapper.ts`** (extended) — after every existing
+  `@anthropic-ai/sdk` `instanceof` check fails to match (unchanged, still the primary path and
+  still checked first), this mapper now also attempts the same structural
+  `extractStatusInfo()`/`isTimeoutErrorByName()` detection Gemini's mapper uses, before falling
+  back to the generic `PROVIDER_UNAVAILABLE` bucket. This changes nothing about any error shape
+  already covered by an `instanceof` check — it only adds coverage for a shape that matches none of
+  them.
+- **Both mappers** gained an optional third parameter, `logger?: Pick<Logger, "warn">` (pino's
+  `Logger` type, narrowed to only the one method actually used). When given, it's called exactly
+  once, only when every classification attempt has failed and the mapper is about to return the
+  generic "failed unexpectedly" fallback — with `describeUnrecognizedError()`'s fingerprint, never
+  the raw message. This is what would have surfaced Step 4's original `instanceof ApiError` gap
+  immediately in production logs instead of requiring a manual runtime investigation. Fully
+  optional and structurally typed so every existing call site and test continues to work
+  unchanged.
+- **`apps/api/src/ai/providers/gemini.provider.ts`** / **`anthropic.provider.ts`** — both gained an
+  optional, `@Optional() @Inject(LOGGER)`-injected third constructor parameter
+  (`logger?: Pick<Logger, "warn">`), forwarded unchanged to their respective mapper call.
+  `@Optional()` (rather than a required injection) specifically so every existing test that
+  constructs either class with just `(env, client)` keeps working unchanged — production DI always
+  supplies the real, globally-registered `LOGGER` token (from `ConfigModule`, `@Global()`, already
+  used elsewhere in this app — e.g. `AuthService`, `MailService`, `PrismaService`, `RedisService`);
+  no new logging infrastructure was introduced.
+- **`apps/api/src/ai/ai-provider-seed.service.ts`** — now injects the (required) `LOGGER` token.
+  On `onModuleInit()`, after registering every provider/model exactly as before, it logs an
+  `info`-level summary (every provider id and its `configStatus()` — never a credential value —
+  plus the total registered model count), and a `warn` if not a single registered provider is both
+  `isReady()` and genuinely execution-capable for at least one capability (via
+  `supportsExecution()`). **Why**: startup is the cheapest possible moment to catch "this
+  deployment has no usable AI provider configured at all" — the alternative is discovering it only
+  when the first real user request hits `NO_COMPATIBLE_MODEL`. Directly relevant to this session's
+  environment (`ANTHROPIC_API_KEY` present but out of credits, `GEMINI_API_KEY` configured): the
+  warn only fires when *zero* providers are usable, so a working Gemini keeps the deployment
+  silent/healthy at this log line even while Anthropic itself would fail every real call — exactly
+  the correct behavior, verified in `ai-provider-seed.service.spec.ts`.
+- **`apps/api/src/ai/ai.service.ts`** — now injects the (required) `LOGGER` token. Logs the
+  selected `providerId`/`modelId`/`matchedRule` at `debug`, once, only after a generation call
+  succeeds. Deliberately **no** logging on the error path: every thrown error already reaches
+  `AllExceptionsFilter`, which logs it centrally (HTTP status, normalized code, and stack) for
+  every route in the app, not just this one — adding a second log line here for the same failure
+  would only double-log it. This preserves `generate()`'s documented "adds no additional try/catch
+  of its own" invariant exactly: logging happens only after a successful result already exists,
+  with no new control flow wrapped around the calls that can throw.
+- **`apps/api/src/ai/provider-registry.service.ts`** — added `tryGetById(providerId)`, a
+  non-throwing counterpart to the existing `getById()`, returning `undefined` for an unregistered
+  id instead of throwing. **`apps/api/src/ai/model-selector.service.ts`** — `isEligible()` now
+  calls `this.registry.tryGetById(model.providerId)` instead of
+  `this.registry.list().find((candidate) => candidate.providerId === model.providerId)`, removing a
+  linear-scan duplicate of a lookup the registry's own internal `Map` already does in O(1).
+  Behavior is identical; this is a maintainability/clarity cleanup, not a functional change.
+- **Tests**: `provider-error-utils.spec.ts` (new — direct coverage of the shared utility),
+  `ai-provider-seed.service.spec.ts` (new — registration, the info-level summary, and both the
+  warn/no-warn branches of the execution-capable check, including the "ready but still a stub"
+  case), and new `describe` blocks added to `gemini-error-mapper.spec.ts`,
+  `anthropic-error-mapper.spec.ts` (including new structural-fallback regression coverage
+  mirroring Gemini's), `gemini.provider.spec.ts`, `anthropic.provider.spec.ts` (logger-forwarding),
+  `ai.service.spec.ts` (success-path logging, and explicit "never logs on the error path" coverage
+  for both a selector-thrown and a provider-thrown error), and `provider-registry.service.spec.ts`
+  (`tryGetById`). No existing test was weakened or deleted to make any of this pass.
+
+### What was reviewed and deliberately left unchanged
+
+- **`ai-provider.interface.ts`**: the `OmniProvider` contract, `AiDomainErrorCode` set, and
+  `aiDomainError()`/`notImplementedError()`/`hasCapability()` helpers are already exactly right for
+  what every adapter needs; no gap found.
+- **`model-catalog.service.ts`**: already correctly keyed by `(providerId, modelId)`, already
+  in-memory-by-design (re-derived from `listModels()` at boot, so it can never drift from what a
+  provider reports) — no change justified.
+- **`model-selector.service.ts`**'s selection algorithm itself (preferred-model →
+  preferred-provider → priority-fallback, with the capability/availability/readiness/execution-
+  eligibility gate at every rule) was not touched beyond the `tryGetById()` cleanup above — it
+  already correctly excludes a configured-but-unimplemented stub from real execution, which is the
+  property that matters most here.
+- **`ai.controller.ts`**: already returns only safe, non-secret metadata on every route; the
+  explicit, tighter `@Throttle` on `POST /ai/generate` (vs. the app-wide default on the two `GET`s)
+  is already the right shape given every call is vendor-billed. No change.
+- **`stub-provider.base.ts`** / **`openai.provider.ts`**: unchanged — OpenAI remains a Step 1
+  metadata-only stub; implementing it for real is out of this step's scope (production hardening of
+  what exists, not new provider work).
+- **`GET /ai/providers`'s response shape / `ProviderMetadata` type**: considered exposing a
+  computed "is this a real, execution-capable adapter or still a stub" field, since that's exactly
+  what the new startup-log warning now checks internally. Deliberately **not** added — it would be
+  a public response-shape change (`packages/types`, `packages/schemas`, and the frontend consumer
+  would all need updating), and the approved scope for this step is explicitly "no breaking API
+  changes" / "preserve current public API contracts". Recorded here as a candidate for a future,
+  explicitly-scoped step rather than folded in here.
+- **Anthropic's `maxRetries`/timeout wiring** (`anthropic-client.provider.ts`): unchanged — still
+  the SDK's own retry policy, still the only retry mechanism for that provider, still correctly
+  believed safe (its typed error hierarchy has never actually produced Step 4's failure mode in
+  this codebase). Gemini's own retry story remains the deferred item Step 4 already logged; this
+  step didn't attempt to solve it, since doing so safely (an external, response-status-aware retry
+  loop) is nontrivial enough to deserve its own explicitly-scoped step rather than being folded into
+  a hardening pass.
+
+### Architecture summary
+
+Nothing here changes what `AiController`, `ModelSelectorService`, `ProviderRegistryService`, or
+`ModelCatalogService` are for or how a caller reaches them — every change is either (a) a new,
+optional capability on an existing class (the logger parameters), (b) a shared implementation of
+logic that already existed in one place and is now correctly shared, or (c) an internal lookup
+cleanup with no observable behavior difference. The `OmniProvider` interface itself has not
+changed. Provider-neutral architecture is fully preserved: nothing added here branches on a vendor
+name outside the two real adapters' own mapper files, exactly as before.
+
+### Security considerations
+
+- Every new log line was designed around the same rule this module has followed since Step 1:
+  never a credential value, never a raw vendor error message/body/header. `configStatus()` only
+  ever reports `"configured"`/`"not-configured"`; `describeUnrecognizedError()` only ever reports
+  `name`/constructor name/`hasCause`. Verified explicitly by dedicated tests
+  (`"never includes the raw error message in the logged fingerprint"` in both mapper specs;
+  `describe("configured", ...)` framing in the seed-service spec).
+- No new attack surface: the `LOGGER` token is the same one already used by four other services in
+  this app; no new DI provider, no new dependency, no new network egress.
+
+### Deferred items (carried over or newly identified this step)
+
+- An external, response-status-aware retry loop for Gemini (carried over from Step 4).
+- `generateStructured`/`embed` for both real adapters; a real OpenAI adapter (carried over from
+  Steps 2–4).
+- A computed "execution-capable" field on `GET /ai/providers`'s response (identified this step;
+  deliberately not implemented — see above).
+- Health tracking/circuit-breaking for either real provider (carried over from Steps 2 and 4).
+
+### Verification (commands run locally in-sandbox this session)
+
+```
+pnpm install
+pnpm typecheck
+pnpm lint
+pnpm build
+pnpm test
+```
+
+### Results
+
+- `pnpm typecheck` — 15/15 turbo tasks green. (One real, caught-and-fixed issue during this
+  session: the provider constructors' logger parameter was initially typed as the full pino
+  `Logger`, which doesn't structurally match a test fake providing only `{ warn: jest.fn() }`;
+  narrowed to `Pick<Logger, "warn">` — the type that actually reflects what's used — which fixed it
+  correctly rather than papering over it with a cast.)
+- `pnpm lint` — 15/15 turbo tasks green.
+- `pnpm build` — 9/9 packages green.
+- `pnpm test` — 15/15 turbo tasks green, full monorepo:
+  - `@omniscience/api`: **50 suites / 465 tests** (up from Step 4's 419 — 46 new tests across
+    `provider-error-utils.spec.ts`, `ai-provider-seed.service.spec.ts`, and the new
+    `describe` blocks added to five existing spec files)
+  - `@omniscience/web`: 18 files / 105 tests
+  - `@omniscience/ui`: 16 files / 81 tests
+  - `@omniscience/schemas`: 86, `@omniscience/sdk`: 35, `@omniscience/config`: 27,
+    `@omniscience/types`: 5, `@omniscience/utils`: 5, `@omniscience/prompts`: 4
+  - **Total: 767 tests, all green.**
+- A real run of `ai.module.spec.ts` (which compiles the actual `AiModule` through Nest's real DI
+  container, with `LOGGER` overridden to a real `pino` instance) was inspected directly in this
+  session's test output and confirmed both new log lines fire correctly end to end: an `info`
+  "ai: provider registry seeded" line listing all three providers as `not-configured` (that test's
+  env has no provider keys set), immediately followed by the expected `warn`
+  "no registered provider is both configured and execution-capable" line — proving the DI wiring,
+  not just the unit-level logic in isolation.
+
+This is Phase 4's final step. Not continuing to Phase 5.

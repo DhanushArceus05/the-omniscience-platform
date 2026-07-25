@@ -36,6 +36,19 @@ export class ProviderRegistryService {
     return provider;
   }
 
+  /**
+   * Returns the provider for `providerId`, or `undefined` if none is
+   * registered — the non-throwing counterpart to `getById()`, for
+   * callers (like `ModelSelectorService`) that need to check
+   * eligibility for many candidates and treat "not registered" as a
+   * normal, expected outcome rather than an error. Added in Phase 4
+   * Step 5 to replace a `this.list().find(...)` linear scan that
+   * duplicated this same lookup, redundantly, at every call site.
+   */
+  tryGetById(providerId: ProviderId): OmniProvider | undefined {
+    return this.providers.get(providerId);
+  }
+
   /** All registered providers, in registration order. */
   list(): readonly OmniProvider[] {
     return Array.from(this.providers.values());

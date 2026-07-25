@@ -45,6 +45,21 @@ describe("ProviderRegistryService", () => {
     );
   });
 
+  // Phase 4 Step 5: non-throwing counterpart to getById(), added to
+  // replace a duplicated `list().find(...)` linear scan in
+  // ModelSelectorService.
+  describe("tryGetById", () => {
+    it("returns the registered provider for a known id", () => {
+      const provider = makeProvider();
+      registry.register(provider);
+      expect(registry.tryGetById("fake-provider")).toBe(provider);
+    });
+
+    it("returns undefined (never throws) for an unregistered id", () => {
+      expect(registry.tryGetById("missing")).toBeUndefined();
+    });
+  });
+
   it("lists every registered provider in registration order", () => {
     const first = makeProvider({ providerId: "first" });
     const second = makeProvider({ providerId: "second" });

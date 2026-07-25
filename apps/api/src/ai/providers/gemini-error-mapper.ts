@@ -1,6 +1,12 @@
 import type { HttpException } from "@nestjs/common";
+import type { Logger } from "pino";
 import type { ModelId, ProviderId } from "@omniscience/types";
 import { aiDomainError } from "../ai-provider.interface";
+import {
+  describeUnrecognizedError,
+  extractStatusInfo,
+  isTimeoutErrorByName,
+} from "./provider-error-utils";
 
 /**
  * Normalizes every failure `GeminiProvider.generateText` can encounter
@@ -18,30 +24,17 @@ import { aiDomainError } from "../ai-provider.interface";
  * local run surfaced credentials `GEMINI_API_KEY` couldn't authenticate
  * with, and the thrown value did *not* satisfy that `instanceof` check
  * — it fell all the way through to the generic `PROVIDER_UNAVAILABLE`
- * bucket instead of `PROVIDER_AUTH_FAILED`. Nominal `instanceof` checks
- * against a third-party SDK's exception class are fragile in exactly
- * this way for reasons entirely outside this codebase's control:
- * - The SDK's own retry/HTTP layer can rethrow the *original* error
- *   wrapped inside a different class (its own `PermanentError`/
- *   `TemporaryError`-style wrapper, exposing the original via `.cause`)
- *   once it decides a failure is non-retryable — the caller then sees
- *   the wrapper, not the thing that has the useful `status` on it.
- * - A monorepo's package manager can hoist/dedupe a dependency such
- *   that two structurally-identical classes end up as two distinct
- *   runtime identities — `instanceof` is a strict prototype-chain
- *   check, so this can silently fail even though every field the code
- *   actually cares about is present and correctly shaped.
- *
- * Neither failure mode changes what actually matters for
- * classification: *some* object in the error's own shape or its
- * `.cause` chain has a numeric HTTP-like `status`. So this mapper does
- * structural (duck-typed) detection instead — `extractStatusInfo()`
- * below reads `.status` directly off the thrown value, and if that's
- * absent, off up to a few levels of `.cause`, regardless of which
- * concrete class produced it. This is strictly more robust than the
- * nominal check it replaces and covers the nominal case too (a real
- * `ApiError` instance has an own `status` property, so it's found on
- * the very first, zero-`cause`-traversal check).
+ * bucket instead of `PROVIDER_AUTH_FAILED`. See
+ * `provider-error-utils.ts`'s doc comment for the full reasoning (now
+ * shared with `anthropic-error-mapper.ts`, which gained the same
+ * defense-in-depth in Phase 4 Step 5). This mapper does structural
+ * (duck-typed) detection instead — `extractStatusInfo()` reads
+ * `.status` directly off the thrown value, and if that's absent, off up
+ * to a few levels of `.cause`, regardless of which concrete class
+ * produced it. This is strictly more robust than the nominal check it
+ * replaces and covers the nominal case too (a real `ApiError` instance
+ * has an own `status` property, so it's found on the very first,
+ * zero-`cause`-traversal check).
  *
  * ## Defense-in-depth: the `p-retry`-wrapped shape, if it's ever seen again
  *
@@ -61,7 +54,11 @@ import { aiDomainError } from "../ai-provider.interface";
  * time `p-retry` unwraps its `AbortError`), so it cannot feed the
  * 400-as-auth-message heuristic below — it only restores a bare status
  * code, which is still enough to avoid the `PROVIDER_UNAVAILABLE`
- * catch-all for a 401/403/429/5xx.
+ * catch-all for a 401/403/429/5xx. This is Gemini-specific (the
+ * `p-retry` message wording is this SDK's, not a general concept), so it
+ * stays local to this file rather than living in the shared
+ * `provider-error-utils.ts` — passed in as `extractStatusInfo()`'s
+ * opt-in `fallbackFromMessage` hook.
  *
  * ## Why 400 alone isn't always `PROVIDER_REQUEST_INVALID`
  *
@@ -91,14 +88,28 @@ import { aiDomainError } from "../ai-provider.interface";
  * succeeds on the first attempt or this function classifies the first
  * failure it sees. An external, response-status-aware retry loop
  * remains a deferred item (see `claude/CURRENT_PHASE.md`).
+ *
+ * `logger`, if given (Phase 4 Step 5), is used for exactly one thing:
+ * a `warn`-level, secret-free structural fingerprint (never the raw
+ * message) when — and only when — every classification attempt above
+ * has failed and this function is about to fall back to the generic
+ * "failed unexpectedly" bucket. This is what would have surfaced the
+ * original `instanceof ApiError` gap immediately in production logs
+ * instead of requiring a manual runtime investigation to discover it.
+ * Optional (and a structural `Pick<Logger, "warn">` rather than the
+ * full `pino.Logger` type) so every existing call site and test that
+ * doesn't care about logging keeps working unchanged.
  */
 export function mapGeminiError(
   error: unknown,
   context: { readonly providerId: ProviderId; readonly modelId: ModelId },
+  logger?: Pick<Logger, "warn">,
 ): HttpException {
   const { providerId, modelId } = context;
 
-  const statusInfo = extractStatusInfo(error);
+  const statusInfo = extractStatusInfo(error, {
+    fallbackFromMessage: extractStatusFromRetryWrapperMessage,
+  });
   if (statusInfo !== undefined) {
     const { status, message } = statusInfo;
 
@@ -150,7 +161,7 @@ export function mapGeminiError(
     );
   }
 
-  if (isTimeoutError(error)) {
+  if (isTimeoutErrorByName(error)) {
     return aiDomainError(
       "PROVIDER_TIMEOUT",
       `Provider "${providerId}" timed out generating text for model "${modelId}".`,
@@ -160,7 +171,13 @@ export function mapGeminiError(
   // Not a recognized error shape at all — no numeric status anywhere
   // in the error or its `.cause` chain, and not a timeout (a network-
   // level failure, a bug, an unexpected throw, etc.). Still normalized,
-  // still no internal detail leaked.
+  // still no internal detail leaked — but worth a warn-level, secret-
+  // free structural fingerprint so this doesn't go unnoticed the way
+  // the original `instanceof ApiError` gap did.
+  logger?.warn(
+    { providerId, modelId, ...describeUnrecognizedError(error) },
+    "gemini: unrecognized error shape while generating text; falling back to PROVIDER_UNAVAILABLE",
+  );
   return aiDomainError(
     "PROVIDER_UNAVAILABLE",
     `Provider "${providerId}" failed unexpectedly while generating text for model "${modelId}".`,
@@ -179,63 +196,6 @@ export function mapGeminiError(
  */
 const AUTH_FAILURE_MESSAGE_PATTERN =
   /api[_ -]?key.{0,60}?(not valid|invalid)|invalid.{0,10}api[_ -]?key|api_key_invalid|unauthenticated/i;
-
-interface StatusInfo {
-  readonly status: number;
-  readonly message: string | undefined;
-}
-
-/**
- * Structurally (duck-typed) looks for a numeric HTTP-like `status` on
- * `error` itself, and — if absent — on up to a few levels of `.cause`.
- * Never assumes a particular class or prototype chain; only ever reads
- * plain own-property shape, so it works equally whether `error` is a
- * genuine `@google/genai` `ApiError`, an SDK-internal wrapper exposing
- * the real error via `.cause`, a structurally-equivalent instance from
- * a duplicated copy of the same package, or a hand-built test fixture
- * shaped like any of the above. See the "Why this does NOT use
- * `error instanceof ApiError`" section of this module's doc comment for
- * the reasoning.
- *
- * The traversal depth is capped (`MAX_CAUSE_DEPTH`) purely as a
- * defensive bound against a pathological/cyclic `.cause` chain — real
- * error-wrapping chains are one or two levels deep at most.
- */
-const MAX_CAUSE_DEPTH = 5;
-
-function extractStatusInfo(error: unknown, depth = 0): StatusInfo | undefined {
-  if (depth > MAX_CAUSE_DEPTH || error === null || typeof error !== "object") {
-    return undefined;
-  }
-
-  const candidate = error as { status?: unknown; message?: unknown; cause?: unknown };
-
-  if (typeof candidate.status === "number") {
-    return {
-      status: candidate.status,
-      message: typeof candidate.message === "string" ? candidate.message : undefined,
-    };
-  }
-
-  if ("cause" in candidate && candidate.cause !== undefined && candidate.cause !== error) {
-    return extractStatusInfo(candidate.cause, depth + 1);
-  }
-
-  // Last resort: no numeric `.status` anywhere in the shape or its
-  // `.cause` chain — see the "Defense-in-depth" section of this
-  // module's doc comment. Only attempted once we've exhausted the
-  // structural checks above, and only ever recovers a bare status code
-  // (never the real response body), so it can't feed the
-  // 400-as-auth-message heuristic.
-  if (typeof candidate.message === "string") {
-    const recovered = extractStatusFromRetryWrapperMessage(candidate.message);
-    if (recovered !== undefined) {
-      return { status: recovered, message: undefined };
-    }
-  }
-
-  return undefined;
-}
 
 /**
  * Matches the two exact message templates the `p-retry` package (a
@@ -275,18 +235,3 @@ const REASON_PHRASE_TO_STATUS: Readonly<Record<string, number>> = {
   "service unavailable": 503,
   "gateway timeout": 504,
 };
-
-/**
- * The SDK's own request timeout (`httpOptions.timeout`, wired via
- * `AbortSignal.timeout()` internally) surfaces as a standard DOM
- * `AbortError`/`TimeoutError`, not as anything with an HTTP `status` —
- * no response was ever received. Checked by `name` rather than
- * `instanceof DOMException` so this also matches an equivalent plain
- * `Error` in environments/mocks that don't throw a real `DOMException`,
- * and checked only *after* `extractStatusInfo()` finds nothing, so a
- * genuine HTTP-level error is never miscategorized as a timeout merely
- * because its `name` happens to collide.
- */
-function isTimeoutError(error: unknown): boolean {
-  return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
-}

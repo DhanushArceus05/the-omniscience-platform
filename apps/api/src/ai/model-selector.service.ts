@@ -99,7 +99,7 @@ export class ModelSelectorService {
     // A provider that isn't ready (e.g. missing credentials) can never
     // yield a usable model, regardless of what the model's own static
     // `availability` metadata says.
-    const provider = this.registry.list().find((candidate) => candidate.providerId === model.providerId);
+    const provider = this.registry.tryGetById(model.providerId);
     if (provider === undefined || !provider.isReady()) {
       return false;
     }

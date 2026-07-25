@@ -257,4 +257,50 @@ describe("AnthropicProvider", () => {
       );
     });
   });
+
+  // Phase 4 Step 5: the optional third constructor param is forwarded
+  // unchanged to mapAnthropicError() — see that function's own tests
+  // for the full behavior. This only proves the wiring between the two.
+  describe("optional logger forwarding (Phase 4 Step 5)", () => {
+    it("constructs and executes normally with no logger provided at all", async () => {
+      const client = makeClient();
+      client.messages.create.mockResolvedValue(textMessage("hi"));
+      const provider = new AnthropicProvider(makeEnv({ ANTHROPIC_API_KEY: "test-key" }), client);
+      await expect(provider.generateText("claude-sonnet-5", "hi")).resolves.toBe("hi");
+    });
+
+    it("forwards the injected logger to mapAnthropicError so an unrecognized error shape gets warn-logged", async () => {
+      const client = makeClient();
+      client.messages.create.mockRejectedValue(new Error("a totally unrecognized shape"));
+      const logger = { warn: jest.fn() };
+      const provider = new AnthropicProvider(
+        makeEnv({ ANTHROPIC_API_KEY: "test-key" }),
+        client,
+        logger,
+      );
+
+      await expect(provider.generateText("claude-sonnet-5", "hi")).rejects.toBeDefined();
+
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ providerId: "anthropic", modelId: "claude-sonnet-5" }),
+        expect.stringContaining("unrecognized error shape"),
+      );
+    });
+
+    it("never calls the logger when the request succeeds", async () => {
+      const client = makeClient();
+      client.messages.create.mockResolvedValue(textMessage("hi"));
+      const logger = { warn: jest.fn() };
+      const provider = new AnthropicProvider(
+        makeEnv({ ANTHROPIC_API_KEY: "test-key" }),
+        client,
+        logger,
+      );
+
+      await provider.generateText("claude-sonnet-5", "hi");
+
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+  });
 });

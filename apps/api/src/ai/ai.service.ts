@@ -1,5 +1,7 @@
-import { Injectable } from "@nestjs/common";
+import { Inject, Injectable } from "@nestjs/common";
+import type { Logger } from "pino";
 import type { GenerateTextResponse } from "@omniscience/types";
+import { LOGGER } from "../config/config.constants";
 import { ModelSelectorService } from "./model-selector.service";
 import { ProviderRegistryService } from "./provider-registry.service";
 
@@ -17,12 +19,24 @@ import { ProviderRegistryService } from "./provider-registry.service";
  * model, whether it's genuinely executable right now — is decided by
  * `ModelSelectorService`'s capability/availability/readiness/execution-
  * eligibility algorithm.
+ *
+ * Phase 4 Step 5 (production hardening): logs which provider/model was
+ * selected, at `debug`, only on success. Deliberately does *not* log on
+ * failure — every thrown error already reaches `AllExceptionsFilter`,
+ * which logs it centrally (status, normalized code, and stack) for
+ * every route in the app; adding a second log line here for the same
+ * failure would just double-log every error. This keeps this method's
+ * documented "adds no additional try/catch of its own" invariant
+ * completely intact — logging happens only after a successful result
+ * already exists, with no new control flow around the calls that can
+ * throw.
  */
 @Injectable()
 export class AiService {
   constructor(
     private readonly selector: ModelSelectorService,
     private readonly registry: ProviderRegistryService,
+    @Inject(LOGGER) private readonly logger: Logger,
   ) {}
 
   /**
@@ -34,9 +48,13 @@ export class AiService {
    * this method adds no additional try/catch of its own.
    */
   async generate(prompt: string): Promise<GenerateTextResponse> {
-    const { model } = this.selector.select({ requiredCapabilities: ["text-generation"] });
+    const { model, matchedRule } = this.selector.select({ requiredCapabilities: ["text-generation"] });
     const provider = this.registry.getById(model.providerId);
     const text = await provider.generateText(model.modelId, prompt);
+    this.logger.debug(
+      { providerId: model.providerId, modelId: model.modelId, matchedRule },
+      "ai: generated text",
+    );
     return { text, providerId: model.providerId, modelId: model.modelId };
   }
 }

@@ -1,7 +1,8 @@
-import { Inject, Injectable } from "@nestjs/common";
+import { Inject, Injectable, Optional } from "@nestjs/common";
 import type { Env } from "@omniscience/config";
 import type { ModelCapability, ModelId, ModelMetadata, ProviderCapability } from "@omniscience/types";
-import { ENV } from "../../config/config.constants";
+import type { Logger } from "pino";
+import { ENV, LOGGER } from "../../config/config.constants";
 import { aiDomainError } from "../ai-provider.interface";
 import { GEMINI_CLIENT, type GeminiModelsClient } from "./gemini-client.provider";
 import { mapGeminiError } from "./gemini-error-mapper";
@@ -48,6 +49,13 @@ const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
  * entries, which the vendor has since discontinued (the 1.5 series
  * returns a 404 for every request as of this step) — a real adapter
  * must be registered against models that are actually callable.
+ *
+ * `logger` (Phase 4 Step 5) is optional and only ever forwarded to
+ * `mapGeminiError()` for its warn-on-unrecognized-shape diagnostic — see
+ * that function's doc comment. Optional (via `@Optional()`) so every
+ * existing test that constructs this class with just `(env, client)`
+ * keeps working unchanged; production DI always supplies the real,
+ * globally-registered `LOGGER` token.
  */
 @Injectable()
 export class GeminiProvider extends StubProviderDescriptor {
@@ -85,6 +93,7 @@ export class GeminiProvider extends StubProviderDescriptor {
   constructor(
     @Inject(ENV) private readonly env: Env,
     @Inject(GEMINI_CLIENT) private readonly client: GeminiModelsClient,
+    @Optional() @Inject(LOGGER) private readonly logger?: Pick<Logger, "warn">,
   ) {
     super();
   }
@@ -146,7 +155,7 @@ export class GeminiProvider extends StubProviderDescriptor {
       // Retries already happened (or were correctly skipped) inside the
       // SDK client itself, per its own `retryOptions` configuration —
       // see `gemini-client.provider.ts`. This is the final outcome.
-      throw mapGeminiError(error, { providerId: this.providerId, modelId });
+      throw mapGeminiError(error, { providerId: this.providerId, modelId }, this.logger);
     }
 
     const text = response.text?.trim() ?? "";

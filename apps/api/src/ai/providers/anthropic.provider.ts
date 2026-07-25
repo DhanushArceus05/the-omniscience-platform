@@ -1,7 +1,8 @@
-import { Inject, Injectable } from "@nestjs/common";
+import { Inject, Injectable, Optional } from "@nestjs/common";
 import type { Env } from "@omniscience/config";
 import type { ModelCapability, ModelId, ModelMetadata, ProviderCapability } from "@omniscience/types";
-import { ENV } from "../../config/config.constants";
+import type { Logger } from "pino";
+import { ENV, LOGGER } from "../../config/config.constants";
 import { aiDomainError } from "../ai-provider.interface";
 import { ANTHROPIC_CLIENT, type AnthropicMessagesClient } from "./anthropic-client.provider";
 import { mapAnthropicError } from "./anthropic-error-mapper";
@@ -36,6 +37,13 @@ const DEFAULT_MAX_TOKENS = 4096;
  * configuration-based (`ANTHROPIC_API_KEY` present or not). No health
  * tracking or circuit-breaking was added in this step, by explicit
  * instruction; that remains a dedicated later Phase 4 step.
+ *
+ * `logger` (Phase 4 Step 5) is optional and only ever forwarded to
+ * `mapAnthropicError()` for its warn-on-unrecognized-shape diagnostic —
+ * see that function's doc comment. Optional (via `@Optional()`) so
+ * every existing test that constructs this class with just
+ * `(env, client)` keeps working unchanged; production DI always
+ * supplies the real, globally-registered `LOGGER` token.
  */
 @Injectable()
 export class AnthropicProvider extends StubProviderDescriptor {
@@ -75,6 +83,7 @@ export class AnthropicProvider extends StubProviderDescriptor {
   constructor(
     @Inject(ENV) private readonly env: Env,
     @Inject(ANTHROPIC_CLIENT) private readonly client: AnthropicMessagesClient,
+    @Optional() @Inject(LOGGER) private readonly logger?: Pick<Logger, "warn">,
   ) {
     super();
   }
@@ -141,7 +150,7 @@ export class AnthropicProvider extends StubProviderDescriptor {
       // Retries already happened (or were correctly skipped) inside the
       // SDK client itself, per its own `maxRetries` configuration — see
       // `anthropic-client.provider.ts`. This is the final outcome.
-      throw mapAnthropicError(error, { providerId: this.providerId, modelId });
+      throw mapAnthropicError(error, { providerId: this.providerId, modelId }, this.logger);
     }
 
     const text = response.content
