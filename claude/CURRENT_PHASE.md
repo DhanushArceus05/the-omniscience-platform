@@ -3888,3 +3888,41 @@ pnpm test
   not just the unit-level logic in isolation.
 
 This is Phase 4's final step. Not continuing to Phase 5.
+
+---
+
+# Future Reserved Phase
+
+## Arceus Activation Mode
+
+Status: **Locked (Future Implementation)**
+
+Arceus Activation Mode has been formally approved as the final flagship capability of The Omniscience Platform.
+
+Implementation is intentionally postponed until every planned platform phase has reached production quality.
+
+The feature will introduce:
+
+- Voice interaction
+- Wake phrase activation
+- Desktop companion
+- Mobile companion
+- Secure desktop automation
+- Cross-device conversations
+- Hybrid voice and text interaction
+
+The reserved wake phrase is:
+
+> **Activate Arceus**
+
+Implementation guidance, security architecture, engineering roadmap, and long-term vision are documented in:
+
+**`claude/ARCEUS_ACTIVATION_VISION.md`**
+
+No engineering work related to this feature should begin during the current active phase.
+
+Current development priority remains:
+
+> **Phase 5 — Core AI Platform Expansion**
+
+All future planning should continue following the original platform roadmap before Arceus Activation Mode is started.

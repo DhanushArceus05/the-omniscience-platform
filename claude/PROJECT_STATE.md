@@ -485,3 +485,129 @@ has not been started.**
 After Phase 0, always continue from the latest working repository. Never create an unrelated
 replacement project. Do not modify completed-phase architecture without an explicit instruction to
 do so.
+
+---
+
+# Future Locked Vision – Arceus Activation Mode
+
+## Status
+
+**Planning Complete**
+
+Implementation Status: **Not Started**
+
+This feature is permanently reserved as the final major engineering phase of **The Omniscience Platform**.
+
+It must not begin until all currently planned platform phases have been completed, reviewed, tested, documented, and stabilized.
+
+---
+
+## Overview
+
+Arceus Activation Mode represents the long-term evolution of The Omniscience Platform from an advanced AI application into a secure, user-authorized AI operating layer.
+
+The feature introduces optional voice-driven interaction while preserving the platform's existing text-first experience.
+
+This capability is inspired only by the interaction philosophy of cinematic AI assistants and does not attempt to reproduce copyrighted characters, branding, voices, or implementations.
+
+Arceus remains an original product identity.
+
+---
+
+## Reserved Wake Phrase
+
+The reserved activation phrase is:
+
+> **Activate Arceus**
+
+This wake phrase is permanently reserved for the future implementation.
+
+---
+
+## Dual Interaction Principle
+
+The Omniscience Platform will always support two complementary interaction styles.
+
+### Standard Platform Mode
+
+The existing experience remains unchanged.
+
+Users continue interacting through:
+
+- Keyboard
+- Mouse
+- Touch
+- Web UI
+- Desktop UI
+- Mobile UI
+
+Every capability developed throughout the earlier roadmap continues to function normally.
+
+---
+
+### Arceus Activation Mode
+
+Voice interaction becomes an additional capability.
+
+After the wake phrase:
+
+> **Activate Arceus**
+
+users may naturally interact through speech.
+
+The platform supports:
+
+- Voice-only interaction
+- Text-only interaction
+- Hybrid voice + text interaction
+
+Both interaction methods share the exact same conversation, memory, permissions, reasoning, and orchestration systems.
+
+There is only one Arceus intelligence layer.
+
+---
+
+## Architectural Direction
+
+The future implementation must reuse the mature platform architecture rather than introducing a separate AI system.
+
+This includes reuse of:
+
+- Authentication
+- Workspace isolation
+- Conversation engine
+- Memory
+- Provider abstraction
+- Model selection
+- Agent orchestration
+- Tool routing
+- Logging
+- Audit history
+- Observability
+- Error handling
+
+Voice is an interface layer, not a second assistant.
+
+---
+
+## Long-Term Goal
+
+When the entire Omniscience Platform roadmap has been completed, Arceus Activation Mode becomes the platform's flagship capability.
+
+Its objective is to provide secure, permission-based AI assistance across desktop, mobile, and cloud environments while maintaining transparency, user control, accessibility, and enterprise-grade security.
+
+Complete implementation details are maintained in:
+
+**`claude/ARCEUS_ACTIVATION_VISION.md`**
+
+This document is considered the authoritative long-term vision for the feature.
+
+---
+
+## Current Status
+
+- Phase 4: ✅ Complete
+- Phase 5: ⏳ Next Active Phase
+- Arceus Activation Mode: 🔒 Locked Future Phase (Not Started)
+
+No implementation work for Arceus Activation Mode should begin until the planned platform roadmap has reached its intended completion.
