@@ -59,3 +59,5 @@ export {
   generateTextRequestSchema,
 } from "./ai-provider";
 export type { CapabilitySchema, ListModelsQuerySchema, GenerateTextRequestSchema } from "./ai-provider";
+export { omniCoreExecuteRequestSchema } from "./omnicore";
+export type { OmniCoreExecuteRequestSchema } from "./omnicore";

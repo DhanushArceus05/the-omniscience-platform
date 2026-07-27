@@ -7,6 +7,7 @@ import { AvatarModule } from "./avatar/avatar.module";
 import { ConfigModule } from "./config/config.module";
 import { HealthModule } from "./health/health.module";
 import { MailModule } from "./mail/mail.module";
+import { OmniCoreModule } from "./omnicore/omnicore.module";
 import { PrismaModule } from "./prisma/prisma.module";
 import { RedisModule } from "./redis/redis.module";
 import { UsersModule } from "./users/users.module";
@@ -45,6 +46,13 @@ import { WorkspacesModule } from "./workspaces/workspaces.module";
  *     `GET /ai/models`, both behind `JwtAuthGuard`. Provider-neutral
  *     registry/catalog/selector foundation only; no real vendor API
  *     calls happen anywhere in this module.
+ * Phase 5 — OmniCore:
+ *   Step 1 (this step): `OmniCoreModule` added — `POST
+ *     /omnicore/execute`, behind `JwtAuthGuard`. Fast-rules intent
+ *     classification and single-step capability-plan execution only,
+ *     built on `AiModule`'s exported `ModelSelectorService`/
+ *     `ProviderRegistryService`; no new provider, model, or vendor API
+ *     call is added by this module.
  */
 @Module({
   imports: [
@@ -58,6 +66,7 @@ import { WorkspacesModule } from "./workspaces/workspaces.module";
     UsersModule,
     WorkspacesModule,
     AiModule,
+    OmniCoreModule,
     HealthModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

@@ -64,3 +64,11 @@ export type {
   GenerateTextRequest,
   GenerateTextResponse,
 } from "./ai-provider";
+export type {
+  OmniCoreIntent,
+  FastRuleMatch,
+  CapabilityPlanStep,
+  CapabilityPlan,
+  OmniCoreExecuteRequest,
+  OmniCoreExecuteResponse,
+} from "./omnicore";
