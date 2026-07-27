@@ -10,19 +10,23 @@ import { ZodValidationPipe } from "../common/pipes/zod-validation.pipe";
 import { OmniCoreService } from "./omnicore.service";
 
 /**
- * `POST /omnicore/execute` — Phase 5 Step 1's OmniCore entry point.
- * Same access/throttle shape as `POST /ai/generate`
+ * `POST /omnicore/execute` — OmniCore's entry point (Phase 5 Steps
+ * 1-2). Same access/throttle shape as `POST /ai/generate`
  * (`apps/api/src/ai/ai.controller.ts`): behind `JwtAuthGuard`, and a
  * tight explicit limit (10/10min) since every call is vendor-billed —
  * it ultimately makes a real, paid request to whichever provider
  * `OmniCoreService`'s classify → plan → select → execute pipeline
  * lands on.
  *
- * The response returns only safe, non-secret data — generated text
- * plus OmniCore's own routing/confidence metadata (`planId`, `intent`,
- * `matchedRuleId`, `confidence`, `providerId`, `modelId`) — never a raw
- * `CapabilityPlan`, the matched *selector* rule, or any other internal
- * detail beyond what `OmniCoreService.execute()` already returns.
+ * A `200` response returns only safe, non-secret data — generated
+ * text plus OmniCore's own routing/confidence metadata (`planId`,
+ * `intent`, `matchedRuleId`, `confidence`, `providerId`, `modelId`) —
+ * never a raw `CapabilityPlan`, the matched *selector* rule, or any
+ * other internal detail beyond what `OmniCoreService.execute()`
+ * already returns. A `422` response (Step 2) means the prompt was
+ * genuinely ambiguous between intents (`AMBIGUOUS_INTENT`, with the
+ * candidate `alternateIntents` in the body) rather than an error on
+ * the caller's part.
  */
 @Controller("omnicore")
 export class OmniCoreController {

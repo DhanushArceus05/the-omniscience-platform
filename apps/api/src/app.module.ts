@@ -47,12 +47,21 @@ import { WorkspacesModule } from "./workspaces/workspaces.module";
  *     registry/catalog/selector foundation only; no real vendor API
  *     calls happen anywhere in this module.
  * Phase 5 — OmniCore:
- *   Step 1 (this step): `OmniCoreModule` added — `POST
- *     /omnicore/execute`, behind `JwtAuthGuard`. Fast-rules intent
- *     classification and single-step capability-plan execution only,
- *     built on `AiModule`'s exported `ModelSelectorService`/
+ *   Step 1: `OmniCoreModule` added — `POST /omnicore/execute`, behind
+ *     `JwtAuthGuard`. Fast-rules intent classification and
+ *     single-step capability-plan execution only, built on
+ *     `AiModule`'s exported `ModelSelectorService`/
  *     `ProviderRegistryService`; no new provider, model, or vendor API
- *     call is added by this module.
+ *     call was added by this module.
+ *   Step 2 (this step): Intent intelligence — `FastRulesEngineService`
+ *     now scores a five-intent taxonomy (question-answering,
+ *     code-generation, summarization, creative-writing, and the
+ *     simple-generation fallback) and detects genuinely ambiguous
+ *     requests (`AMBIGUOUS_INTENT`, `422`) instead of guessing;
+ *     `CapabilityPlanBuilderService` selects each plan step's required
+ *     capability from a per-intent lookup table. No new module, import,
+ *     export, or endpoint — same `POST /omnicore/execute` route and
+ *     request/success-response shape as Step 1.
  */
 @Module({
   imports: [

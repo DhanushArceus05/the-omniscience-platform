@@ -7,7 +7,7 @@ import { OmniCoreController } from "./omnicore.controller";
 import { OmniCoreService } from "./omnicore.service";
 
 /**
- * OmniCore foundation module (Phase 5 Step 1).
+ * OmniCore module (Phase 5 Steps 1-2).
  *
  * Imports `AuthModule` to reuse its exported `JwtAuthGuard` — same
  * convention `AiModule`/`WorkspacesModule` already follow. Imports
@@ -16,6 +16,12 @@ import { OmniCoreService } from "./omnicore.service";
  * layer a second time — `AiModule` already seeds and owns the
  * registry/catalog via its own `AiProviderSeedService`; `OmniCoreModule`
  * never registers a provider or model of its own.
+ *
+ * Step 2 (intent intelligence: a richer `OmniCoreIntent` taxonomy,
+ * confidence-based ambiguity detection, and per-intent capability
+ * selection) is entirely internal to `FastRulesEngineService` and
+ * `CapabilityPlanBuilderService` — no new dependency, provider,
+ * import, or export was needed to add it.
  *
  * `FastRulesEngineService`/`CapabilityPlanBuilderService`/
  * `OmniCoreService` are internal to this module — nothing outside it

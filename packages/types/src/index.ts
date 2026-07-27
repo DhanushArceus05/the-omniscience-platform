@@ -66,6 +66,7 @@ export type {
 } from "./ai-provider";
 export type {
   OmniCoreIntent,
+  ResolvedOmniCoreIntent,
   FastRuleMatch,
   CapabilityPlanStep,
   CapabilityPlan,

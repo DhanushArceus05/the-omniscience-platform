@@ -121,6 +121,24 @@ describe("OmniCoreService", () => {
     expect(registry.getById).not.toHaveBeenCalled();
   });
 
+  it("propagates an AMBIGUOUS_INTENT error from the plan builder unchanged, without a special-cased branch", async () => {
+    fastRules.classify.mockReturnValue({
+      ruleId: "fast-rule.ambiguous",
+      intent: "ambiguous",
+      confidence: 0.55,
+      alternateIntents: ["code-generation", "summarization"],
+    });
+    const error = {
+      response: { code: "AMBIGUOUS_INTENT", alternateIntents: ["code-generation", "summarization"] },
+    };
+    planBuilder.build.mockImplementation(() => {
+      throw error;
+    });
+
+    await expect(service.execute("Summarize this code snippet")).rejects.toBe(error);
+    expect(selector.select).not.toHaveBeenCalled();
+  });
+
   it("propagates a provider execution error unchanged, without wrapping it", async () => {
     fastRules.classify.mockReturnValue(match);
     planBuilder.build.mockReturnValue(plan);

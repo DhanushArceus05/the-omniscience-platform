@@ -71,5 +71,14 @@ describe("OmniCoreController", () => {
 
       await expect(controller.execute({ prompt: "Say hello" })).rejects.toBe(error);
     });
+
+    it("propagates an AMBIGUOUS_INTENT error unchanged, including its alternateIntents detail", async () => {
+      const error = {
+        response: { code: "AMBIGUOUS_INTENT", alternateIntents: ["code-generation", "summarization"] },
+      };
+      omniCore.execute.mockRejectedValue(error);
+
+      await expect(controller.execute({ prompt: "Summarize this code snippet" })).rejects.toBe(error);
+    });
   });
 });

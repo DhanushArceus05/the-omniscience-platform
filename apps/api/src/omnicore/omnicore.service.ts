@@ -9,24 +9,34 @@ import { FastRulesEngineService } from "./fast-rules-engine.service";
 import { omniCoreDomainError } from "./omnicore.errors";
 
 /**
- * `OmniCoreService` — Phase 5 Step 1's orchestration entry point,
- * implementing the first slice of `docs/04_System_Architecture.md`'s
- * flow: `User → Assistant → OmniCore → capability plan →
- * OmniProvider/Model Manager → ...`. ("Assistant" here is the future
- * Phase 6 Omniscience Assistant conversation layer; `POST
- * /omnicore/execute`, the same shape as Phase 4's `POST /ai/generate`,
- * stands in for it as a diagnostic entry point until that phase
- * exists.)
+ * `OmniCoreService` — OmniCore's orchestration entry point (Phase 5
+ * Steps 1-2), implementing the first slice of
+ * `docs/04_System_Architecture.md`'s flow: `User → Assistant →
+ * OmniCore → capability plan → OmniProvider/Model Manager → ...`.
+ * ("Assistant" here is the future Phase 6 Omniscience Assistant
+ * conversation layer; `POST /omnicore/execute`, the same shape as
+ * Phase 4's `POST /ai/generate`, stands in for it as a diagnostic
+ * entry point until that phase exists.)
  *
  * `execute()`:
  *   1. Classifies the prompt via `FastRulesEngineService` ("fast
- *      rules").
+ *      rules" / Step 2's intent intelligence) — this can now return
+ *      any of five concrete intents, or the synthetic `"ambiguous"`
+ *      intent when classification is genuinely uncertain.
  *   2. Compiles the match into a `CapabilityPlan` via
  *      `CapabilityPlanBuilderService` ("capability plan").
  *   3. Executes the plan's one step by requesting a model selection
  *      from `ModelSelectorService` (never a vendor name — the
  *      Provider Rule) and invoking the resulting `OmniProvider`
  *      directly ("OmniProvider/Model Manager").
+ *
+ * Notably, this method contains no `"ambiguous"`-specific branch of
+ * its own: `CapabilityPlanBuilderService.build()` is the single place
+ * that refuses to plan for an ambiguous match, throwing
+ * `AMBIGUOUS_INTENT`. That error propagates out of step 2 exactly
+ * like every other domain error already documented below — this
+ * method still adds no additional try/catch of its own, for
+ * ambiguity or anything else.
  *
  * Deliberately depends on `ModelSelectorService`/`ProviderRegistryService`
  * directly rather than on `AiService` (`apps/api/src/ai/ai.service.ts`):
@@ -38,14 +48,15 @@ import { omniCoreDomainError } from "./omnicore.errors";
  * OmniCore is the intended long-term caller of that seam, not a
  * second, parallel copy of `AiService.generate()`'s three-line body.
  *
- * "Validation, confidence and fallback" (the rest of
- * `docs/06_AI_Architecture.md`'s OmniCore line) is only partially
- * present in Step 1: `confidence` is reported (from the fast-rules
- * match, not yet from output validation), but there is no output
+ * "Validation and fallback" (the rest of `docs/06_AI_Architecture.md`'s
+ * OmniCore line) remain future work: there is still no output
  * validator/reviewer and no fallback across models/providers on
- * failure yet — every error from the selector, registry, or provider
+ * failure — every error from the selector, registry, or provider
  * propagates unchanged, exactly like `AiService.generate()` today.
- * Real validation and fallback are Phase 5 Step 4/5 work.
+ * "Confidence" is real as of Step 2 (the fast-rules match's score,
+ * used to detect ambiguity), but it is not yet used to validate or
+ * second-guess a successful generation's *output*. Real output
+ * validation and fallback are Phase 5 Step 4/5 work.
  */
 @Injectable()
 export class OmniCoreService {
@@ -59,12 +70,13 @@ export class OmniCoreService {
 
   /**
    * Classifies, plans, and executes `prompt` end to end. Every failure
-   * mode — an unrecognized intent, no compatible model, a provider
-   * whose credentials disappeared between selection and execution, a
-   * mapped vendor error — propagates unchanged as the same normalized
-   * domain error the underlying service/provider already threw; this
-   * method adds no additional try/catch of its own (same invariant
-   * `AiService.generate()` documents).
+   * mode — an unrecognized intent, an ambiguous one (`AMBIGUOUS_INTENT`,
+   * thrown by `CapabilityPlanBuilderService.build()`), no compatible
+   * model, a provider whose credentials disappeared between selection
+   * and execution, a mapped vendor error — propagates unchanged as the
+   * same normalized domain error the underlying service/provider
+   * already threw; this method adds no additional try/catch of its
+   * own (same invariant `AiService.generate()` documents).
    */
   async execute(prompt: string): Promise<OmniCoreExecuteResponse> {
     const match = this.fastRules.classify(prompt);
