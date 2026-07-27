@@ -1,8 +1,31 @@
 import { Test, TestingModule } from "@nestjs/testing";
-import type { OmniCoreExecuteResponse } from "@omniscience/types";
+import type { OmniCoreExecuteResponse, TaskPlan } from "@omniscience/types";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { OmniCoreController } from "./omnicore.controller";
 import { OmniCoreService } from "./omnicore.service";
+
+const taskPlan: TaskPlan = {
+  taskPlanId: "task-plan-1",
+  sourceCapabilityPlanId: "plan-1",
+  intent: "simple-generation",
+  steps: [
+    {
+      stepId: "step-1",
+      title: "Generate a response",
+      description: "Generate a response for the given prompt using the text-generation capability.",
+      objective: "Produce a direct response to the user's prompt.",
+      capabilities: ["text-generation"],
+      inputRequirements: "Say hello",
+      expectedOutput: "Generated text responding to the prompt.",
+      dependsOn: [],
+      executionMode: "sequential",
+      complexity: "low",
+      failurePolicy: { mode: "abort" },
+    },
+  ],
+  stages: [{ stageId: "stage-1", mode: "sequential", stepIds: ["step-1"] }],
+  complexity: "low",
+};
 
 describe("OmniCoreController", () => {
   let controller: OmniCoreController;
@@ -31,6 +54,7 @@ describe("OmniCoreController", () => {
         text: "Hello, world!",
         providerId: "anthropic",
         modelId: "claude-sonnet-5",
+        taskPlan,
       };
       omniCore.execute.mockResolvedValue(response);
 
@@ -49,6 +73,7 @@ describe("OmniCoreController", () => {
         text: "Hello, world!",
         providerId: "anthropic",
         modelId: "claude-sonnet-5",
+        taskPlan,
       };
       omniCore.execute.mockResolvedValue(response);
 
@@ -62,6 +87,7 @@ describe("OmniCoreController", () => {
         "text",
         "providerId",
         "modelId",
+        "taskPlan",
       ]);
     });
 

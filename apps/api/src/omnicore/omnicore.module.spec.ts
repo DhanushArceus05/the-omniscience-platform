@@ -18,6 +18,7 @@ import { RedisService } from "../redis/redis.service";
 import { OmniCoreController } from "./omnicore.controller";
 import { OmniCoreModule } from "./omnicore.module";
 import { OmniCoreService } from "./omnicore.service";
+import { TaskPlannerService } from "./task-planner.service";
 
 const testEnv = {
   OTP_TTL_SECONDS: 600,
@@ -72,6 +73,7 @@ describe("OmniCoreModule", () => {
     expect(module.get(JwtAuthGuard)).toBeInstanceOf(JwtAuthGuard);
     expect(module.get(OmniCoreController)).toBeInstanceOf(OmniCoreController);
     expect(module.get(OmniCoreService)).toBeInstanceOf(OmniCoreService);
+    expect(module.get(TaskPlannerService)).toBeInstanceOf(TaskPlannerService);
 
     // OmniCoreModule must not re-register any provider of its own —
     // the registry it resolves is the exact same singleton AiModule's

@@ -29,6 +29,7 @@
  */
 
 import type { ModelId, ModelCapability, ProviderId } from "./ai-provider";
+import type { TaskPlan } from "./omnicore-plan";
 
 /**
  * The intent taxonomy OmniCore classifies a request into (Phase 5
@@ -138,4 +139,15 @@ export interface OmniCoreExecuteResponse {
   readonly text: string;
   readonly providerId: ProviderId;
   readonly modelId: ModelId;
+  /**
+   * `taskPlan` (Phase 5 Step 3) is a purely additive field: every field
+   * above is exactly what Step 1/2 already returned, unchanged in
+   * name, type, or meaning, so an existing caller reading only those
+   * fields keeps working without modification. It carries the richer,
+   * dependency-aware `TaskPlan` `TaskPlannerService` built from the
+   * same `CapabilityPlan` this response's `planId`/`intent` already
+   * describe — see `TaskPlan`'s doc comment (`omnicore-plan.ts`) for
+   * what it adds beyond that capability plan.
+   */
+  readonly taskPlan: TaskPlan;
 }

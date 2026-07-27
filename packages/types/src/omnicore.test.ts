@@ -72,6 +72,34 @@ describe("omnicore type shapes", () => {
       text: "Here is the summary.",
       providerId: "anthropic",
       modelId: "claude-sonnet-5",
+      taskPlan: {
+        taskPlanId: "33333333-3333-3333-3333-333333333333",
+        sourceCapabilityPlanId: "11111111-1111-1111-1111-111111111111",
+        intent: "summarization",
+        steps: [
+          {
+            stepId: "22222222-2222-2222-2222-222222222222",
+            title: "Summarize the input",
+            description: "Produce a concise summary of the provided text.",
+            objective: "Summarize the provided text.",
+            capabilities: ["text-generation"],
+            inputRequirements: "Here is the summary.",
+            expectedOutput: "A concise summary of the input text.",
+            dependsOn: [],
+            executionMode: "sequential",
+            complexity: "low",
+            failurePolicy: { mode: "abort" },
+          },
+        ],
+        stages: [
+          {
+            stageId: "44444444-4444-4444-4444-444444444444",
+            mode: "sequential",
+            stepIds: ["22222222-2222-2222-2222-222222222222"],
+          },
+        ],
+        complexity: "low",
+      },
     };
     expect(response.intent).toBe("summarization");
   });

@@ -7,6 +7,7 @@ import { LOGGER } from "../config/config.constants";
 import { CapabilityPlanBuilderService } from "./capability-plan-builder.service";
 import { FastRulesEngineService } from "./fast-rules-engine.service";
 import { omniCoreDomainError } from "./omnicore.errors";
+import { TaskPlannerService } from "./task-planner.service";
 
 /**
  * `OmniCoreService` — OmniCore's orchestration entry point (Phase 5
@@ -57,12 +58,25 @@ import { omniCoreDomainError } from "./omnicore.errors";
  * used to detect ambiguity), but it is not yet used to validate or
  * second-guess a successful generation's *output*. Real output
  * validation and fallback are Phase 5 Step 4/5 work.
+ *
+ * Step 3 adds one more stage between "capability plan" and
+ * "OmniProvider/Model Manager": `TaskPlannerService.plan()` compiles
+ * the same `CapabilityPlan` into a richer, dependency-validated
+ * `TaskPlan`, attached to the response as `taskPlan` (see
+ * `OmniCoreExecuteResponse`). It is built before model selection so a
+ * planning failure never costs a real provider call, but nothing else
+ * about `execute()`'s control flow changes: a `TaskPlan` is not yet
+ * used to decide *how* to execute — that remains this method's own
+ * single-step `selector.select()` → `provider.generateText()` call,
+ * unchanged from Step 1/2. Actually executing a `TaskPlan`'s own
+ * stages is Phase 5 Step 4 work.
  */
 @Injectable()
 export class OmniCoreService {
   constructor(
     private readonly fastRules: FastRulesEngineService,
     private readonly planBuilder: CapabilityPlanBuilderService,
+    private readonly taskPlanner: TaskPlannerService,
     private readonly selector: ModelSelectorService,
     private readonly registry: ProviderRegistryService,
     @Inject(LOGGER) private readonly logger: Logger,
@@ -95,6 +109,11 @@ export class OmniCoreService {
       );
     }
 
+    // Built before model selection so a planning failure (Phase 5
+    // Step 3's domain errors — see `omnicore.errors.ts`) is surfaced
+    // without ever making a real, vendor-billed provider call.
+    const taskPlan = this.taskPlanner.plan(plan);
+
     const { model, matchedRule } = this.selector.select({ requiredCapabilities: [step.capability] });
     const provider = this.registry.getById(model.providerId);
     const text = await provider.generateText(model.modelId, step.input);
@@ -120,6 +139,7 @@ export class OmniCoreService {
       text,
       providerId: model.providerId,
       modelId: model.modelId,
+      taskPlan,
     };
   }
 }

@@ -1,14 +1,22 @@
 import type { Logger } from "pino";
-import type { CapabilityPlan, FastRuleMatch, ModelMetadata, ModelSelectionResult } from "@omniscience/types";
+import type {
+  CapabilityPlan,
+  FastRuleMatch,
+  ModelMetadata,
+  ModelSelectionResult,
+  TaskPlan,
+} from "@omniscience/types";
 import { ModelSelectorService } from "../ai/model-selector.service";
 import { ProviderRegistryService } from "../ai/provider-registry.service";
 import { CapabilityPlanBuilderService } from "./capability-plan-builder.service";
 import { FastRulesEngineService } from "./fast-rules-engine.service";
 import { OmniCoreService } from "./omnicore.service";
+import { TaskPlannerService } from "./task-planner.service";
 
 describe("OmniCoreService", () => {
   const fastRules = { classify: jest.fn() };
   const planBuilder = { build: jest.fn() };
+  const taskPlanner = { plan: jest.fn() };
   const selector = { select: jest.fn() };
   const registry = { getById: jest.fn() };
   const logger = { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() };
@@ -26,6 +34,29 @@ describe("OmniCoreService", () => {
     steps: [{ stepId: "step-1", capability: "text-generation", input: "hi there" }],
   };
 
+  const taskPlan: TaskPlan = {
+    taskPlanId: "task-plan-1",
+    sourceCapabilityPlanId: "plan-1",
+    intent: "simple-generation",
+    steps: [
+      {
+        stepId: "step-1",
+        title: "Generate a response",
+        description: "Generate a response for the given prompt using the text-generation capability.",
+        objective: "Produce a direct response to the user's prompt.",
+        capabilities: ["text-generation"],
+        inputRequirements: "hi there",
+        expectedOutput: "Generated text responding to the prompt.",
+        dependsOn: [],
+        executionMode: "sequential",
+        complexity: "low",
+        failurePolicy: { mode: "abort" },
+      },
+    ],
+    stages: [{ stageId: "stage-1", mode: "sequential", stepIds: ["step-1"] }],
+    complexity: "low",
+  };
+
   const model: ModelMetadata = {
     providerId: "anthropic",
     modelId: "claude-sonnet-5",
@@ -40,6 +71,7 @@ describe("OmniCoreService", () => {
     service = new OmniCoreService(
       fastRules as unknown as FastRulesEngineService,
       planBuilder as unknown as CapabilityPlanBuilderService,
+      taskPlanner as unknown as TaskPlannerService,
       selector as unknown as ModelSelectorService,
       registry as unknown as ProviderRegistryService,
       logger as unknown as Logger,
@@ -49,6 +81,7 @@ describe("OmniCoreService", () => {
   function mockHappyPath(): { generateText: jest.Mock } {
     fastRules.classify.mockReturnValue(match);
     planBuilder.build.mockReturnValue(plan);
+    taskPlanner.plan.mockReturnValue(taskPlan);
     const selection: ModelSelectionResult = { model, matchedRule: "priority-fallback" };
     selector.select.mockReturnValue(selection);
     const generateText = jest.fn().mockResolvedValue("Hello!");
@@ -63,6 +96,17 @@ describe("OmniCoreService", () => {
 
     expect(fastRules.classify).toHaveBeenCalledWith("hi there");
     expect(planBuilder.build).toHaveBeenCalledWith("hi there", match);
+  });
+
+  it("builds a task plan from the capability plan before selecting a model", async () => {
+    mockHappyPath();
+
+    await service.execute("hi there");
+
+    expect(taskPlanner.plan).toHaveBeenCalledWith(plan);
+    const taskPlannerCallOrder = taskPlanner.plan.mock.invocationCallOrder[0];
+    const selectorCallOrder = selector.select.mock.invocationCallOrder[0];
+    expect(taskPlannerCallOrder).toBeLessThan(selectorCallOrder as number);
   });
 
   it("requests a model selection using the plan step's capability", async () => {
@@ -82,7 +126,7 @@ describe("OmniCoreService", () => {
     expect(generateText).toHaveBeenCalledWith("claude-sonnet-5", "hi there");
   });
 
-  it("returns the plan id, intent, matched fast-rule id, confidence, text, providerId, and modelId — nothing else", async () => {
+  it("returns the plan id, intent, matched fast-rule id, confidence, text, providerId, modelId, and taskPlan — nothing else", async () => {
     mockHappyPath();
 
     const result = await service.execute("hi there");
@@ -95,6 +139,7 @@ describe("OmniCoreService", () => {
       text: "Hello!",
       providerId: "anthropic",
       modelId: "claude-sonnet-5",
+      taskPlan,
     });
   });
 
@@ -106,12 +151,14 @@ describe("OmniCoreService", () => {
 
     await expect(service.execute("   ")).rejects.toBe(error);
     expect(planBuilder.build).not.toHaveBeenCalled();
+    expect(taskPlanner.plan).not.toHaveBeenCalled();
     expect(selector.select).not.toHaveBeenCalled();
   });
 
   it("propagates a NO_COMPATIBLE_MODEL error from the selector unchanged", async () => {
     fastRules.classify.mockReturnValue(match);
     planBuilder.build.mockReturnValue(plan);
+    taskPlanner.plan.mockReturnValue(taskPlan);
     const error = { response: { code: "NO_COMPATIBLE_MODEL" } };
     selector.select.mockImplementation(() => {
       throw error;
@@ -136,12 +183,26 @@ describe("OmniCoreService", () => {
     });
 
     await expect(service.execute("Summarize this code snippet")).rejects.toBe(error);
+    expect(taskPlanner.plan).not.toHaveBeenCalled();
+    expect(selector.select).not.toHaveBeenCalled();
+  });
+
+  it("propagates a task-planning domain error from the task planner unchanged, without wrapping it", async () => {
+    fastRules.classify.mockReturnValue(match);
+    planBuilder.build.mockReturnValue(plan);
+    const error = { response: { code: "CIRCULAR_DEPENDENCY" } };
+    taskPlanner.plan.mockImplementation(() => {
+      throw error;
+    });
+
+    await expect(service.execute("hi there")).rejects.toBe(error);
     expect(selector.select).not.toHaveBeenCalled();
   });
 
   it("propagates a provider execution error unchanged, without wrapping it", async () => {
     fastRules.classify.mockReturnValue(match);
     planBuilder.build.mockReturnValue(plan);
+    taskPlanner.plan.mockReturnValue(taskPlan);
     const selection: ModelSelectionResult = { model, matchedRule: "priority-fallback" };
     selector.select.mockReturnValue(selection);
     const providerError = { response: { code: "PROVIDER_RATE_LIMITED" } };
@@ -159,6 +220,7 @@ describe("OmniCoreService", () => {
     await expect(service.execute("hi there")).rejects.toEqual(
       expect.objectContaining({ response: expect.objectContaining({ code: "INTENT_NOT_RECOGNIZED" }) }),
     );
+    expect(taskPlanner.plan).not.toHaveBeenCalled();
     expect(selector.select).not.toHaveBeenCalled();
   });
 
@@ -172,6 +234,7 @@ describe("OmniCoreService", () => {
     await expect(service.execute("hi there")).rejects.toEqual(
       expect.objectContaining({ response: expect.objectContaining({ code: "INTENT_NOT_RECOGNIZED" }) }),
     );
+    expect(taskPlanner.plan).not.toHaveBeenCalled();
     expect(selector.select).not.toHaveBeenCalled();
   });
 
@@ -209,6 +272,7 @@ describe("OmniCoreService", () => {
     it("never logs anything when the provider's generateText rejects", async () => {
       fastRules.classify.mockReturnValue(match);
       planBuilder.build.mockReturnValue(plan);
+      taskPlanner.plan.mockReturnValue(taskPlan);
       const selection: ModelSelectionResult = { model, matchedRule: "priority-fallback" };
       selector.select.mockReturnValue(selection);
       registry.getById.mockReturnValue({

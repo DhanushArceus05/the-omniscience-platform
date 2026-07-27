@@ -73,3 +73,11 @@ export type {
   OmniCoreExecuteRequest,
   OmniCoreExecuteResponse,
 } from "./omnicore";
+export type {
+  TaskComplexity,
+  StepExecutionMode,
+  StepFailurePolicy,
+  TaskPlanStep,
+  ExecutionStage,
+  TaskPlan,
+} from "./omnicore-plan";
