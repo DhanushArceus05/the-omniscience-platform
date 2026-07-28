@@ -15,6 +15,7 @@ import { PrismaModule } from "../prisma/prisma.module";
 import { PrismaService } from "../prisma/prisma.service";
 import { RedisModule } from "../redis/redis.module";
 import { RedisService } from "../redis/redis.service";
+import { ExecutionOrchestratorService } from "./execution-orchestrator.service";
 import { OmniCoreController } from "./omnicore.controller";
 import { OmniCoreModule } from "./omnicore.module";
 import { OmniCoreService } from "./omnicore.service";
@@ -74,6 +75,7 @@ describe("OmniCoreModule", () => {
     expect(module.get(OmniCoreController)).toBeInstanceOf(OmniCoreController);
     expect(module.get(OmniCoreService)).toBeInstanceOf(OmniCoreService);
     expect(module.get(TaskPlannerService)).toBeInstanceOf(TaskPlannerService);
+    expect(module.get(ExecutionOrchestratorService)).toBeInstanceOf(ExecutionOrchestratorService);
 
     // OmniCoreModule must not re-register any provider of its own —
     // the registry it resolves is the exact same singleton AiModule's

@@ -100,6 +100,34 @@ describe("omnicore type shapes", () => {
         ],
         complexity: "low",
       },
+      execution: {
+        taskPlanId: "33333333-3333-3333-3333-333333333333",
+        status: "completed",
+        stageResults: [
+          {
+            stageId: "44444444-4444-4444-4444-444444444444",
+            status: "completed",
+            stepResults: [
+              {
+                stepId: "22222222-2222-2222-2222-222222222222",
+                status: "completed",
+                output: "Here is the summary.",
+                providerId: "anthropic",
+                modelId: "claude-sonnet-5",
+                startedAt: "2026-07-27T00:00:00.000Z",
+                completedAt: "2026-07-27T00:00:01.000Z",
+                durationMs: 1000,
+              },
+            ],
+            startedAt: "2026-07-27T00:00:00.000Z",
+            completedAt: "2026-07-27T00:00:01.000Z",
+            durationMs: 1000,
+          },
+        ],
+        startedAt: "2026-07-27T00:00:00.000Z",
+        completedAt: "2026-07-27T00:00:01.000Z",
+        durationMs: 1000,
+      },
     };
     expect(response.intent).toBe("summarization");
   });

@@ -1,75 +1,61 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { Logger } from "pino";
 import type { OmniCoreExecuteResponse } from "@omniscience/types";
-import { ModelSelectorService } from "../ai/model-selector.service";
-import { ProviderRegistryService } from "../ai/provider-registry.service";
 import { LOGGER } from "../config/config.constants";
 import { CapabilityPlanBuilderService } from "./capability-plan-builder.service";
+import { ExecutionOrchestratorService } from "./execution-orchestrator.service";
 import { FastRulesEngineService } from "./fast-rules-engine.service";
 import { omniCoreDomainError } from "./omnicore.errors";
 import { TaskPlannerService } from "./task-planner.service";
 
 /**
  * `OmniCoreService` — OmniCore's orchestration entry point (Phase 5
- * Steps 1-2), implementing the first slice of
- * `docs/04_System_Architecture.md`'s flow: `User → Assistant →
- * OmniCore → capability plan → OmniProvider/Model Manager → ...`.
- * ("Assistant" here is the future Phase 6 Omniscience Assistant
- * conversation layer; `POST /omnicore/execute`, the same shape as
- * Phase 4's `POST /ai/generate`, stands in for it as a diagnostic
- * entry point until that phase exists.)
+ * Steps 1-4), implementing the flow `docs/04_System_Architecture.md`
+ * describes: `User → Assistant → OmniCore → capability plan →
+ * OmniProvider/Model Manager → specialized modules → validator/
+ * reviewer → response composer`. (\"Assistant\" here is the future
+ * Phase 6 Omniscience Assistant conversation layer; `POST
+ * /omnicore/execute`, the same shape as Phase 4's `POST /ai/generate`,
+ * stands in for it as a diagnostic entry point until that phase
+ * exists.)
  *
- * `execute()`:
- *   1. Classifies the prompt via `FastRulesEngineService` ("fast
- *      rules" / Step 2's intent intelligence) — this can now return
- *      any of five concrete intents, or the synthetic `"ambiguous"`
- *      intent when classification is genuinely uncertain.
- *   2. Compiles the match into a `CapabilityPlan` via
- *      `CapabilityPlanBuilderService` ("capability plan").
- *   3. Executes the plan's one step by requesting a model selection
- *      from `ModelSelectorService` (never a vendor name — the
- *      Provider Rule) and invoking the resulting `OmniProvider`
- *      directly ("OmniProvider/Model Manager").
+ * `execute()`'s full pipeline, as of Step 4:
+ *   1. **Intent intelligence** — `FastRulesEngineService.classify()`
+ *      (Step 2) resolves the prompt to one of five concrete intents,
+ *      or the synthetic `\"ambiguous\"` intent when genuinely
+ *      uncertain.
+ *   2. **Capability plan** — `CapabilityPlanBuilderService.build()`
+ *      compiles the match into a `CapabilityPlan`, refusing to do so
+ *      for `\"ambiguous\"` (`AMBIGUOUS_INTENT`).
+ *   3. **Task plan** — `TaskPlannerService.plan()` (Step 3) enriches
+ *      that `CapabilityPlan` into a validated, dependency-ordered,
+ *      execution-ready `TaskPlan`, attached to the response as
+ *      `taskPlan`.
+ *   4. **Orchestration** — `ExecutionOrchestratorService.execute()`
+ *      (Step 4) actually runs the `TaskPlan`'s stages/steps through
+ *      `StepExecutorService`, producing a `PlanExecutionResult`,
+ *      attached to the response as `execution`.
  *
- * Notably, this method contains no `"ambiguous"`-specific branch of
- * its own: `CapabilityPlanBuilderService.build()` is the single place
- * that refuses to plan for an ambiguous match, throwing
- * `AMBIGUOUS_INTENT`. That error propagates out of step 2 exactly
- * like every other domain error already documented below — this
- * method still adds no additional try/catch of its own, for
- * ambiguity or anything else.
+ * This method still contains no `\"ambiguous\"`-specific branch, and no
+ * additional try/catch of its own for anything else either: every
+ * failure mode from any of the four stages above — an unrecognized or
+ * ambiguous intent, an invalid task plan, no compatible model, an
+ * unsupported capability, a dependency failure, a timeout, a
+ * cancellation, a mapped provider error — propagates unchanged as the
+ * same normalized domain error the underlying service already threw.
+ * `execute()`'s job is composing those four stages in order, not
+ * catching what they throw.
  *
- * Deliberately depends on `ModelSelectorService`/`ProviderRegistryService`
- * directly rather than on `AiService` (`apps/api/src/ai/ai.service.ts`):
- * `AiService` is `AiModule`'s own internal implementation detail for
- * `POST /ai/generate` and is not exported, while `ModelSelectorService`/
- * `ProviderRegistryService` are exported from `AiModule` specifically
- * so a consumer like this one "can request a model selection without
- * re-implementing the algorithm" (see `ai.module.ts`'s doc comment).
- * OmniCore is the intended long-term caller of that seam, not a
- * second, parallel copy of `AiService.generate()`'s three-line body.
- *
- * "Validation and fallback" (the rest of `docs/06_AI_Architecture.md`'s
- * OmniCore line) remain future work: there is still no output
- * validator/reviewer and no fallback across models/providers on
- * failure — every error from the selector, registry, or provider
- * propagates unchanged, exactly like `AiService.generate()` today.
- * "Confidence" is real as of Step 2 (the fast-rules match's score,
- * used to detect ambiguity), but it is not yet used to validate or
- * second-guess a successful generation's *output*. Real output
- * validation and fallback are Phase 5 Step 4/5 work.
- *
- * Step 3 adds one more stage between "capability plan" and
- * "OmniProvider/Model Manager": `TaskPlannerService.plan()` compiles
- * the same `CapabilityPlan` into a richer, dependency-validated
- * `TaskPlan`, attached to the response as `taskPlan` (see
- * `OmniCoreExecuteResponse`). It is built before model selection so a
- * planning failure never costs a real provider call, but nothing else
- * about `execute()`'s control flow changes: a `TaskPlan` is not yet
- * used to decide *how* to execute — that remains this method's own
- * single-step `selector.select()` → `provider.generateText()` call,
- * unchanged from Step 1/2. Actually executing a `TaskPlan`'s own
- * stages is Phase 5 Step 4 work.
+ * The single-step guard below and the resulting `text`/`providerId`/
+ * `modelId` fields are unchanged in *meaning* from Step 1-3: every
+ * `CapabilityPlan` OmniCore can build today still has exactly one
+ * step, so `execution.stageResults` is always exactly one stage of
+ * exactly one step, and those three fields are read from that one
+ * step's `StepExecutionResult` — the same value a direct
+ * `selector.select()` → `provider.generateText()` call would have
+ * produced, now produced via the orchestrator instead so a real
+ * multi-step `TaskPlan` (a future phase) needs no change to this
+ * method at all.
  */
 @Injectable()
 export class OmniCoreService {
@@ -77,20 +63,16 @@ export class OmniCoreService {
     private readonly fastRules: FastRulesEngineService,
     private readonly planBuilder: CapabilityPlanBuilderService,
     private readonly taskPlanner: TaskPlannerService,
-    private readonly selector: ModelSelectorService,
-    private readonly registry: ProviderRegistryService,
+    private readonly orchestrator: ExecutionOrchestratorService,
     @Inject(LOGGER) private readonly logger: Logger,
   ) {}
 
   /**
    * Classifies, plans, and executes `prompt` end to end. Every failure
-   * mode — an unrecognized intent, an ambiguous one (`AMBIGUOUS_INTENT`,
-   * thrown by `CapabilityPlanBuilderService.build()`), no compatible
-   * model, a provider whose credentials disappeared between selection
-   * and execution, a mapped vendor error — propagates unchanged as the
-   * same normalized domain error the underlying service/provider
-   * already threw; this method adds no additional try/catch of its
-   * own (same invariant `AiService.generate()` documents).
+   * mode propagates unchanged as the same normalized domain error the
+   * underlying service/provider already threw; this method adds no
+   * additional try/catch of its own (same invariant documented above
+   * and in `ExecutionOrchestratorService`).
    */
   async execute(prompt: string): Promise<OmniCoreExecuteResponse> {
     const match = this.fastRules.classify(prompt);
@@ -99,24 +81,43 @@ export class OmniCoreService {
     const [step, ...rest] = plan.steps;
     if (!step || rest.length > 0) {
       // Defensive guard: `CapabilityPlanBuilderService` only ever
-      // produces exactly one step in Step 1. Multi-step execution
-      // arrives with the Phase 5 Step 3/4 planner and execution
-      // manager — this method must not silently execute only the
-      // first step of a plan it doesn't yet know how to run in full.
+      // produces exactly one step today. Real multi-step capability
+      // plans are a future extension of that service, not this one —
+      // see `TaskPlannerService`'s doc comment for why the planning
+      // and orchestration layers underneath this guard are already
+      // multi-step-ready regardless.
       throw omniCoreDomainError(
         "INTENT_NOT_RECOGNIZED",
         "OmniCore Step 1 supports only single-step capability plans.",
       );
     }
 
-    // Built before model selection so a planning failure (Phase 5
-    // Step 3's domain errors — see `omnicore.errors.ts`) is surfaced
-    // without ever making a real, vendor-billed provider call.
+    // Built before orchestration so a planning failure (Phase 5 Step
+    // 3's domain errors) is surfaced without ever making a real,
+    // vendor-billed provider call.
     const taskPlan = this.taskPlanner.plan(plan);
 
-    const { model, matchedRule } = this.selector.select({ requiredCapabilities: [step.capability] });
-    const provider = this.registry.getById(model.providerId);
-    const text = await provider.generateText(model.modelId, step.input);
+    const execution = await this.orchestrator.execute(taskPlan);
+
+    // Every `CapabilityPlan`/`TaskPlan` OmniCore builds today has
+    // exactly one step, in exactly one stage — the same invariant the
+    // guard above already enforces one layer up — so this lookup is
+    // never ambiguous. A real multi-step `TaskPlan` is future work; see
+    // this class's doc comment.
+    const stepResult = execution.stageResults[0]?.stepResults[0];
+    if (!stepResult || stepResult.output === undefined || !stepResult.providerId || !stepResult.modelId) {
+      // Unreachable in practice: `ExecutionOrchestratorService.execute()`
+      // only ever resolves after every step it ran completed
+      // successfully — a failure propagates as a thrown error instead
+      // (see that service's doc comment) — so a resolved `execution`
+      // with a missing/incomplete step result would itself be an
+      // orchestration invariant violation, not a normal outcome.
+      throw omniCoreDomainError(
+        "INVALID_EXECUTION_STATE",
+        "Plan execution completed without a usable step result.",
+        { taskPlanId: taskPlan.taskPlanId },
+      );
+    }
 
     this.logger.debug(
       {
@@ -124,9 +125,10 @@ export class OmniCoreService {
         intent: plan.intent,
         matchedRuleId: match.ruleId,
         confidence: match.confidence,
-        providerId: model.providerId,
-        modelId: model.modelId,
-        matchedSelectorRule: matchedRule,
+        providerId: stepResult.providerId,
+        modelId: stepResult.modelId,
+        taskPlanId: taskPlan.taskPlanId,
+        executionDurationMs: execution.durationMs,
       },
       "omnicore: executed capability plan",
     );
@@ -136,10 +138,11 @@ export class OmniCoreService {
       intent: plan.intent,
       matchedRuleId: match.ruleId,
       confidence: match.confidence,
-      text,
-      providerId: model.providerId,
-      modelId: model.modelId,
+      text: stepResult.output,
+      providerId: stepResult.providerId,
+      modelId: stepResult.modelId,
       taskPlan,
+      execution,
     };
   }
 }

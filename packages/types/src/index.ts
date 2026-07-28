@@ -81,3 +81,9 @@ export type {
   ExecutionStage,
   TaskPlan,
 } from "./omnicore-plan";
+export type {
+  ExecutionStatus,
+  StepExecutionResult,
+  StageExecutionResult,
+  PlanExecutionResult,
+} from "./omnicore-execution";

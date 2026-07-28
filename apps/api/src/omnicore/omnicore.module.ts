@@ -4,11 +4,13 @@ import { AuthModule } from "../auth/auth.module";
 import { CapabilityPlanBuilderService } from "./capability-plan-builder.service";
 import { ComplexityEstimatorService } from "./complexity-estimator.service";
 import { DependencyGraphService } from "./dependency-graph.service";
+import { ExecutionOrchestratorService } from "./execution-orchestrator.service";
 import { ExecutionStageBuilderService } from "./execution-stage-builder.service";
 import { FastRulesEngineService } from "./fast-rules-engine.service";
 import { OmniCoreController } from "./omnicore.controller";
 import { OmniCoreService } from "./omnicore.service";
 import { PlanValidatorService } from "./plan-validator.service";
+import { StepExecutorService } from "./step-executor.service";
 import { TaskPlannerService } from "./task-planner.service";
 
 /**
@@ -50,6 +52,14 @@ import { TaskPlannerService } from "./task-planner.service";
  * task planning is derived entirely from the `CapabilityPlan`
  * `CapabilityPlanBuilderService` already builds, never a new external
  * dependency.
+ * Phase 5 Step 4 ("execution orchestration engine") adds two more
+ * internal providers — `StepExecutorService` and
+ * `ExecutionOrchestratorService` — following the same shape: only
+ * `ExecutionOrchestratorService` is a direct dependency of
+ * `OmniCoreService`, and `StepExecutorService` is `ExecutionOrchestratorService`'s
+ * own dependency in turn, reusing `ModelSelectorService`/
+ * `ProviderRegistryService` from `AiModule` exactly as `OmniCoreService`
+ * used to call them directly before this phase.
  */
 @Module({
   imports: [AuthModule, AiModule],
@@ -62,6 +72,8 @@ import { TaskPlannerService } from "./task-planner.service";
     ComplexityEstimatorService,
     ExecutionStageBuilderService,
     TaskPlannerService,
+    StepExecutorService,
+    ExecutionOrchestratorService,
     OmniCoreService,
   ],
 })

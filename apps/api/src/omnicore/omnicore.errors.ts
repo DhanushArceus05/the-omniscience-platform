@@ -35,7 +35,15 @@ export type OmniCoreDomainErrorCode =
   | "MISSING_DEPENDENCY"
   | "DUPLICATE_STEP_ID"
   | "UNSUPPORTED_CAPABILITY_MAPPING"
-  | "PLANNING_FAILED";
+  | "PLANNING_FAILED"
+  | "UNSUPPORTED_CAPABILITY"
+  | "DEPENDENCY_FAILURE"
+  | "INVALID_EXECUTION_STATE"
+  | "PLAN_EXECUTION_FAILED"
+  | "STAGE_EXECUTION_FAILED"
+  | "STEP_EXECUTION_FAILED"
+  | "EXECUTION_TIMEOUT"
+  | "EXECUTION_CANCELLED";
 
 /**
  * The remaining six codes are Phase 5 Step 3's task-planning domain
@@ -76,8 +84,49 @@ export type OmniCoreDomainErrorCode =
  * Entity`: in every case the request itself was well-formed (it
  * already passed schema validation) but OmniCore cannot act on it as
  * given — because nothing matched, because too much did, or because
- * the plan it tried to build internally failed one of its own
+ * the plan it tried to build or run internally failed one of its own
  * invariants.
+ *
+ * The final eight codes are Phase 5 Step 4's execution-orchestration
+ * domain errors, thrown by `StepExecutorService`/`ExecutionOrchestratorService`
+ * while actually running a `TaskPlan`:
+ *   - `UNSUPPORTED_CAPABILITY` — a step requires a `ModelCapability`
+ *     this phase has no execution path for. Defensive today —
+ *     `PlanValidatorService` (Step 3) already restricts every
+ *     `TaskPlanStep.capabilities` to ones this phase supports before a
+ *     `TaskPlan` can exist at all — but `StepExecutorService` checks
+ *     again itself rather than trusting that upstream guarantee,
+ *     exactly as `CapabilityPlanBuilderService`/`PlanValidatorService`
+ *     already re-check each other's invariants instead of only one of
+ *     them enforcing it.
+ *   - `DEPENDENCY_FAILURE` — a step's `dependsOn` step did not
+ *     complete successfully before this step was about to run.
+ *     Defensive: the `"abort"` failure policy this phase implements
+ *     already halts the whole plan the moment any step fails, so no
+ *     later step is ever reached with a failed dependency in practice
+ *     — this is the same invariant `ExecutionOrchestratorService`
+ *     re-checks before every step regardless.
+ *   - `INVALID_EXECUTION_STATE` — the `TaskPlan` handed to the
+ *     orchestrator is internally inconsistent (e.g. a stage names a
+ *     `stepId` absent from `TaskPlan.steps`) in a way Step 3's own
+ *     `PlanValidatorService`/`DependencyGraphService` should have
+ *     already prevented. A catch-all invariant guard, not a normal
+ *     failure mode.
+ *   - `PLAN_EXECUTION_FAILED` / `STAGE_EXECUTION_FAILED` /
+ *     `STEP_EXECUTION_FAILED` — catch-alls for an orchestration-internal
+ *     failure that doesn't fit any of the above, kept distinct from
+ *     each other so a caller (and a log line) can tell which level of
+ *     the plan/stage/step hierarchy the internal failure was detected
+ *     at. Like `PLANNING_FAILED`, these are not how a normal step
+ *     failure (e.g. a provider error) reaches the caller — that
+ *     propagates unchanged, exactly as it did before this phase (see
+ *     `ExecutionOrchestratorService`'s doc comment).
+ *   - `EXECUTION_TIMEOUT` — a step did not complete within its
+ *     configured time budget. Real and reachable whenever a timeout is
+ *     configured.
+ *   - `EXECUTION_CANCELLED` — execution was stopped in response to an
+ *     external cancellation signal. Real and reachable whenever a
+ *     caller supplies one.
  */
 const OMNICORE_DOMAIN_ERROR_STATUS: Readonly<Record<OmniCoreDomainErrorCode, HttpStatus>> = {
   INTENT_NOT_RECOGNIZED: HttpStatus.UNPROCESSABLE_ENTITY,
@@ -88,6 +137,14 @@ const OMNICORE_DOMAIN_ERROR_STATUS: Readonly<Record<OmniCoreDomainErrorCode, Htt
   DUPLICATE_STEP_ID: HttpStatus.UNPROCESSABLE_ENTITY,
   UNSUPPORTED_CAPABILITY_MAPPING: HttpStatus.UNPROCESSABLE_ENTITY,
   PLANNING_FAILED: HttpStatus.UNPROCESSABLE_ENTITY,
+  UNSUPPORTED_CAPABILITY: HttpStatus.UNPROCESSABLE_ENTITY,
+  DEPENDENCY_FAILURE: HttpStatus.UNPROCESSABLE_ENTITY,
+  INVALID_EXECUTION_STATE: HttpStatus.UNPROCESSABLE_ENTITY,
+  PLAN_EXECUTION_FAILED: HttpStatus.UNPROCESSABLE_ENTITY,
+  STAGE_EXECUTION_FAILED: HttpStatus.UNPROCESSABLE_ENTITY,
+  STEP_EXECUTION_FAILED: HttpStatus.UNPROCESSABLE_ENTITY,
+  EXECUTION_TIMEOUT: HttpStatus.REQUEST_TIMEOUT,
+  EXECUTION_CANCELLED: HttpStatus.UNPROCESSABLE_ENTITY,
 };
 
 /**

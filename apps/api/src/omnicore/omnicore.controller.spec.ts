@@ -27,6 +27,35 @@ const taskPlan: TaskPlan = {
   complexity: "low",
 };
 
+const execution: import("@omniscience/types").PlanExecutionResult = {
+  taskPlanId: "task-plan-1",
+  status: "completed",
+  stageResults: [
+    {
+      stageId: "stage-1",
+      status: "completed",
+      stepResults: [
+        {
+          stepId: "step-1",
+          status: "completed",
+          output: "Hello, world!",
+          providerId: "anthropic",
+          modelId: "claude-sonnet-5",
+          startedAt: "2026-07-27T00:00:00.000Z",
+          completedAt: "2026-07-27T00:00:01.000Z",
+          durationMs: 1000,
+        },
+      ],
+      startedAt: "2026-07-27T00:00:00.000Z",
+      completedAt: "2026-07-27T00:00:01.000Z",
+      durationMs: 1000,
+    },
+  ],
+  startedAt: "2026-07-27T00:00:00.000Z",
+  completedAt: "2026-07-27T00:00:01.000Z",
+  durationMs: 1000,
+};
+
 describe("OmniCoreController", () => {
   let controller: OmniCoreController;
   const omniCore = { execute: jest.fn() };
@@ -55,6 +84,7 @@ describe("OmniCoreController", () => {
         providerId: "anthropic",
         modelId: "claude-sonnet-5",
         taskPlan,
+        execution,
       };
       omniCore.execute.mockResolvedValue(response);
 
@@ -74,6 +104,7 @@ describe("OmniCoreController", () => {
         providerId: "anthropic",
         modelId: "claude-sonnet-5",
         taskPlan,
+        execution,
       };
       omniCore.execute.mockResolvedValue(response);
 
@@ -88,6 +119,7 @@ describe("OmniCoreController", () => {
         "providerId",
         "modelId",
         "taskPlan",
+        "execution",
       ]);
     });
 

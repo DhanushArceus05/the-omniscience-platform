@@ -29,6 +29,7 @@
  */
 
 import type { ModelId, ModelCapability, ProviderId } from "./ai-provider";
+import type { PlanExecutionResult } from "./omnicore-execution";
 import type { TaskPlan } from "./omnicore-plan";
 
 /**
@@ -150,4 +151,14 @@ export interface OmniCoreExecuteResponse {
    * what it adds beyond that capability plan.
    */
   readonly taskPlan: TaskPlan;
+  /**
+   * `execution` (Phase 5 Step 4) is a second purely additive field:
+   * every field above, including `taskPlan`, is exactly what Step 1/2/3
+   * already returned, unchanged, so an existing caller keeps working
+   * without modification. It carries `ExecutionOrchestratorService`'s
+   * `PlanExecutionResult` for the same `TaskPlan` this response's
+   * `taskPlan` field already describes — see `PlanExecutionResult`'s
+   * doc comment (`omnicore-execution.ts`) for what it records.
+   */
+  readonly execution: PlanExecutionResult;
 }
