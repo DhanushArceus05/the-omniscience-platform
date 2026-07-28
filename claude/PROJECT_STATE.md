@@ -318,6 +318,108 @@ tests (up from Step 4's 419). Full monorepo: 767 tests, all green. See `claude/C
 unchanged, security considerations, and deferred items. **This is Phase 4's final step — Phase 5
 has not been started.**
 
+**Phase 5 — OmniCore, Step 1 (OmniCore Foundation): complete.** The foundation of OmniCore, the
+platform's orchestration layer described in `docs/04_System_Architecture.md`'s `User → Assistant →
+OmniCore → OmniProvider/Model Manager` flow. Introduces `POST /omnicore/execute` (behind the same
+`JwtAuthGuard` and vendor-billed `@Throttle` shape as `POST /ai/generate`), a new
+`apps/api/src/omnicore/` module (`FastRulesEngineService`, `CapabilityPlanBuilderService`,
+`OmniCoreService`, `OmniCoreController`), and OmniCore's own typed domain-error architecture
+(`omnicore.errors.ts`). `OmniCoreService.execute()` composes classification → a `CapabilityPlan` →
+`ModelSelectorService`/`ProviderRegistryService` (reused as-is from Phase 4, no new provider or
+model registered) → `OmniProvider.generateText()`. The public response returns only safe routing
+metadata (`planId`, `intent`, `matchedRuleId`, `confidence`, `providerId`, `modelId`, `text`) —
+never an internal plan or selector-rule detail. See `claude/CURRENT_PHASE.md`'s "Phase 5 Step 1"
+section for further detail.
+
+**Phase 5 — OmniCore, Step 2 (Intent Intelligence): complete.** Replaces Step 1's placeholder
+classification with `FastRulesEngineService`'s real deterministic rule set: a fixed
+`ResolvedOmniCoreIntent` taxonomy (`simple-generation`, `question-answering`, `code-generation`,
+`summarization`, `creative-writing`), each rule scoring a trimmed prompt in `[0, 1]` with no model
+call involved (a heuristic, not an inference — hence "fast"). A confidence-margin check between the
+top two candidate rules yields a synthetic `"ambiguous"` intent when the request is genuinely
+unclear between two or more of the above, surfaced to the caller as a `422 AMBIGUOUS_INTENT` with
+the candidate `alternateIntents` — never guessed at silently. `CapabilityPlanBuilderService` gained
+a real per-intent `INTENT_CAPABILITY_MAP` (every entry still resolves to `"text-generation"` today,
+since that remains the only capability any registered `OmniProvider` genuinely executes) and
+refuses to build a plan for an `"ambiguous"` match. See `claude/CURRENT_PHASE.md`'s "Phase 5 Step 2"
+section for further detail.
+
+**Phase 5 — OmniCore, Step 3 (Task Planning Engine): implemented this session, fully verified
+in-sandbox.** A production-grade planning layer that converts a `CapabilityPlan` into a validated,
+dependency-ordered, execution-ready `TaskPlan` — new shared types
+(`packages/types/src/omnicore-plan.ts`: `TaskPlanStep`, `ExecutionStage`, `TaskPlan`,
+`TaskComplexity`, `StepFailurePolicy`) and five new `apps/api/src/omnicore/` services
+(`DependencyGraphService`, `PlanValidatorService`, `ComplexityEstimatorService`,
+`ExecutionStageBuilderService`, `TaskPlannerService`). `DependencyGraphService` validates every
+step's `dependsOn` references (rejecting duplicate ids, missing references, and circular
+dependencies) and computes a topological layering; `ExecutionStageBuilderService` turns that
+layering into `TaskPlan.stages`, marking a single-step layer `"sequential"` and a multi-step
+independent layer `"parallel"`; `ComplexityEstimatorService` classifies `low`/`medium`/`high`/
+`very-high` per step and per plan from plan shape alone (no model call); `TaskPlannerService` is
+the seam that builds a `TaskPlan` from an existing `CapabilityPlan` without duplicating
+`CapabilityPlanBuilderService`'s own capability-selection logic. `OmniCoreExecuteResponse` gained an
+additive `taskPlan` field — every pre-existing field is unchanged. Six new domain error codes
+(`INVALID_TASK_PLAN`, `CIRCULAR_DEPENDENCY`, `MISSING_DEPENDENCY`, `DUPLICATE_STEP_ID`,
+`UNSUPPORTED_CAPABILITY_MAPPING`, `PLANNING_FAILED`), all `422`. Every resolved intent still
+compiles to exactly one `TaskPlanStep` today (Step 2's classifier is single-shot), so the
+multi-step/parallel machinery is exercised directly via hand-built fixtures in each new service's
+own unit tests, ready for a future multi-step decomposition without a redesign. **Verified this
+session:** `pnpm typecheck`/`lint`/`build`/`test` all green across all 9 packages;
+`@omniscience/api` 60 suites / 560 tests (up from Phase 4 Step 5's 465). See
+`claude/CURRENT_PHASE.md`'s "Phase 5 Step 3" section for the full architecture, error-code
+rationale, and deferred work (multi-step decomposition and actual orchestration, both explicitly
+deferred to Step 4).
+
+**Phase 5 — OmniCore, Step 4 (Execution Orchestration Engine): implemented this session, fully
+verified in-sandbox.** Consumes Step 3's `TaskPlan` and actually runs it — new
+`ExecutionOrchestratorService` walks `TaskPlan.stages` in order (sequential stages one step at a
+time, parallel stages concurrently via `Promise.all`, safe by construction since
+`DependencyGraphService` already guarantees no same-stage step depends on another), and a new
+`StepExecutorService` runs one `TaskPlanStep` through the existing `ModelSelectorService`/
+`ProviderRegistryService` path — the same call `OmniCoreService` used to make directly before this
+step. New shared types (`packages/types/src/omnicore-execution.ts`: `ExecutionStatus`,
+`StepExecutionResult`, `StageExecutionResult`, `PlanExecutionResult`), attached to
+`OmniCoreExecuteResponse` as a second additive field, `execution`, alongside the untouched
+`taskPlan`. Only the `"abort"` failure policy is implemented — the first step failure, timeout, or
+cancellation stops the whole plan and lets the original, already-typed error propagate unchanged,
+architected so a future `"continue"`/`"retry"` policy only changes that one branch. Internal
+timeout/cancellation support is in-process only (an `AbortSignal` plus an optional `timeoutMs`) —
+no persistent job queue. Eight new domain error codes (`UNSUPPORTED_CAPABILITY`,
+`DEPENDENCY_FAILURE`, `INVALID_EXECUTION_STATE`, `PLAN_EXECUTION_FAILED`, `STAGE_EXECUTION_FAILED`,
+`STEP_EXECUTION_FAILED`, `EXECUTION_TIMEOUT`, `EXECUTION_CANCELLED`). `OmniCoreService.execute()`
+now composes classify → capability plan → task plan → orchestrate, deriving `text`/`providerId`/
+`modelId` from the orchestrator's step result. **Verified this session:** `pnpm
+typecheck`/`lint`/`build`/`test` all green across all 9 packages; `@omniscience/api` 62 suites /
+580 tests (up from Step 3's 560). See `claude/CURRENT_PHASE.md`'s "Phase 5 Step 4" section for the
+full architecture and deferred work (`"continue"`/`"retry"` failure policies, distributed workers/
+queues, persistent execution storage — all deferred to a later phase).
+
+**Phase 5 — OmniCore, Step 5 (Tool Calling Framework): implemented this session, fully verified
+in-sandbox — this is the foundation for future RAG, search, memory, web, and database
+integrations, none of which are built yet.** A generic `Tool<TInput, TOutput>` contract
+(`apps/api/src/omnicore/tools/tool.interface.ts`) mirroring `OmniProvider`'s own split — the
+executable interface lives in `apps/api`, structurally typed (`ToolSchema<T>` with `safeParse`,
+"ZodLike" rather than a direct `zod` dependency, same convention `ZodValidationPipe` already uses)
+so input/output validation is real and enforced, not just declared. New `ToolRegistryService`
+(register/getById/tryGetById/list, mirroring `ProviderRegistryService`) and `ToolExecutorService`
+(validate input → run, raced against timeout/cancellation → validate output → typed
+`ToolExecutionResult`), plus a shared `execution-timeout.util.ts` extracted from Step 4's
+`StepExecutorService` so both reuse the identical race logic. Three foundation built-in tools —
+`EchoTool`, `CurrentTimeTool`, `UUIDTool` — registered at bootstrap by a new `ToolSeedService`
+(`OnModuleInit`, mirroring `AiProviderSeedService`). `StepExecutorService` now routes on
+`TaskPlanStep.toolCategory` (a field that already existed since Step 3): set → `ToolExecutorService`;
+unset → the existing model path, unchanged. No real `TaskPlan` sets `toolCategory` yet (Step 2's
+capability plan builder never produces one), so tool-routed step execution is exercised directly
+via unit tests, the same "generic machinery ahead of its real producer" precedent Steps 3/4 already
+established. Six new domain error codes (`TOOL_NOT_FOUND`, `DUPLICATE_TOOL_ID`,
+`INVALID_TOOL_INPUT`, `TOOL_EXECUTION_FAILED`, `TOOL_TIMEOUT`, `TOOL_CANCELLED`). New shared types
+(`packages/types/src/tool.ts`: `ToolCapability`, `ToolMetadata`, `ToolExecutionResult`); a new
+optional `toolId` field on `StepExecutionResult`. **Verified this session:** `pnpm
+typecheck`/`lint`/`build`/`test` all green across all 9 packages; `@omniscience/api` 69 suites /
+624 tests (up from Step 4's 580). See `claude/CURRENT_PHASE.md`'s "Phase 5 Step 5" section for the
+full architecture and deferred work (external APIs, web search, RAG, databases, memory, MCP — none
+built yet; only the generic framework and three foundation tools exist).
+
 ### Phase 2 step-by-step history (unchanged from when each step was implemented)
 
 - **Frontend auth integration (post-Step-8, pre-commit)**: `RegisterPage`/`VerifyOtpPage`/
@@ -607,7 +709,11 @@ This document is considered the authoritative long-term vision for the feature.
 ## Current Status
 
 - Phase 4: ✅ Complete
-- Phase 5: ⏳ Next Active Phase
+- Phase 5, Step 1 (OmniCore Foundation): ✅ Complete
+- Phase 5, Step 2 (Intent Intelligence): ✅ Complete
+- Phase 5, Step 3 (Task Planning Engine): ✅ Complete
+- Phase 5, Step 4 (Execution Orchestration Engine): ✅ Complete
+- Phase 5, Step 5 (Tool Calling Framework): ✅ Complete
 - Arceus Activation Mode: 🔒 Locked Future Phase (Not Started)
 
 No implementation work for Arceus Activation Mode should begin until the planned platform roadmap has reached its intended completion.
