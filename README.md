@@ -2,26 +2,42 @@
 
 **One Platform. Every Intelligence.**
 
-This is the monorepo for The Omniscience Platform. This repository currently
-implements **Phase 0 — Foundation** only. See `claude/CURRENT_PHASE.md` and
-`docs/08_Development_Roadmap.md` for what comes next.
+This is the monorepo for The Omniscience Platform. **Phase 0 through Phase 4 are complete**, and
+**Phase 5 (OmniCore) Steps 1 through 5 are complete**. Phase 5 itself is not yet declared complete
+and Phase 6 has not been started. For the authoritative, detailed, step-by-step progress record,
+see `claude/PROJECT_STATE.md` and `claude/CURRENT_PHASE.md`; see `docs/08_Development_Roadmap.md`
+for the full phase list and what comes next.
 
-## What's in Phase 0
+## What's implemented
 
-- pnpm workspace + Turborepo monorepo
-- `apps/web` — React + Vite + strict TypeScript (foundation shell + health panel)
-- `apps/api` — NestJS + strict TypeScript (health endpoint, structured logging, global error handling)
+- pnpm workspace + Turborepo monorepo, with GitHub Actions CI (install, lint, typecheck, test, build)
+- `apps/web` — React + Vite + strict TypeScript: premium design system/theming, responsive app
+  shell, landing page, full auth flows (register/verify-otp/login/forgot-password/reset-password),
+  a protected `/app` route with session bootstrap, a workspace dashboard (create/list workspaces),
+  and an account settings experience (profile, avatar, security/sessions, danger zone)
+- `apps/api` — NestJS + strict TypeScript:
+  - Authentication & Users (registration, OTP verification, login, password reset, sessions,
+    account deletion) behind `JwtAuthGuard`
+  - Workspaces (create/list/get, ownership isolation, keyset pagination)
+  - Avatar storage (validated local-disk object storage behind a pluggable interface)
+  - OmniProvider & Model Manager (`apps/api/src/ai/`) — a provider-neutral registry/catalog/
+    deterministic model-selector, with real Anthropic and Google Gemini execution behind
+    `POST /ai/generate`, `GET /ai/providers`, `GET /ai/models`
+  - OmniCore (`apps/api/src/omnicore/`), the platform's orchestration layer, behind
+    `POST /omnicore/execute`: deterministic intent classification (Fast Rules Engine), a
+    capability-plan builder, a dependency-ordered Task Planning Engine, an Execution
+    Orchestration Engine that runs task plans stage-by-stage, and a generic Tool Calling
+    Framework (`ToolRegistryService`/`ToolExecutorService`) with three foundation tools
+    (Echo, CurrentTime, UUID)
 - `apps/ai-service` — FastAPI + typed Python (health endpoint, structured logging, global error handling)
 - Shared packages: `ui`, `types`, `schemas`, `config`, `sdk`, `prompts`, `utils`
 - Docker Compose for PostgreSQL, MongoDB, Redis and Qdrant
 - Environment validation (`packages/config` for Node, `app/core/config.py` for Python) + `.env.example`
 - ESLint + Prettier + strict TypeScript across the Node workspace; Ruff + Mypy (strict) for Python
-- Starter tests for every app and package
-- GitHub Actions CI (install, lint, typecheck, test, build)
 
-**Explicitly excluded from Phase 0** (per `claude/PHASE_0_MASTER_PROMPT.md`):
-authentication, OTP, workspaces, AI provider integration, OmniCore, RAG, agents,
-ML modules, and final premium UI screens.
+**Not yet built:** RAG, agents, memory, web search, external tool integrations beyond the three
+foundation tools, ML modules, and the Omniscience Assistant conversational product itself (Phase 6
+onward). See `claude/CURRENT_PHASE.md` for exact per-step scope and deferred work.
 
 ## Prerequisites
 
