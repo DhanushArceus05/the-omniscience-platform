@@ -20,6 +20,7 @@ import { OmniCoreController } from "./omnicore.controller";
 import { OmniCoreModule } from "./omnicore.module";
 import { OmniCoreService } from "./omnicore.service";
 import { TaskPlannerService } from "./task-planner.service";
+import { ToolRegistryService } from "./tools/tool-registry.service";
 
 const testEnv = {
   OTP_TTL_SECONDS: 600,
@@ -76,6 +77,12 @@ describe("OmniCoreModule", () => {
     expect(module.get(OmniCoreService)).toBeInstanceOf(OmniCoreService);
     expect(module.get(TaskPlannerService)).toBeInstanceOf(TaskPlannerService);
     expect(module.get(ExecutionOrchestratorService)).toBeInstanceOf(ExecutionOrchestratorService);
+
+    // Phase 5 Step 5: `ToolSeedService.onModuleInit()` must have run as
+    // part of real module bootstrap and registered every built-in tool
+    // exactly once.
+    const toolRegistry = module.get(ToolRegistryService);
+    expect(toolRegistry.list().map((tool) => tool.id).sort()).toEqual(["current-time", "echo", "uuid"]);
 
     // OmniCoreModule must not re-register any provider of its own —
     // the registry it resolves is the exact same singleton AiModule's

@@ -87,3 +87,4 @@ export type {
   StageExecutionResult,
   PlanExecutionResult,
 } from "./omnicore-execution";
+export type { ToolCapability, ToolMetadata, ToolExecutionResult } from "./tool";

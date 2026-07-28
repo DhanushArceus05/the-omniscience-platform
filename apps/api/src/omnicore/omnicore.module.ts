@@ -12,6 +12,12 @@ import { OmniCoreService } from "./omnicore.service";
 import { PlanValidatorService } from "./plan-validator.service";
 import { StepExecutorService } from "./step-executor.service";
 import { TaskPlannerService } from "./task-planner.service";
+import { CurrentTimeTool } from "./tools/built-in/current-time.tool";
+import { EchoTool } from "./tools/built-in/echo.tool";
+import { UUIDTool } from "./tools/built-in/uuid.tool";
+import { ToolExecutorService } from "./tools/tool-executor.service";
+import { ToolRegistryService } from "./tools/tool-registry.service";
+import { ToolSeedService } from "./tools/tool-seed.service";
 
 /**
  * OmniCore module (Phase 5 Steps 1-2).
@@ -52,6 +58,7 @@ import { TaskPlannerService } from "./task-planner.service";
  * task planning is derived entirely from the `CapabilityPlan`
  * `CapabilityPlanBuilderService` already builds, never a new external
  * dependency.
+ *
  * Phase 5 Step 4 ("execution orchestration engine") adds two more
  * internal providers — `StepExecutorService` and
  * `ExecutionOrchestratorService` — following the same shape: only
@@ -60,6 +67,17 @@ import { TaskPlannerService } from "./task-planner.service";
  * own dependency in turn, reusing `ModelSelectorService`/
  * `ProviderRegistryService` from `AiModule` exactly as `OmniCoreService`
  * used to call them directly before this phase.
+ *
+ * Phase 5 Step 5 ("tool calling framework") adds the tool-calling
+ * counterpart to the `ai` module's own provider layer:
+ * `ToolRegistryService`, `ToolExecutorService`, the three built-in
+ * `Tool` providers (`EchoTool`/`CurrentTimeTool`/`UUIDTool`), and
+ * `ToolSeedService` (an `OnModuleInit` seeder, mirroring
+ * `AiProviderSeedService`'s own role for providers). `StepExecutorService`
+ * is the only consumer of `ToolExecutorService` — a `TaskPlanStep`
+ * with `toolCategory` set is routed there instead of through the model
+ * path, so nothing else in this module (or `OmniCoreService`) needed
+ * to change to support tool-routed steps.
  */
 @Module({
   imports: [AuthModule, AiModule],
@@ -72,6 +90,12 @@ import { TaskPlannerService } from "./task-planner.service";
     ComplexityEstimatorService,
     ExecutionStageBuilderService,
     TaskPlannerService,
+    ToolRegistryService,
+    ToolExecutorService,
+    EchoTool,
+    CurrentTimeTool,
+    UUIDTool,
+    ToolSeedService,
     StepExecutorService,
     ExecutionOrchestratorService,
     OmniCoreService,

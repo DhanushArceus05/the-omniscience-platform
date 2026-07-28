@@ -43,7 +43,13 @@ export type OmniCoreDomainErrorCode =
   | "STAGE_EXECUTION_FAILED"
   | "STEP_EXECUTION_FAILED"
   | "EXECUTION_TIMEOUT"
-  | "EXECUTION_CANCELLED";
+  | "EXECUTION_CANCELLED"
+  | "TOOL_NOT_FOUND"
+  | "DUPLICATE_TOOL_ID"
+  | "INVALID_TOOL_INPUT"
+  | "TOOL_EXECUTION_FAILED"
+  | "TOOL_TIMEOUT"
+  | "TOOL_CANCELLED";
 
 /**
  * The remaining six codes are Phase 5 Step 3's task-planning domain
@@ -127,6 +133,37 @@ export type OmniCoreDomainErrorCode =
  *   - `EXECUTION_CANCELLED` — execution was stopped in response to an
  *     external cancellation signal. Real and reachable whenever a
  *     caller supplies one.
+ *
+ * The final six codes are Phase 5 Step 5's tool-calling domain errors,
+ * thrown by `ToolRegistryService`/`ToolExecutorService`
+ * (`apps/api/src/omnicore/tools/`) — deliberately their own vocabulary
+ * rather than reusing `EXECUTION_TIMEOUT`/`EXECUTION_CANCELLED`, so a
+ * caller (and a log line) can always tell "a model step timed out/was
+ * cancelled" apart from "a tool call timed out/was cancelled" even
+ * though the underlying race logic (`execution-timeout.util.ts`) is
+ * shared between them:
+ *   - `TOOL_NOT_FOUND` — `ToolRegistryService.getById()` was asked for
+ *     a tool id nothing is registered under. Real and reachable
+ *     whenever a `TaskPlanStep.toolCategory` names an unregistered
+ *     tool.
+ *   - `DUPLICATE_TOOL_ID` — two tools were registered under the same
+ *     id, the same defensive guard `ProviderRegistryService.register()`
+ *     already has for `DUPLICATE_PROVIDER`. Unreachable in practice —
+ *     `ToolSeedService` registers each built-in tool exactly once —
+ *     but a real, typed failure mode if that ever changes.
+ *   - `INVALID_TOOL_INPUT` — a tool's own `inputSchema.safeParse()`
+ *     rejected the payload it was handed. Real and reachable whenever
+ *     a caller (today, `StepExecutorService`) passes a tool input that
+ *     doesn't match what the tool declares it accepts.
+ *   - `TOOL_EXECUTION_FAILED` — a tool's `execute()` threw something
+ *     that wasn't already one of this module's own typed
+ *     `HttpException`s, or its result failed its own declared
+ *     `outputSchema` — either way, a raw, unnormalized failure never
+ *     reaches a caller as-is.
+ *   - `TOOL_TIMEOUT` / `TOOL_CANCELLED` — the tool-calling counterparts
+ *     to `EXECUTION_TIMEOUT`/`EXECUTION_CANCELLED`, thrown by the same
+ *     shared timeout/cancellation race when it's configured for a tool
+ *     call rather than a step's model call.
  */
 const OMNICORE_DOMAIN_ERROR_STATUS: Readonly<Record<OmniCoreDomainErrorCode, HttpStatus>> = {
   INTENT_NOT_RECOGNIZED: HttpStatus.UNPROCESSABLE_ENTITY,
@@ -145,6 +182,12 @@ const OMNICORE_DOMAIN_ERROR_STATUS: Readonly<Record<OmniCoreDomainErrorCode, Htt
   STEP_EXECUTION_FAILED: HttpStatus.UNPROCESSABLE_ENTITY,
   EXECUTION_TIMEOUT: HttpStatus.REQUEST_TIMEOUT,
   EXECUTION_CANCELLED: HttpStatus.UNPROCESSABLE_ENTITY,
+  TOOL_NOT_FOUND: HttpStatus.NOT_FOUND,
+  DUPLICATE_TOOL_ID: HttpStatus.CONFLICT,
+  INVALID_TOOL_INPUT: HttpStatus.BAD_REQUEST,
+  TOOL_EXECUTION_FAILED: HttpStatus.UNPROCESSABLE_ENTITY,
+  TOOL_TIMEOUT: HttpStatus.REQUEST_TIMEOUT,
+  TOOL_CANCELLED: HttpStatus.UNPROCESSABLE_ENTITY,
 };
 
 /**

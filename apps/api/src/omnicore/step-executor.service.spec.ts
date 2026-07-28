@@ -4,6 +4,7 @@ import { StepExecutorService } from "./step-executor.service";
 describe("StepExecutorService", () => {
   const selector = { select: jest.fn() };
   const registry = { getById: jest.fn() };
+  const toolExecutor = { execute: jest.fn() };
   let service: StepExecutorService;
 
   function stepFixture(overrides: Partial<TaskPlanStep> = {}): TaskPlanStep {
@@ -25,7 +26,7 @@ describe("StepExecutorService", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    service = new StepExecutorService(selector as never, registry as never);
+    service = new StepExecutorService(selector as never, registry as never, toolExecutor as never);
   });
 
   function mockHappyPath(generateText: jest.Mock): void {
@@ -114,5 +115,64 @@ describe("StepExecutorService", () => {
     const result = await service.execute(stepFixture(), { timeoutMs: 1000 });
 
     expect(result.output).toBe("Hello!");
+  });
+
+  it("never touches the tool executor when the step is model-routed (toolCategory unset)", async () => {
+    mockHappyPath(jest.fn().mockResolvedValue("Hello!"));
+
+    await service.execute(stepFixture());
+
+    expect(toolExecutor.execute).not.toHaveBeenCalled();
+  });
+
+  describe("tool-routed steps (toolCategory set)", () => {
+    it("routes through the tool executor instead of the model path, using toolCategory as the tool id", async () => {
+      toolExecutor.execute.mockResolvedValue({
+        toolId: "echo",
+        status: "completed",
+        output: "hi there",
+        startedAt: "2026-07-27T00:00:00.000Z",
+        completedAt: "2026-07-27T00:00:01.000Z",
+        durationMs: 1000,
+      });
+
+      const result = await service.execute(stepFixture({ toolCategory: "echo" }));
+
+      expect(toolExecutor.execute).toHaveBeenCalledWith("echo", "hi there", {});
+      expect(selector.select).not.toHaveBeenCalled();
+      expect(registry.getById).not.toHaveBeenCalled();
+      expect(result).toEqual({ output: JSON.stringify("hi there"), toolId: "echo" });
+    });
+
+    it("forwards timeout/signal options to the tool executor", async () => {
+      toolExecutor.execute.mockResolvedValue({
+        toolId: "uuid",
+        status: "completed",
+        output: "11111111-1111-1111-1111-111111111111",
+        startedAt: "2026-07-27T00:00:00.000Z",
+      });
+      const controller = new AbortController();
+
+      await service.execute(stepFixture({ toolCategory: "uuid" }), { timeoutMs: 500, signal: controller.signal });
+
+      expect(toolExecutor.execute).toHaveBeenCalledWith("uuid", "hi there", {
+        timeoutMs: 500,
+        signal: controller.signal,
+      });
+    });
+
+    it("propagates a TOOL_NOT_FOUND error from the tool executor unchanged", async () => {
+      const error = { response: { code: "TOOL_NOT_FOUND" } };
+      toolExecutor.execute.mockRejectedValue(error);
+
+      await expect(service.execute(stepFixture({ toolCategory: "unknown-tool" }))).rejects.toBe(error);
+    });
+
+    it("propagates an INVALID_TOOL_INPUT error from the tool executor unchanged", async () => {
+      const error = { response: { code: "INVALID_TOOL_INPUT" } };
+      toolExecutor.execute.mockRejectedValue(error);
+
+      await expect(service.execute(stepFixture({ toolCategory: "echo" }))).rejects.toBe(error);
+    });
   });
 });

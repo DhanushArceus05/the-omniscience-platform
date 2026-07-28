@@ -59,6 +59,12 @@ export type ExecutionStatus = "pending" | "running" | "completed" | "failed" | "
  * — the same "no vendor name in the response by construction, only
  * through this typed field" reasoning `OmniCoreExecuteResponse`
  * already follows.
+ *
+ * `toolId` (Phase 5 Step 5) is the tool-routed counterpart to
+ * `providerId`/`modelId`: set instead of them when this step ran
+ * through `ToolExecutorService` (`TaskPlanStep.toolCategory` was set)
+ * rather than through a model provider. A given `StepExecutionResult`
+ * only ever has one or the other populated, never both.
  */
 export interface StepExecutionResult {
   readonly stepId: string;
@@ -67,6 +73,7 @@ export interface StepExecutionResult {
   readonly errorCode?: string;
   readonly providerId?: ProviderId;
   readonly modelId?: ModelId;
+  readonly toolId?: string;
   readonly startedAt: string;
   readonly completedAt?: string;
   readonly durationMs?: number;

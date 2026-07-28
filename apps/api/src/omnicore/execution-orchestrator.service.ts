@@ -176,7 +176,7 @@ export class ExecutionOrchestratorService {
     this.logger.debug({ taskPlanId: taskPlan.taskPlanId, stepId: step.stepId, capabilities: step.capabilities }, "omnicore: step execution starting");
 
     try {
-      const { output, providerId, modelId } = await this.stepExecutor.execute(step, options);
+      const { output, providerId, modelId, toolId } = await this.stepExecutor.execute(step, options);
       const completedAt = new Date();
       const result: StepExecutionResult = {
         stepId: step.stepId,
@@ -184,12 +184,13 @@ export class ExecutionOrchestratorService {
         output,
         providerId,
         modelId,
+        toolId,
         startedAt: startedAt.toISOString(),
         completedAt: completedAt.toISOString(),
         durationMs: completedAt.getTime() - startedAt.getTime(),
       };
       this.logger.debug(
-        { taskPlanId: taskPlan.taskPlanId, stepId: step.stepId, providerId, modelId, durationMs: result.durationMs },
+        { taskPlanId: taskPlan.taskPlanId, stepId: step.stepId, providerId, modelId, toolId, durationMs: result.durationMs },
         "omnicore: step execution completed",
       );
       return result;
