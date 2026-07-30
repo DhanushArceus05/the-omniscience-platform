@@ -550,3 +550,193 @@ describe("OmniscienceClient account/session/avatar methods (Phase 3 Step 3)", ()
     );
   });
 });
+
+describe("OmniscienceClient conversation/message methods (Phase 6 Step 1)", () => {
+  const conversation = {
+    id: "665f1c2b9a4e8f0012345678",
+    workspaceId: "workspace_1",
+    title: null,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+  const userMessage = {
+    id: "665f1c2b9a4e8f0012345679",
+    conversationId: conversation.id,
+    role: "user",
+    content: "Hello, OmniCore.",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
+  const assistantMessage = {
+    id: "665f1c2b9a4e8f001234567a",
+    conversationId: conversation.id,
+    role: "assistant",
+    content: "Hello! How can I help?",
+    createdAt: "2026-01-01T00:00:01.000Z",
+    omniCore: {
+      planId: "plan_1",
+      intent: "simple-generation",
+      matchedRuleId: "fast-rule.simple-generation",
+      confidence: 0.9,
+      providerId: "anthropic",
+      modelId: "claude-sonnet-5",
+      taskPlanId: "task-plan_1",
+    },
+  };
+
+  it("createConversation() posts an empty body to /workspaces/:workspaceId/conversations and unwraps ApiSuccess.data", async () => {
+    const fetchImpl = mockJsonFetch(201, { success: true, data: conversation });
+    const client = makeClient(fetchImpl);
+
+    const result = await client.createConversation("access-token", "workspace_1");
+
+    expect(result).toEqual(conversation);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://localhost:4000/workspaces/workspace_1/conversations",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer access-token" },
+        body: JSON.stringify({}),
+      }),
+    );
+  });
+
+  it("createConversation() surfaces WORKSPACE_NOT_FOUND for a foreign workspace", async () => {
+    const fetchImpl = mockJsonFetch(404, {
+      success: false,
+      error: { code: "WORKSPACE_NOT_FOUND", message: "Workspace not found." },
+    });
+    const client = makeClient(fetchImpl);
+
+    await expect(client.createConversation("access-token", "foreign-workspace")).rejects.toMatchObject({
+      code: "WORKSPACE_NOT_FOUND",
+      status: 404,
+    });
+  });
+
+  it("listConversations() sends a Bearer header and no query string when called with no query", async () => {
+    const fetchImpl = mockJsonFetch(200, {
+      success: true,
+      data: { conversations: [conversation], nextCursor: null },
+    });
+    const client = makeClient(fetchImpl);
+
+    const result = await client.listConversations("access-token", "workspace_1");
+
+    expect(result).toEqual({ conversations: [conversation], nextCursor: null });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://localhost:4000/workspaces/workspace_1/conversations",
+      expect.objectContaining({ method: "GET", headers: { Authorization: "Bearer access-token" } }),
+    );
+  });
+
+  it("listConversations() encodes limit and cursor as query params", async () => {
+    const fetchImpl = mockJsonFetch(200, {
+      success: true,
+      data: { conversations: [], nextCursor: "opaque-cursor" },
+    });
+    const client = makeClient(fetchImpl);
+
+    await client.listConversations("access-token", "workspace_1", { limit: 10, cursor: "prev-cursor" });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://localhost:4000/workspaces/workspace_1/conversations?limit=10&cursor=prev-cursor",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("getConversation() sends a Bearer header and URL-encodes both ids", async () => {
+    const fetchImpl = mockJsonFetch(200, { success: true, data: conversation });
+    const client = makeClient(fetchImpl);
+
+    const result = await client.getConversation("access-token", "workspace 1/x", "conversation 1/x");
+
+    expect(result).toEqual(conversation);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://localhost:4000/workspaces/workspace%201%2Fx/conversations/conversation%201%2Fx",
+      expect.objectContaining({ method: "GET", headers: { Authorization: "Bearer access-token" } }),
+    );
+  });
+
+  it("getConversation() surfaces CONVERSATION_NOT_FOUND identically for a missing or foreign id", async () => {
+    const fetchImpl = mockJsonFetch(404, {
+      success: false,
+      error: { code: "CONVERSATION_NOT_FOUND", message: "Conversation not found." },
+    });
+    const client = makeClient(fetchImpl);
+
+    await expect(
+      client.getConversation("access-token", "workspace_1", "anything"),
+    ).rejects.toMatchObject({ code: "CONVERSATION_NOT_FOUND", status: 404 });
+  });
+
+  it("listMessages() sends a Bearer header and no query string when called with no query", async () => {
+    const fetchImpl = mockJsonFetch(200, {
+      success: true,
+      data: { messages: [userMessage, assistantMessage], nextCursor: null },
+    });
+    const client = makeClient(fetchImpl);
+
+    const result = await client.listMessages("access-token", "workspace_1", conversation.id);
+
+    expect(result).toEqual({ messages: [userMessage, assistantMessage], nextCursor: null });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `http://localhost:4000/workspaces/workspace_1/conversations/${conversation.id}/messages`,
+      expect.objectContaining({ method: "GET", headers: { Authorization: "Bearer access-token" } }),
+    );
+  });
+
+  it("listMessages() encodes limit and cursor as query params", async () => {
+    const fetchImpl = mockJsonFetch(200, {
+      success: true,
+      data: { messages: [], nextCursor: "opaque-cursor" },
+    });
+    const client = makeClient(fetchImpl);
+
+    await client.listMessages("access-token", "workspace_1", conversation.id, {
+      limit: 10,
+      cursor: "prev-cursor",
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `http://localhost:4000/workspaces/workspace_1/conversations/${conversation.id}/messages?limit=10&cursor=prev-cursor`,
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("sendMessage() posts content to /workspaces/:workspaceId/conversations/:conversationId/messages and unwraps ApiSuccess.data", async () => {
+    const fetchImpl = mockJsonFetch(201, {
+      success: true,
+      data: { userMessage, assistantMessage },
+    });
+    const client = makeClient(fetchImpl);
+
+    const result = await client.sendMessage(
+      "access-token",
+      "workspace_1",
+      conversation.id,
+      "Hello, OmniCore.",
+    );
+
+    expect(result).toEqual({ userMessage, assistantMessage });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `http://localhost:4000/workspaces/workspace_1/conversations/${conversation.id}/messages`,
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer access-token" },
+        body: JSON.stringify({ content: "Hello, OmniCore." }),
+      }),
+    );
+  });
+
+  it("sendMessage() surfaces an OmniCore domain error (e.g. AMBIGUOUS_INTENT) unchanged", async () => {
+    const fetchImpl = mockJsonFetch(422, {
+      success: false,
+      error: { code: "AMBIGUOUS_INTENT", message: "The request is ambiguous between multiple intents." },
+    });
+    const client = makeClient(fetchImpl);
+
+    await expect(
+      client.sendMessage("access-token", "workspace_1", conversation.id, "hi"),
+    ).rejects.toMatchObject({ code: "AMBIGUOUS_INTENT", status: 422 });
+  });
+});

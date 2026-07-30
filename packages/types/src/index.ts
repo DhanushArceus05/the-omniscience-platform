@@ -48,6 +48,20 @@ export type {
   GetWorkspaceResponse,
 } from "./workspaces";
 export type {
+  Conversation,
+  CreateConversationResponse,
+  ListConversationsQuery,
+  ListConversationsResponse,
+  GetConversationResponse,
+  MessageOmniCoreMetadata,
+  MessageRole,
+  Message,
+  ListMessagesQuery,
+  ListMessagesResponse,
+  SendMessageRequest,
+  SendMessageResponse,
+} from "./conversations";
+export type {
   ProviderId,
   ModelId,
   ProviderCapability,

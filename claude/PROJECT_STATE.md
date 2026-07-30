@@ -582,6 +582,40 @@ built yet; only the generic framework and three foundation tools exist).
   which ChatGPT will perform the full Phase 2 senior architecture/security/code-quality review
   before Phase 3 begins.
 
+**Phase 6 — Omniscience Assistant, Step 1 (Conversation & Message Persistence Foundation):
+implemented this session** on top of the completed Phase 0-5 foundation (Phase 4 — OmniProvider &
+Model Manager, and Phase 5 — OmniCore Steps 1-5, all already complete per the checklist below).
+Delivers `MongoModule`/`MongoService` (the first module to actually use the long-provisioned but
+previously untouched `MONGO_URL`) and a new `ConversationsModule` — five endpoints
+(`POST`/`GET /workspaces/:workspaceId/conversations`,
+`GET /workspaces/:workspaceId/conversations/:conversationId`,
+`GET`/`POST /workspaces/:workspaceId/conversations/:conversationId/messages`) that create/list/get
+workspace-owned conversations and send/list messages, routing `POST .../messages` through the
+existing `OmniCoreService.execute()` pipeline directly via dependency injection (never through the
+HTTP boundary). Required exporting `WorkspacesService` from `WorkspacesModule` and `OmniCoreService`
+from `OmniCoreModule` (both were already providers, just not previously exported) — the only places
+this step touches already-completed Phase 3/5 code, and purely additive, same "widening an
+`exports` array cannot change existing behavior" reasoning Phase 2 Step 8's `RefreshTokenStore`
+export already established. If OmniCore execution fails, the already-persisted user message stays
+persisted and no assistant message is ever created — the OmniCore domain error propagates
+unchanged. **Unlike every prior session referenced above, this sandbox had *no* network egress at
+all** — not `pnpm`/`corepack`, not a direct `npm install -g`, not even a bare `curl` to
+`registry.npmjs.org` (all fail identically with `x-deny-reason: host_not_allowed` / HTTP 403), and
+no `node_modules` exists in the extracted archive — so `pnpm install`/`build`/`lint`/`typecheck`/
+`test` and `docker compose up -d` (for `conversations.repository.spec.ts`'s real-Mongo suite) could
+not be run at all this session, not even partially. In their place, every new file's imports,
+types, and reused error/response shapes were manually cross-checked line-by-line against the
+actual exported symbols and shapes in the modules they reuse (`WorkspacesService.getById()`'s exact
+exception shape, `OmniCoreExecuteResponse`'s exact field names, `ai-generate.e2e-spec.ts`'s exact
+`ANTHROPIC_CLIENT`-override technique) — this cross-check is what caught the two missing exports
+above. See `claude/CURRENT_PHASE.md`'s "Phase 6 — Omniscience Assistant, Step 1" section for the
+full implementation summary and the exact commands **you must run locally** before this step is
+considered verified: `pnpm install --frozen-lockfile`, `pnpm --filter @omniscience/api exec prisma
+generate`, `pnpm typecheck`, `pnpm lint`, `pnpm build`, `pnpm test` (checking that
+`conversations.repository.spec.ts` actually connects to real Mongo rather than self-skipping), and
+`docker compose up -d` plus a manual HTTP smoke test. This is Phase 6 Step 1; no further Phase 6
+step has been started.
+
 ## Repository Rule
 
 After Phase 0, always continue from the latest working repository. Never create an unrelated
@@ -714,6 +748,12 @@ This document is considered the authoritative long-term vision for the feature.
 - Phase 5, Step 3 (Task Planning Engine): ✅ Complete
 - Phase 5, Step 4 (Execution Orchestration Engine): ✅ Complete
 - Phase 5, Step 5 (Tool Calling Framework): ✅ Complete
+- Phase 6, Step 1 (Conversation & Message Persistence Foundation): ⚠️ Implemented this session;
+  runtime verification (`pnpm install`/`typecheck`/`lint`/`build`/`test`, real MongoDB) pending —
+  this sandbox has no network egress at all. See `claude/CURRENT_PHASE.md`'s "Phase 6 — Omniscience
+  Assistant, Step 1" section for the full implementation summary, what was manually cross-checked
+  in place of running the tools, and the exact commands a maintainer with network access must run
+  before this step is marked complete.
 - Arceus Activation Mode: 🔒 Locked Future Phase (Not Started)
 
 No implementation work for Arceus Activation Mode should begin until the planned platform roadmap has reached its intended completion.

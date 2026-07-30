@@ -9,9 +9,11 @@ import { AppModule } from "../../src/app.module";
 import { AllExceptionsFilter } from "../../src/common/filters/all-exceptions.filter";
 import { ENV } from "../../src/config/config.constants";
 import { MailService } from "../../src/mail/mail.service";
+import { MongoService } from "../../src/mongo/mongo.service";
 import { PrismaService } from "../../src/prisma/prisma.service";
 import { RedisService } from "../../src/redis/redis.service";
 import { FakeMailService } from "./fake-mail.service";
+import { FakeMongoService } from "./fake-mongo.service";
 import { FakePrismaService } from "./fake-prisma.service";
 import { FakeRedisService } from "./fake-redis.service";
 
@@ -49,8 +51,9 @@ export const testEnv: Env = {
  * Builds one fresh, fully-wired `INestApplication` from the real
  * `AppModule` — the real controllers, services, guards (including the
  * real `ThrottlerGuard`, never overridden), and validation pipes — with
- * only `ENV`/`RedisService`/`PrismaService`/`MailService` swapped for
- * fakes so a suite needs no live Postgres, Redis, or SMTP server.
+ * only `ENV`/`RedisService`/`MongoService`/`PrismaService`/`MailService`
+ * swapped for fakes so a suite needs no live Postgres, Mongo, Redis, or
+ * SMTP server.
  *
  * Every call compiles a brand-new `TestingModule`, which means a
  * brand-new DI container and therefore a brand-new (empty) in-memory
@@ -77,6 +80,8 @@ export async function createTestApp(): Promise<{
     .useValue(testEnv)
     .overrideProvider(RedisService)
     .useValue(new FakeRedisService())
+    .overrideProvider(MongoService)
+    .useValue(new FakeMongoService())
     .overrideProvider(PrismaService)
     .useValue(new FakePrismaService())
     .overrideProvider(MailService)
@@ -88,8 +93,16 @@ export async function createTestApp(): Promise<{
   // Phase 3 Step 3 — mirrors `main.ts`'s real bootstrap exactly, so
   // `avatar.e2e-spec.ts` can assert an uploaded avatar is actually
   // reachable at the URL the API returns, not just that a URL-shaped
-  // string came back.
-  app.useStaticAssets(path.resolve(testEnv.AVATAR_STORAGE_DIR), { prefix: "/uploads/avatars" });
+  // string came back. `etag`/`lastModified`/`cacheControl` disabled for
+  // the same reason `main.ts` disables them — avatar files are mutable
+  // (replaced/deleted per user), so no conditional-GET/caching behavior
+  // should ever be able to outlive a real deletion.
+  app.useStaticAssets(path.resolve(testEnv.AVATAR_STORAGE_DIR), {
+    prefix: "/uploads/avatars",
+    etag: false,
+    lastModified: false,
+    cacheControl: false,
+  });
   await app.init();
 
   return { app, mail };

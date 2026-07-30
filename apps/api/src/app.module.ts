@@ -5,8 +5,10 @@ import { AiModule } from "./ai/ai.module";
 import { AuthModule } from "./auth/auth.module";
 import { AvatarModule } from "./avatar/avatar.module";
 import { ConfigModule } from "./config/config.module";
+import { ConversationsModule } from "./conversations/conversations.module";
 import { HealthModule } from "./health/health.module";
 import { MailModule } from "./mail/mail.module";
+import { MongoModule } from "./mongo/mongo.module";
 import { OmniCoreModule } from "./omnicore/omnicore.module";
 import { PrismaModule } from "./prisma/prisma.module";
 import { RedisModule } from "./redis/redis.module";
@@ -62,11 +64,28 @@ import { WorkspacesModule } from "./workspaces/workspaces.module";
  *     capability from a per-intent lookup table. No new module, import,
  *     export, or endpoint — same `POST /omnicore/execute` route and
  *     request/success-response shape as Step 1.
+ * Phase 6 — Omniscience Assistant:
+ *   Step 1 (this step): `MongoModule` (`@Global()`, exports
+ *     `MongoService` — the first module to actually construct a
+ *     client against the `MONGO_URL` that has been a required,
+ *     validated `Env` field since Phase 0) and `ConversationsModule`
+ *     added — `POST/GET /workspaces/:workspaceId/conversations`,
+ *     `GET /workspaces/:workspaceId/conversations/:conversationId`,
+ *     `GET`/`POST .../conversations/:conversationId/messages`, all
+ *     behind `JwtAuthGuard` and scoped to a workspace the caller owns
+ *     (reusing `WorkspacesModule`'s now-exported `WorkspacesService`).
+ *     `POST .../messages` calls `OmniCoreModule`'s now-exported
+ *     `OmniCoreService.execute()` directly via dependency injection,
+ *     never through the HTTP boundary. No streaming, no update/
+ *     delete/rename, no RAG/memory/agents — see
+ *     `claude/CURRENT_PHASE.md`'s Phase 6 Step 1 section for the full
+ *     list of what's deferred.
  */
 @Module({
   imports: [
     ConfigModule,
     PrismaModule,
+    MongoModule,
     RedisModule,
     MailModule,
     AvatarModule,
@@ -76,6 +95,7 @@ import { WorkspacesModule } from "./workspaces/workspaces.module";
     WorkspacesModule,
     AiModule,
     OmniCoreModule,
+    ConversationsModule,
     HealthModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

@@ -78,6 +78,15 @@ import { ToolSeedService } from "./tools/tool-seed.service";
  * with `toolCategory` set is routed there instead of through the model
  * path, so nothing else in this module (or `OmniCoreService`) needed
  * to change to support tool-routed steps.
+ *
+ * Phase 6 Step 1 (Conversation & Message Persistence Foundation) is
+ * the "future phase" this module's own doc comment already
+ * anticipated: `OmniCoreService` is now exported so `ConversationsModule`
+ * can call `execute()` directly via dependency injection rather than
+ * through the HTTP boundary. `FastRulesEngineService`/
+ * `CapabilityPlanBuilderService` and every other internal provider
+ * remain unexported — only `OmniCoreService` itself becomes a second
+ * public seam, alongside `OmniCoreController`.
  */
 @Module({
   imports: [AuthModule, AiModule],
@@ -100,5 +109,6 @@ import { ToolSeedService } from "./tools/tool-seed.service";
     ExecutionOrchestratorService,
     OmniCoreService,
   ],
+  exports: [OmniCoreService],
 })
 export class OmniCoreModule {}

@@ -44,8 +44,14 @@ detail)
 - **Phase 5 — OmniCore, Step 4 (Execution Orchestration Engine)**: implemented this session, fully
   verified in-sandbox — see the dedicated section at the end of this file.
 - **Phase 5 — OmniCore, Step 5 (Tool Calling Framework)**: implemented this session, fully verified
-  in-sandbox — see the dedicated section at the end of this file. This is the last completed step;
-  no further step or phase has been started.
+  in-sandbox — see the dedicated section at the end of this file.
+- **Phase 6 — Omniscience Assistant, Step 1 (Conversation & Message Persistence Foundation)**:
+  implemented this session — see the dedicated section at the end of this file. **Unlike Phase 5's
+  Steps 3-5, `@omniscience/api`'s install/build/typecheck/lint/test could not be run in this
+  sandbox this session** (no network egress at all — not even `corepack`/`npm install -g` succeed;
+  see that section's Verification status for the exact reason, the exact commands to run locally,
+  and what was manually cross-checked in their place). This is the last completed step; no further
+  step or phase has been started.
 
 
 ## Phase 1 — Premium UI Foundation
@@ -4194,6 +4200,174 @@ This is Phase 5 Step 5. No further step or phase has been started.
 
 ---
 
+## Phase 6 — Omniscience Assistant, Step 1 (Conversation & Message Persistence Foundation)
+
+Approved scope (see the Phase 6 roadmap analysis and this step's scope-design conversation):
+a logged-in user can create a workspace-scoped conversation, send a message, receive a
+non-streaming assistant response through the existing `OmniCoreService.execute()` pipeline,
+persist both the user and assistant messages, reload the conversation later, and remain
+completely isolated from other users and workspaces. No streaming, no chat UI, no update/delete/
+rename/auto-title, no RAG/OmniMemory/OmniAgents/vision/voice/analytics/file attachments — all
+explicitly deferred to later steps or later phases.
+
+### What was implemented
+
+- **`MongoService`/`MongoModule`** (`apps/api/src/mongo/`) — the first module in the repository to
+  actually construct a client against `MONGO_URL`, which has been a required, validated `Env`
+  field since Phase 0 with `mongo:7` provisioned in `docker-compose.yml` since the same phase but
+  never previously used by any application code. Lifecycle-managed (`onModuleInit`/
+  `onModuleDestroy`), `@Global()`, mirrors `RedisService`/`RedisModule` exactly. Uses the native
+  `mongodb` driver directly — no ODM.
+- **`ConversationsModule`** (`apps/api/src/conversations/`) — controller, service, repository,
+  errors, all mirroring `WorkspacesModule`'s conventions:
+  - `ConversationsRepository` — the only file that touches Mongo directly. Two collections
+    (`conversations`, `messages`, never a nested-array document), both with `workspaceId`/
+    `ownerId` denormalized onto every document so ownership is always answerable from Mongo data
+    alone. Opaque `{ createdAt, id }` keyset cursors (base64url-encoded), same shape and
+    reasoning as `WorkspacesService`'s Prisma cursors. Creates production-grade indexes on
+    `onModuleInit()`: `{ ownerId, workspaceId, createdAt: -1, _id: -1 }` on `conversations`
+    (newest-first list), `{ conversationId, createdAt: 1, _id: 1 }` on `messages` (chronological
+    reload), plus a defense-in-depth `{ ownerId, workspaceId }` index on `messages`.
+  - `ConversationsService` — orchestrates: verifies workspace ownership via `WorkspacesService`
+    (now exported by `WorkspacesModule`, previously provider-only), looks up/authorizes
+    conversations (`null` from the repository becomes the shared `CONVERSATION_NOT_FOUND`, 404,
+    for a missing id, a foreign owner's id, and a foreign workspace's id alike — no
+    enumeration difference), and — for `sendMessage()` — persists the user message, calls
+    `OmniCoreService.execute()` directly via dependency injection (now exported by
+    `OmniCoreModule`, previously provider-only; never through the HTTP boundary), and persists the
+    assistant reply with a trimmed `omniCore` metadata block (`planId`, `intent`, `matchedRuleId`,
+    `confidence`, `providerId`, `modelId`, `taskPlanId` — never the full `taskPlan`/`execution`
+    diagnostic objects). If `execute()` throws, the already-persisted user message is left exactly
+    as it is and no assistant message — real, fake, or empty — is ever persisted; the OmniCore
+    domain error propagates unchanged, exactly as it already does through
+    `POST /omnicore/execute`.
+  - `ConversationsController` — five endpoints, all behind `JwtAuthGuard`, all scoped to a
+    workspace the caller owns:
+    `POST/GET /workspaces/:workspaceId/conversations`,
+    `GET /workspaces/:workspaceId/conversations/:conversationId`,
+    `GET/POST /workspaces/:workspaceId/conversations/:conversationId/messages`.
+    `:conversationId` is validated as a 24-character hex `ObjectId` by
+    `conversationIdParamSchema` before ever reaching the repository, so a malformed id is a
+    `400 VALIDATION_ERROR`, never a driver-level `BSONError`. `POST .../messages` reuses
+    `omniCorePromptSchema` (extracted from `packages/schemas/src/omnicore.ts`, where it was
+    previously inline) verbatim for `content` — the identical trim/min-1/max-8000 rule
+    `omniCoreExecuteRequestSchema.prompt` already enforces, not a second, separately tuned limit.
+- **Strictly necessary additive exports to completed phases**, per the approved decision to keep
+  Phase 0-5 architecture unchanged except where a new export is required: `WorkspacesModule` now
+  exports `WorkspacesService` (previously provider-only); `OmniCoreModule` now exports
+  `OmniCoreService` (previously provider-only, and its own doc comment already anticipated exactly
+  this change). No behavior of either service changed.
+- **`app.module.ts`** — `MongoModule` and `ConversationsModule` registered additively.
+- **Shared packages** — `packages/types/src/conversations.ts` (`Conversation`, `Message`,
+  `MessageOmniCoreMetadata`, and the five request/response shapes), `packages/schemas/src/conversations.ts`
+  (`.strict()` request schemas, bounded/capped list-query schemas, the `conversationIdParamSchema`
+  ObjectId-format check), both re-exported from their package's `index.ts`. `packages/sdk`'s
+  `OmniscienceClient` gained `createConversation`/`listConversations`/`getConversation`/
+  `listMessages`/`sendMessage`, following the exact method-per-endpoint pattern already
+  established for `workspaces`.
+- **`.github/workflows/ci.yml`** — a `mongo:7` service container added alongside the existing
+  `redis:7-alpine` one, so `conversations.repository.spec.ts`'s real-Mongo suite (see below) runs
+  against a real instance in CI, the same role the `redis` container already plays for
+  `refresh-token.store.concurrency.spec.ts`.
+
+### Tests written
+
+- `mongo.service.spec.ts` — lifecycle (connect/disconnect/error-listener registration) against a
+  mocked driver, mirroring `redis.service.spec.ts`'s technique.
+- `conversations.repository.spec.ts` — a **real-Mongo** suite (indexes, ownership-scoped
+  create/list/get, chronological/newest-first keyset pagination including a second page, cross-
+  conversation and cross-workspace isolation, `touchConversation`, malformed-cursor rejection),
+  self-skipping with a console warning if no MongoDB is reachable at `MONGO_URL` (or
+  `mongodb://localhost:27017`) — same pattern `refresh-token.store.concurrency.spec.ts` already
+  established for Redis. **Not run for real in this environment** — see Known Limitations below.
+- `conversations.service.spec.ts` — ownership checks (including that `WORKSPACE_NOT_FOUND`
+  propagates before any conversation is created), the identical `CONVERSATION_NOT_FOUND` for a
+  missing vs. foreign conversation, `sendMessage()`'s exact call order (user message persisted →
+  `OmniCoreService.execute()` called directly, not via HTTP → assistant message persisted), the
+  trimmed `omniCore` metadata shape, and — the locked Step 1 decision — that the user message
+  stays persisted and no assistant message is ever created when `execute()` rejects.
+- `conversations.controller.spec.ts` — thin delegation tests for all five routes, mirroring
+  `workspaces.controller.spec.ts`.
+- `packages/types/src/conversations.test.ts` / `packages/schemas/src/conversations.test.ts` —
+  compile-shape tests and full Zod validation coverage (including the reused 8000-character limit
+  and the `ObjectId` format check), mirroring `tool.test.ts`/`workspaces.test.ts`.
+- `packages/sdk/src/client.test.ts` — request/response shape and error-propagation tests for all
+  five new SDK methods, mirroring the existing workspace-method tests.
+- `apps/api/test/conversations.e2e-spec.ts` — full HTTP-level coverage against the real
+  `AppModule` (real `JwtAuthGuard`, real `ThrottlerGuard`, real `ZodValidationPipe`, a
+  `FakeMongoService` in-memory stand-in — see below — and, for the message-sending tests, a fake
+  `ANTHROPIC_CLIENT`, the exact technique `ai-generate.e2e-spec.ts` already established): create,
+  list (newest-first) and paginate conversations, get-by-id with identical
+  `CONVERSATION_NOT_FOUND` for a missing id / another owner's id / the same owner's conversation
+  requested through a different one of their own workspaces, reject a `title` field and a
+  malformed `ObjectId`, send a message through the real (fake-client-backed) OmniCore pipeline and
+  confirm the persisted `omniCore` metadata shape, reload messages in chronological order and
+  paginate them, propagate `NO_COMPATIBLE_MODEL` (422) unchanged when no provider is configured
+  while confirming the user's message is still persisted and reachable afterward, reject an
+  unauthenticated request, and reject empty/over-limit message content.
+- **`FakeMongoService`** (`apps/api/test/helpers/fake-mongo.service.ts`) — a minimal in-memory
+  stand-in for the exact slice of the native driver's `Collection<T>` API
+  `ConversationsRepository` uses (`insertOne`, `findOne`, `find().sort().limit().toArray()`,
+  `updateOne`, `createIndex`), wired into `createTestApp()` alongside the existing
+  `FakeRedisService`/`FakePrismaService` overrides so every other e2e spec in the repository
+  keeps working without a live MongoDB instance. Real correctness against actual MongoDB semantics
+  is proven separately by `conversations.repository.spec.ts`'s real-Mongo suite — the same "a fake
+  for the rest of the suite, a dedicated real-infra spec for the thing that actually needs it"
+  split `RefreshTokenStore`'s concurrency spec already established for Redis.
+
+### Known limitations (this step)
+
+- **No update, delete, rename, or auto-title endpoint.** Every conversation is created with
+  `title: null`; there is no way to change it in this step. Deliberately deferred, per the locked
+  Step 1 decision.
+- **No streaming.** `POST .../messages` is a single request/response round trip, same as
+  `POST /omnicore/execute`. Deferred to Phase 6 Step 2.
+- **No chat UI.** `apps/web` is untouched by this step. Deferred to Phase 6 Step 3.
+- **`lastMessagePreview` is stored but never returned** by any endpoint — included on the Mongo
+  document now (cheap to keep current) for a future conversation-list UI, but not part of this
+  step's `Conversation` API contract.
+- **No workspace-membership/sharing model.** Ownership is strictly single-owner, matching
+  `Workspace.ownerId`'s existing single-owner design — unchanged by this step.
+
+### Verification status — **implementation complete; full runtime verification blocked in this sandbox**
+
+Every file in this step was implemented, and its logic was cross-checked by hand against every
+pattern it reuses: `WorkspacesService.getById()`'s exact `NotFoundException`/`{code, message}`
+shape, `OmniCoreExecuteResponse`'s exact field names (`planId`, `intent`, `matchedRuleId`,
+`confidence`, `text`, `providerId`, `modelId`, `execution.taskPlanId`), `ai-generate.e2e-spec.ts`'s
+exact `ANTHROPIC_CLIENT`-override technique and `NO_COMPATIBLE_MODEL` (422) behavior when no
+provider is configured, and every import against the actual exported symbol in its target module
+(this pass caught, and fixed, two real gaps: `WorkspacesModule` and `OmniCoreModule` did not
+previously export the services this step needs — both are now exported additively).
+
+This sandbox has no network egress (`corepack prepare`, `npm install -g typescript`, and a direct
+`curl` to `registry.npmjs.org` all fail with the identical `x-deny-reason: host_not_allowed` /
+HTTP 403 already documented elsewhere in this file for earlier phases), and no `node_modules`
+exists in the extracted archive. As a direct consequence, none of the following could be run for
+real in this environment and are **not verified**:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm --filter @omniscience/api exec prisma generate
+pnpm typecheck
+pnpm lint
+pnpm build
+pnpm test
+docker compose up -d   # real MongoDB for conversations.repository.spec.ts's real-infra suite
+```
+
+**Before this step is considered done, a maintainer with network access must run the six commands
+above** (the exact sequence every prior phase's runtime verification has used) and confirm:
+`pnpm typecheck`/`pnpm lint`/`pnpm build` are clean; `pnpm test` is green, including
+`conversations.repository.spec.ts`'s real-Mongo suite actually connecting (not silently
+self-skipping — check its console output) and `conversations.e2e-spec.ts`'s full HTTP suite; and a
+manual smoke test (register → login → create workspace → create conversation → send a message with
+a real or fake-backed provider → reload the conversation) behaves as documented above.
+
+This is Phase 6 Step 1. Phase 6 Steps 2 and onward, and Phase 7 onward, have not been started.
+
+---
+
 # Future Reserved Phase
 
 ## Arceus Activation Mode
@@ -4226,6 +4400,6 @@ No engineering work related to this feature should begin during the current acti
 
 Current development priority remains:
 
-> **Phase 5 — Core AI Platform Expansion**
+> **Phase 6 — Omniscience Assistant (Step 1 implemented, pending runtime verification by a maintainer with network access; Steps 2+ not started)**
 
 All future planning should continue following the original platform roadmap before Arceus Activation Mode is started.

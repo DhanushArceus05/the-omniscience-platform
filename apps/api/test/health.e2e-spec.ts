@@ -3,31 +3,34 @@ import { Test, TestingModule } from "@nestjs/testing";
 import type { Env } from "@omniscience/config";
 import { createLogger } from "@omniscience/utils";
 import type Redis from "ioredis";
+import type { Db } from "mongodb";
 import request from "supertest";
 import { AppModule } from "../src/app.module";
 import { AllExceptionsFilter } from "../src/common/filters/all-exceptions.filter";
 import { ENV } from "../src/config/config.constants";
+import { MongoService } from "../src/mongo/mongo.service";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { RedisService } from "../src/redis/redis.service";
 
 /**
  * This is a health-endpoint smoke test only. It boots the real
  * `AppModule` (so it still exercises the actual wiring: ConfigModule,
- * PrismaModule, RedisModule, MailModule, AuthModule, HealthModule), but
- * it must not require a real Postgres/Redis/Mongo/Qdrant instance or
- * real secrets to run in CI/local `pnpm test`.
+ * PrismaModule, MongoModule, RedisModule, MailModule, AuthModule,
+ * HealthModule), but it must not require a real Postgres/Redis/Mongo/
+ * Qdrant instance or real secrets to run in CI/local `pnpm test`.
  *
  * `packages/config`'s environment validation is NOT weakened or bypassed:
  * `ENV` is overridden with a fully valid, correctly-shaped test `Env`
  * object (same schema, same required fields, just test values) rather
  * than making any variable optional.
  *
- * `PrismaService` and `RedisService` are the only providers in
- * `AppModule` that open a real network connection during
- * `onModuleInit`. Both are overridden with no-op stubs so this suite
- * never dials an actual Postgres or Redis server. This does not change
- * application behavior: production still uses the real services
- * untouched — only this test's DI container substitutes them.
+ * `PrismaService`, `MongoService`, and `RedisService` are the only
+ * providers in `AppModule` that open a real network connection during
+ * `onModuleInit` (`MongoService` since Phase 6 Step 1). All three are
+ * overridden with no-op stubs so this suite never dials an actual
+ * Postgres, MongoDB, or Redis server. This does not change application
+ * behavior: production still uses the real services untouched — only
+ * this test's DI container substitutes them.
  */
 const testEnv: Env = {
   NODE_ENV: "test",
@@ -83,6 +86,46 @@ class FakePrismaService {
   }
 }
 
+/**
+ * Phase 6 Step 1 — `MongoModule` is now part of the real `AppModule`
+ * this suite boots, and its real `MongoService` opens a real
+ * connection in `onModuleInit`. This suite never exercises any
+ * Mongo-backed endpoint, so — mirroring `FakeRedisService`/
+ * `FakePrismaService` above exactly — this is a minimal stub, not the
+ * fuller in-memory `FakeMongoService`
+ * (`test/helpers/fake-mongo.service.ts`) the conversation/message e2e
+ * suites need.
+ *
+ * `getDb()` cannot be a bare `{}`, though: `ConversationsModule` is
+ * also part of the real `AppModule` this suite boots, and its
+ * `ConversationsRepository` (`implements OnModuleInit`) calls
+ * `mongo.getDb().collection(...).createIndex(...)` during `app.init()`
+ * — not lazily, not only when a conversation endpoint is actually
+ * hit. A `{}` stub has no `.collection()` method at all, so that call
+ * throws inside `beforeAll`, `app` is never assigned, and both tests
+ * below fail. `collection()` here returns just enough of a stand-in —
+ * a `createIndex()` that resolves — for that startup call to succeed
+ * without requiring a real MongoDB instance.
+ */
+class FakeMongoService {
+  async onModuleInit(): Promise<void> {
+    // no-op: this e2e suite is a health-only smoke test and must not
+    // require a real MongoDB instance to be running.
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    // no-op
+  }
+
+  getDb(): Db {
+    return {
+      collection: () => ({
+        createIndex: async () => "noop-index",
+      }),
+    } as unknown as Db;
+  }
+}
+
 describe("AppModule (e2e)", () => {
   let app: INestApplication | undefined;
 
@@ -94,6 +137,8 @@ describe("AppModule (e2e)", () => {
       .useValue(testEnv)
       .overrideProvider(RedisService)
       .useValue(new FakeRedisService())
+      .overrideProvider(MongoService)
+      .useValue(new FakeMongoService())
       .overrideProvider(PrismaService)
       .useValue(new FakePrismaService())
       .compile();

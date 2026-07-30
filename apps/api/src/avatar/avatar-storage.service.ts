@@ -119,23 +119,24 @@ export class AvatarStorageService {
 
   /**
    * Best-effort delete of a previously-stored avatar (replacing or
-   * removing one). A missing file (`ENOENT` — already gone, or never
-   * existed) is not an error; anything else surfaces as a clear,
-   * structured failure rather than a silent no-op or a raw filesystem
-   * error/path leaking to the client.
+   * removing one). A missing file is not an error — `fs.rm(...,
+   * { force: true })` is Node's own idempotent removal primitive,
+   * resolving successfully whether or not the file exists, rather than
+   * this method manually special-casing an `ENOENT` rejection from
+   * `fs.unlink`. A storage key that fails `resolveSafePath`'s format
+   * check (e.g. a path-traversal attempt) is also treated as a no-op —
+   * that check exists precisely so such a key is guaranteed to never
+   * correspond to any real file this service manages, so there is
+   * nothing to remove and nothing to leak by staying silent. Any other
+   * failure (a real permissions error, etc.) still surfaces as a
+   * clear, structured error rather than a silent no-op.
    */
   async delete(storageKey: string | null | undefined): Promise<void> {
     if (!storageKey) return;
     try {
-      await fs.unlink(this.resolveSafePath(storageKey));
+      await fs.rm(this.resolveSafePath(storageKey), { force: true });
     } catch (error) {
-      if (error instanceof BadRequestException) {
-        // An invalid key can't correspond to a real file on disk anyway
-        // (see `resolveSafePath`) — treat exactly like "already gone".
-        return;
-      }
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") return;
+      if (error instanceof BadRequestException) return;
       throw new InternalServerErrorException({
         code: "AVATAR_STORAGE_ERROR",
         message: "The previous avatar could not be removed.",

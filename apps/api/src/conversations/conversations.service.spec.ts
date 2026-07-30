@@ -1,0 +1,255 @@
+import { NotFoundException } from "@nestjs/common";
+import { Test, TestingModule } from "@nestjs/testing";
+import { OmniCoreService } from "../omnicore/omnicore.service";
+import { WorkspacesService } from "../workspaces/workspaces.service";
+import { ConversationsService } from "./conversations.service";
+import { ConversationsRepository } from "./conversations.repository";
+
+describe("ConversationsService", () => {
+  let service: ConversationsService;
+
+  const repository = {
+    createConversation: jest.fn(),
+    listConversations: jest.fn(),
+    getConversation: jest.fn(),
+    touchConversation: jest.fn(),
+    createMessage: jest.fn(),
+    listMessages: jest.fn(),
+  };
+  const workspaces = { getById: jest.fn() };
+  const omniCore = { execute: jest.fn() };
+
+  const workspace = {
+    id: "workspace_1",
+    name: "Research",
+    description: null,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+
+  const conversation = {
+    id: "665f1c2b9a4e8f0012345678",
+    workspaceId: "workspace_1",
+    title: null,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    workspaces.getById.mockResolvedValue(workspace);
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        ConversationsService,
+        { provide: ConversationsRepository, useValue: repository },
+        { provide: WorkspacesService, useValue: workspaces },
+        { provide: OmniCoreService, useValue: omniCore },
+      ],
+    }).compile();
+
+    service = module.get<ConversationsService>(ConversationsService);
+  });
+
+  describe("createConversation", () => {
+    it("verifies workspace ownership before creating a conversation", async () => {
+      repository.createConversation.mockResolvedValue(conversation);
+
+      const result = await service.createConversation("user_1", "workspace_1");
+
+      expect(workspaces.getById).toHaveBeenCalledWith("user_1", "workspace_1");
+      expect(repository.createConversation).toHaveBeenCalledWith("user_1", "workspace_1");
+      expect(result).toEqual(conversation);
+    });
+
+    it("propagates WORKSPACE_NOT_FOUND without ever creating a conversation", async () => {
+      workspaces.getById.mockRejectedValue(
+        new NotFoundException({ code: "WORKSPACE_NOT_FOUND", message: "Workspace not found." }),
+      );
+
+      await expect(service.createConversation("user_1", "foreign-workspace")).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(repository.createConversation).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("getConversation", () => {
+    it("returns the caller's own conversation", async () => {
+      repository.getConversation.mockResolvedValue(conversation);
+
+      const result = await service.getConversation("user_1", "workspace_1", conversation.id);
+
+      expect(result).toEqual(conversation);
+    });
+
+    it("throws the identical CONVERSATION_NOT_FOUND for a missing conversation", async () => {
+      repository.getConversation.mockResolvedValue(null);
+
+      await expect(
+        service.getConversation("user_1", "workspace_1", "665f1c2b9a4e8f0012345678"),
+      ).rejects.toMatchObject({
+        response: { code: "CONVERSATION_NOT_FOUND" },
+      });
+    });
+
+    it("throws the identical CONVERSATION_NOT_FOUND for another owner's conversation (repository returns null either way)", async () => {
+      repository.getConversation.mockResolvedValue(null);
+
+      await expect(
+        service.getConversation("user_2", "workspace_1", conversation.id),
+      ).rejects.toMatchObject({
+        response: { code: "CONVERSATION_NOT_FOUND" },
+      });
+    });
+
+    it("throws CONVERSATION_NOT_FOUND — never WORKSPACE_NOT_FOUND — for a workspace the caller doesn't own at all, and never calls WorkspacesService", async () => {
+      repository.getConversation.mockResolvedValue(null);
+
+      await expect(
+        service.getConversation("user_2", "someone-elses-workspace", conversation.id),
+      ).rejects.toMatchObject({
+        response: { code: "CONVERSATION_NOT_FOUND" },
+      });
+      expect(workspaces.getById).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("sendMessage", () => {
+    const userMessage = {
+      id: "665f1c2b9a4e8f0012345679",
+      conversationId: conversation.id,
+      role: "user" as const,
+      content: "Hello, OmniCore.",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    const assistantMessage = {
+      id: "665f1c2b9a4e8f001234567a",
+      conversationId: conversation.id,
+      role: "assistant" as const,
+      content: "Hello! How can I help?",
+      createdAt: "2026-01-01T00:00:01.000Z",
+    };
+    const omniCoreResult = {
+      planId: "plan_1",
+      intent: "simple-generation" as const,
+      matchedRuleId: "fast-rule.simple-generation",
+      confidence: 0.9,
+      text: "Hello! How can I help?",
+      providerId: "anthropic" as const,
+      modelId: "claude-sonnet-5" as const,
+      taskPlan: { taskPlanId: "task-plan_1" } as never,
+      execution: { taskPlanId: "task-plan_1" } as never,
+    };
+
+    beforeEach(() => {
+      repository.getConversation.mockResolvedValue(conversation);
+    });
+
+    it("persists the user message before calling OmniCoreService.execute()", async () => {
+      const callOrder: string[] = [];
+      repository.createMessage.mockImplementation(async (input: { role: string }) => {
+        callOrder.push(`createMessage:${input.role}`);
+        return input.role === "user" ? userMessage : assistantMessage;
+      });
+      omniCore.execute.mockImplementation(async () => {
+        callOrder.push("omniCore.execute");
+        return omniCoreResult;
+      });
+
+      await service.sendMessage("user_1", "workspace_1", conversation.id, "Hello, OmniCore.");
+
+      expect(callOrder).toEqual(["createMessage:user", "omniCore.execute", "createMessage:assistant"]);
+    });
+
+    it("calls OmniCoreService.execute() directly, not through HTTP", async () => {
+      repository.createMessage.mockResolvedValueOnce(userMessage).mockResolvedValueOnce(assistantMessage);
+      omniCore.execute.mockResolvedValue(omniCoreResult);
+
+      await service.sendMessage("user_1", "workspace_1", conversation.id, "Hello, OmniCore.");
+
+      expect(omniCore.execute).toHaveBeenCalledWith("Hello, OmniCore.");
+    });
+
+    it("persists only the trimmed OmniCore metadata on the assistant message", async () => {
+      repository.createMessage.mockResolvedValueOnce(userMessage).mockResolvedValueOnce(assistantMessage);
+      omniCore.execute.mockResolvedValue(omniCoreResult);
+
+      await service.sendMessage("user_1", "workspace_1", conversation.id, "Hello, OmniCore.");
+
+      expect(repository.createMessage).toHaveBeenNthCalledWith(2, {
+        conversationId: conversation.id,
+        workspaceId: "workspace_1",
+        ownerId: "user_1",
+        role: "assistant",
+        content: "Hello! How can I help?",
+        omniCore: {
+          planId: "plan_1",
+          intent: "simple-generation",
+          matchedRuleId: "fast-rule.simple-generation",
+          confidence: 0.9,
+          providerId: "anthropic",
+          modelId: "claude-sonnet-5",
+          taskPlanId: "task-plan_1",
+        },
+      });
+    });
+
+    it("returns both the user and assistant messages", async () => {
+      repository.createMessage.mockResolvedValueOnce(userMessage).mockResolvedValueOnce(assistantMessage);
+      omniCore.execute.mockResolvedValue(omniCoreResult);
+
+      const result = await service.sendMessage(
+        "user_1",
+        "workspace_1",
+        conversation.id,
+        "Hello, OmniCore.",
+      );
+
+      expect(result).toEqual({ userMessage, assistantMessage });
+    });
+
+    it("keeps the user message persisted and never persists an assistant message when OmniCore execution fails", async () => {
+      repository.createMessage.mockResolvedValueOnce(userMessage);
+      const omniCoreError = new Error("AMBIGUOUS_INTENT");
+      omniCore.execute.mockRejectedValue(omniCoreError);
+
+      await expect(
+        service.sendMessage("user_1", "workspace_1", conversation.id, "Hello, OmniCore."),
+      ).rejects.toThrow(omniCoreError);
+
+      expect(repository.createMessage).toHaveBeenCalledTimes(1);
+      expect(repository.createMessage).toHaveBeenCalledWith({
+        conversationId: conversation.id,
+        workspaceId: "workspace_1",
+        ownerId: "user_1",
+        role: "user",
+        content: "Hello, OmniCore.",
+      });
+      expect(repository.touchConversation).not.toHaveBeenCalled();
+    });
+
+    it("throws CONVERSATION_NOT_FOUND before ever persisting a message for a foreign conversation", async () => {
+      repository.getConversation.mockResolvedValue(null);
+
+      await expect(
+        service.sendMessage("user_2", "workspace_1", conversation.id, "Hello, OmniCore."),
+      ).rejects.toMatchObject({ response: { code: "CONVERSATION_NOT_FOUND" } });
+
+      expect(repository.createMessage).not.toHaveBeenCalled();
+      expect(omniCore.execute).not.toHaveBeenCalled();
+    });
+
+    it("throws CONVERSATION_NOT_FOUND — never WORKSPACE_NOT_FOUND — when sending to another owner's conversation via a workspace the caller doesn't own", async () => {
+      repository.getConversation.mockResolvedValue(null);
+
+      await expect(
+        service.sendMessage("user_2", "someone-elses-workspace", conversation.id, "Hello, OmniCore."),
+      ).rejects.toMatchObject({ response: { code: "CONVERSATION_NOT_FOUND" } });
+
+      expect(workspaces.getById).not.toHaveBeenCalled();
+      expect(repository.createMessage).not.toHaveBeenCalled();
+      expect(omniCore.execute).not.toHaveBeenCalled();
+    });
+  });
+});

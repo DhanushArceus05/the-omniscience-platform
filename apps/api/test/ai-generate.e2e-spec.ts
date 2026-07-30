@@ -11,11 +11,13 @@ import { GEMINI_CLIENT } from "../src/ai/providers/gemini-client.provider";
 import { AllExceptionsFilter } from "../src/common/filters/all-exceptions.filter";
 import { ENV } from "../src/config/config.constants";
 import { MailService } from "../src/mail/mail.service";
+import { MongoService } from "../src/mongo/mongo.service";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { RedisService } from "../src/redis/redis.service";
 import { registerVerifyAndLogin } from "./helpers/auth-test-helpers";
 import { testEnv } from "./helpers/create-test-app";
 import { FakeMailService } from "./helpers/fake-mail.service";
+import { FakeMongoService } from "./helpers/fake-mongo.service";
 import { FakePrismaService } from "./helpers/fake-prisma.service";
 import { FakeRedisService } from "./helpers/fake-redis.service";
 
@@ -35,7 +37,13 @@ import { FakeRedisService } from "./helpers/fake-redis.service";
  * a fake object implementing the corresponding narrow client interface
  * (same technique `anthropic.provider.spec.ts`/`gemini.provider.spec.ts`
  * use at the unit level), so even the "success" tests never leave the
- * process.
+ * process. `MongoService` is also overridden with the shared
+ * `FakeMongoService` (Phase 6 Step 1 — `MongoModule` is now part of the
+ * real `AppModule` this suite boots, and its real `MongoService` opens
+ * a real connection in `onModuleInit`; this suite exercises none of
+ * the conversation/message endpoints, so a fake is all it needs, same
+ * reasoning `helpers/create-test-app.ts`'s `createTestApp()` already
+ * applies).
  *
  * Each test gets its own fresh `INestApplication` — same reasoning as
  * `workspaces.e2e-spec.ts` — so per-route throttle counters never leak
@@ -85,6 +93,8 @@ describe("POST /ai/generate (e2e, Phase 4 Steps 3-4)", () => {
       .useValue(env)
       .overrideProvider(RedisService)
       .useValue(new FakeRedisService())
+      .overrideProvider(MongoService)
+      .useValue(new FakeMongoService())
       .overrideProvider(PrismaService)
       .useValue(new FakePrismaService())
       .overrideProvider(MailService)
@@ -101,7 +111,12 @@ describe("POST /ai/generate (e2e, Phase 4 Steps 3-4)", () => {
 
     const app = moduleFixture.createNestApplication<NestExpressApplication>();
     app.useGlobalFilters(new AllExceptionsFilter(createLogger({ service: "api-test" })));
-    app.useStaticAssets(path.resolve(testEnv.AVATAR_STORAGE_DIR), { prefix: "/uploads/avatars" });
+    app.useStaticAssets(path.resolve(testEnv.AVATAR_STORAGE_DIR), {
+      prefix: "/uploads/avatars",
+      etag: false,
+      lastModified: false,
+      cacheControl: false,
+    });
     await app.init();
 
     return { app, mail };

@@ -3,10 +3,14 @@
 **One Platform. Every Intelligence.**
 
 This is the monorepo for The Omniscience Platform. **Phase 0 through Phase 4 are complete**, and
-**Phase 5 (OmniCore) Steps 1 through 5 are complete**. Phase 5 itself is not yet declared complete
-and Phase 6 has not been started. For the authoritative, detailed, step-by-step progress record,
-see `claude/PROJECT_STATE.md` and `claude/CURRENT_PHASE.md`; see `docs/08_Development_Roadmap.md`
-for the full phase list and what comes next.
+**Phase 5 (OmniCore) Steps 1 through 5 are complete**. Phase 5 itself is not yet declared complete.
+**Phase 6 (Omniscience Assistant) Step 1 — Conversation & Message Persistence Foundation — has been
+implemented but is pending runtime verification** (this session's sandbox had no network egress —
+see `claude/CURRENT_PHASE.md`'s "Phase 6 — Omniscience Assistant, Step 1" section for what to run
+locally before treating it as verified). No further Phase 6 step has been started. For the
+authoritative, detailed, step-by-step progress record, see `claude/PROJECT_STATE.md` and
+`claude/CURRENT_PHASE.md`; see `docs/08_Development_Roadmap.md` for the full phase list and what
+comes next.
 
 ## What's implemented
 
@@ -29,15 +33,22 @@ for the full phase list and what comes next.
     Orchestration Engine that runs task plans stage-by-stage, and a generic Tool Calling
     Framework (`ToolRegistryService`/`ToolExecutorService`) with three foundation tools
     (Echo, CurrentTime, UUID)
+  - Conversations (`apps/api/src/conversations/`), Phase 6 Step 1's conversation/message
+    persistence foundation: workspace-scoped conversation create/list/get and message
+    list/send, backed by MongoDB (`apps/api/src/mongo/`) and routed through `OmniCoreService`
+    directly — `POST`/`GET /workspaces/:workspaceId/conversations`,
+    `GET /workspaces/:workspaceId/conversations/:conversationId`,
+    `GET`/`POST /workspaces/:workspaceId/conversations/:conversationId/messages`. No streaming,
+    chat UI, rename/delete, or auto-title yet.
 - `apps/ai-service` — FastAPI + typed Python (health endpoint, structured logging, global error handling)
 - Shared packages: `ui`, `types`, `schemas`, `config`, `sdk`, `prompts`, `utils`
 - Docker Compose for PostgreSQL, MongoDB, Redis and Qdrant
 - Environment validation (`packages/config` for Node, `app/core/config.py` for Python) + `.env.example`
 - ESLint + Prettier + strict TypeScript across the Node workspace; Ruff + Mypy (strict) for Python
 
-**Not yet built:** RAG, agents, memory, web search, external tool integrations beyond the three
-foundation tools, ML modules, and the Omniscience Assistant conversational product itself (Phase 6
-onward). See `claude/CURRENT_PHASE.md` for exact per-step scope and deferred work.
+**Not yet built:** streaming responses, a chat UI, RAG, agents, memory, web search, external tool
+integrations beyond the three foundation tools, ML modules — see `claude/CURRENT_PHASE.md` for
+exact per-step scope and deferred work.
 
 ## Prerequisites
 

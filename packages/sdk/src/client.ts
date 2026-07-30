@@ -1,6 +1,7 @@
 import type {
   ChangePasswordRequest,
   ChangePasswordResponse,
+  CreateConversationResponse,
   CreateWorkspaceRequest,
   CreateWorkspaceResponse,
   DeleteAccountRequest,
@@ -8,8 +9,13 @@ import type {
   DeleteAvatarResponse,
   ForgotPasswordRequest,
   ForgotPasswordResponse,
+  GetConversationResponse,
   GetWorkspaceResponse,
   HealthCheckResponse,
+  ListConversationsQuery,
+  ListConversationsResponse,
+  ListMessagesQuery,
+  ListMessagesResponse,
   ListSessionsResponse,
   ListWorkspacesQuery,
   ListWorkspacesResponse,
@@ -28,6 +34,7 @@ import type {
   ResetPasswordResponse,
   RevokeAllSessionsResponse,
   RevokeSessionResponse,
+  SendMessageResponse,
   UpdateProfileRequest,
   UpdateProfileResponse,
   UploadAvatarResponse,
@@ -217,6 +224,126 @@ export class OmniscienceClient {
     return this.request<GetWorkspaceResponse>(
       `${this.apiBaseUrl}/workspaces/${encodeURIComponent(id)}`,
       { method: "GET", headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+  }
+
+  /**
+   * `POST /workspaces/:workspaceId/conversations` — Phase 6 Step 1.
+   * Creates a conversation in a workspace the caller owns (ownership
+   * is verified server-side, never from `workspaceId` alone). Every
+   * conversation is created with `title: null` — this step has no
+   * rename or auto-title endpoint yet.
+   */
+  async createConversation(accessToken: string, workspaceId: string): Promise<CreateConversationResponse> {
+    return this.request<CreateConversationResponse>(
+      `${this.apiBaseUrl}/workspaces/${encodeURIComponent(workspaceId)}/conversations`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({}),
+      },
+    );
+  }
+
+  /**
+   * `GET /workspaces/:workspaceId/conversations` — Phase 6 Step 1.
+   * Bounded, keyset-paginated list of the caller's own conversations
+   * within one workspace, newest first — same pagination contract as
+   * `listWorkspaces()`.
+   */
+  async listConversations(
+    accessToken: string,
+    workspaceId: string,
+    query?: ListConversationsQuery,
+  ): Promise<ListConversationsResponse> {
+    const params = new URLSearchParams();
+    if (query?.limit !== undefined) {
+      params.set("limit", String(query.limit));
+    }
+    if (query?.cursor) {
+      params.set("cursor", query.cursor);
+    }
+    const queryString = params.toString();
+    return this.request<ListConversationsResponse>(
+      `${this.apiBaseUrl}/workspaces/${encodeURIComponent(workspaceId)}/conversations${
+        queryString ? `?${queryString}` : ""
+      }`,
+      { method: "GET", headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+  }
+
+  /**
+   * `GET /workspaces/:workspaceId/conversations/:conversationId` —
+   * Phase 6 Step 1. Throws `ApiClientError` with
+   * `code: "CONVERSATION_NOT_FOUND"` (404) whether the id doesn't
+   * exist at all, belongs to a different owner, or belongs to a
+   * different workspace — identical either way, by design, on the
+   * backend, same no-enumeration convention `getWorkspace()` already
+   * follows.
+   */
+  async getConversation(
+    accessToken: string,
+    workspaceId: string,
+    conversationId: string,
+  ): Promise<GetConversationResponse> {
+    return this.request<GetConversationResponse>(
+      `${this.apiBaseUrl}/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}`,
+      { method: "GET", headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+  }
+
+  /**
+   * `GET /workspaces/:workspaceId/conversations/:conversationId/messages`
+   * — Phase 6 Step 1. Bounded, keyset-paginated reload of a
+   * conversation's messages in chronological (oldest-first) order —
+   * reading order, not newest-first like `listConversations()`.
+   */
+  async listMessages(
+    accessToken: string,
+    workspaceId: string,
+    conversationId: string,
+    query?: ListMessagesQuery,
+  ): Promise<ListMessagesResponse> {
+    const params = new URLSearchParams();
+    if (query?.limit !== undefined) {
+      params.set("limit", String(query.limit));
+    }
+    if (query?.cursor) {
+      params.set("cursor", query.cursor);
+    }
+    const queryString = params.toString();
+    return this.request<ListMessagesResponse>(
+      `${this.apiBaseUrl}/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}/messages${
+        queryString ? `?${queryString}` : ""
+      }`,
+      { method: "GET", headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+  }
+
+  /**
+   * `POST /workspaces/:workspaceId/conversations/:conversationId/messages`
+   * — Phase 6 Step 1. Sends `content` through the backend's existing
+   * `OmniCoreService.execute()` pipeline and returns both the
+   * persisted user message and the persisted assistant reply. If
+   * OmniCore execution fails, this throws the same `ApiClientError`
+   * shape any other OmniCore domain error would (e.g.
+   * `AMBIGUOUS_INTENT`) — the user's message is still persisted
+   * server-side even though this call rejects; a subsequent
+   * `listMessages()` call will include it.
+   */
+  async sendMessage(
+    accessToken: string,
+    workspaceId: string,
+    conversationId: string,
+    content: string,
+  ): Promise<SendMessageResponse> {
+    return this.request<SendMessageResponse>(
+      `${this.apiBaseUrl}/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}/messages`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ content }),
+      },
     );
   }
 

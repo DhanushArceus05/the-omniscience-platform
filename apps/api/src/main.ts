@@ -21,7 +21,25 @@ async function bootstrap(): Promise<void> {
   // files. `AvatarStorageService.buildPublicUrl` builds URLs assuming
   // exactly this prefix; if this ever changes, that's the other half
   // of the same contract to update.
-  app.useStaticAssets(path.resolve(env.AVATAR_STORAGE_DIR), { prefix: "/uploads/avatars" });
+  //
+  // Avatar files are mutable — replaced on re-upload, removed on
+  // delete — unlike the immutable/versioned assets `express.static`'s
+  // defaults (ETag + Last-Modified, enabling conditional GET) are
+  // designed for. Explicitly disabled here, with `maxAge: 0` making
+  // the "never cache" intent explicit too, so no client or
+  // intermediary can ever have a reason to treat a since-replaced or
+  // since-deleted avatar's previous response as still valid.
+  // (`cacheControl` — which only controls whether a `Cache-Control`
+  // header is sent at all — isn't part of this repo's installed
+  // `ServeStaticOptions` typings, so it's intentionally omitted rather
+  // than suppressed; `etag`/`lastModified`/`maxAge` already remove
+  // every actual caching behavior it would otherwise gate.)
+  app.useStaticAssets(path.resolve(env.AVATAR_STORAGE_DIR), {
+    prefix: "/uploads/avatars",
+    etag: false,
+    lastModified: false,
+    maxAge: 0,
+  });
 
   await app.listen(env.API_PORT, env.API_HOST);
   logger.info({ port: env.API_PORT, host: env.API_HOST }, "api service started");

@@ -18,8 +18,11 @@ jobs:
     # `pending-registration.store.concurrency.spec.ts`, which proves the
     # Phase 2 Step 3 atomic Redis fix (Lua-scripted claim/attempt
     # operations) under genuine concurrent load — a mocked `ioredis`
-    # cannot exercise real atomicity. Every other test in this repo runs
-    # without external services.
+    # cannot exercise real atomicity. A real MongoDB instance is
+    # required for `conversations.repository.spec.ts` (Phase 6 Step 1),
+    # which proves real keyset-pagination/index behavior — a mocked
+    # driver has no real `find`/`sort`/`limit` semantics of its own.
+    # Every other test in this repo runs without external services.
     services:
       redis:
         image: redis:7-alpine
@@ -30,8 +33,18 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.adminCommand(\"ping\")'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       REDIS_URL: redis://localhost:6379
+      MONGO_URL: mongodb://localhost:27017/omniscience_test
     steps:
       - uses: actions/checkout@v4
 

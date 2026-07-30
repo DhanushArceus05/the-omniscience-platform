@@ -59,5 +59,23 @@ export {
   generateTextRequestSchema,
 } from "./ai-provider";
 export type { CapabilitySchema, ListModelsQuerySchema, GenerateTextRequestSchema } from "./ai-provider";
-export { omniCoreExecuteRequestSchema } from "./omnicore";
+export { omniCoreExecuteRequestSchema, omniCorePromptSchema, MAX_OMNICORE_PROMPT_LENGTH } from "./omnicore";
 export type { OmniCoreExecuteRequestSchema } from "./omnicore";
+export {
+  createConversationRequestSchema,
+  conversationIdParamSchema,
+  listConversationsQuerySchema,
+  listMessagesQuerySchema,
+  sendMessageRequestSchema,
+  DEFAULT_CONVERSATION_LIST_LIMIT,
+  MAX_CONVERSATION_LIST_LIMIT,
+  DEFAULT_MESSAGE_LIST_LIMIT,
+  MAX_MESSAGE_LIST_LIMIT,
+} from "./conversations";
+export type {
+  CreateConversationRequestSchema,
+  ConversationIdParamSchema,
+  ListConversationsQuerySchema,
+  ListMessagesQuerySchema,
+  SendMessageRequestSchema,
+} from "./conversations";
