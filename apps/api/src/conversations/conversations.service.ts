@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { HttpException, Injectable } from "@nestjs/common";
 import {
   DEFAULT_CONVERSATION_LIST_LIMIT,
   DEFAULT_MESSAGE_LIST_LIMIT,
@@ -11,6 +11,7 @@ import type {
   ListMessagesResponse,
   Message,
   MessageOmniCoreMetadata,
+  MessageStreamEvent,
   SendMessageResponse,
 } from "@omniscience/types";
 import { OmniCoreService } from "../omnicore/omnicore.service";
@@ -167,6 +168,128 @@ export class ConversationsService {
     return { userMessage, assistantMessage };
   }
 
+  /**
+   * The streaming counterpart to `sendMessage()` (Phase 6 Step 2).
+   * An async generator, not a callback/emitter: the controller
+   * consumes it with `for await`/`.next()` and is the only place SSE
+   * framing (`event:`/`data:` lines) happens — this method only ever
+   * produces already-typed `MessageStreamEvent` values, so it stays
+   * fully testable without an HTTP server or a real `Response` object.
+   *
+   * Mirrors the exact ordering the Phase 6 Step 2 spec's "LOCKED
+   * PERSISTENCE SEMANTICS" requires:
+   *   1-2. Ownership is resolved via the same
+   *        `getOwnedConversationOrThrow()` `sendMessage()` uses — same
+   *        `CONVERSATION_NOT_FOUND` behavior, no separate workspace
+   *        pre-check (see that method's doc comment for why).
+   *   3. The user message is persisted before anything else can fail.
+   *   4. `OmniCoreService.executeStream()` is awaited next — everything
+   *      that call can fail on (classification, planning, model
+   *      selection) happens here, still before this generator's first
+   *      `yield`, i.e. still before the controller can have opened SSE
+   *      response headers.
+   *   5. Only once that promise resolves does this generator `yield`
+   *      its first event (`start`) — the controller's cue to open
+   *      headers and begin writing frames.
+   *   6. Deltas are accumulated locally (`accumulated`) as they're
+   *      yielded, so the full text is always available for step 7
+   *      regardless of how the loop below ends.
+   *   7. Exactly one assistant message is persisted — either after the
+   *      loop completes normally (`status: "complete"`) or from the
+   *      `catch` block below if any non-empty text had already been
+   *      accumulated before the failure (`status: "incomplete"`).
+   *      Never both, and never an empty assistant message: the `catch`
+   *      block only persists when `accumulated.length > 0`.
+   *
+   * Every failure this generator's `catch` block sees — the caller's
+   * own `AbortSignal` firing (client disconnect or explicit
+   * cancellation, surfaced by `OmniCoreService.executeStream`'s
+   * downstream layers as `EXECUTION_CANCELLED`) or a genuine mid-stream
+   * provider error — is handled identically: persist whatever
+   * non-empty text was accumulated as `"incomplete"`, then yield one
+   * terminal `error` event carrying the already-normalized
+   * `{code, message}` a domain `HttpException` already carries (see
+   * `toStreamErrorPayload` below) — never a raw stack trace, SDK
+   * internals, or prompt content. Whether that `error` event actually
+   * reaches a client (versus a connection that's already gone) is the
+   * controller's concern, not this method's — see
+   * `ConversationsController.sendMessageStream`'s own writer, which
+   * guards every write against an already-closed response.
+   */
+  async *sendMessageStream(
+    ownerId: string,
+    workspaceId: string,
+    conversationId: string,
+    content: string,
+    signal: AbortSignal,
+  ): AsyncGenerator<MessageStreamEvent> {
+    await this.getOwnedConversationOrThrow(ownerId, workspaceId, conversationId);
+
+    const userMessage: Message = await this.repository.createMessage({
+      conversationId,
+      workspaceId,
+      ownerId,
+      role: "user",
+      content,
+    });
+
+    // Same "not wrapped in try/catch" reasoning `sendMessage()` already
+    // documents: a failure here (classification, planning, model
+    // selection all still fully synchronous/network-free at this point)
+    // must propagate to the caller as a normal thrown error — the
+    // controller has not opened SSE headers yet, so this is still an
+    // ordinary HTTP error response, not a stream event.
+    const result = await this.omniCore.executeStream(content, { signal });
+
+    yield { event: "start", data: { userMessage } };
+
+    const omniCoreMetadata: MessageOmniCoreMetadata = {
+      planId: result.planId,
+      intent: result.intent,
+      matchedRuleId: result.matchedRuleId,
+      confidence: result.confidence,
+      providerId: result.providerId,
+      modelId: result.modelId,
+      taskPlanId: result.taskPlan.taskPlanId,
+    };
+
+    let accumulated = "";
+    try {
+      for await (const chunk of result.textStream) {
+        accumulated += chunk;
+        yield { event: "delta", data: { text: chunk } };
+      }
+
+      const assistantMessage: Message = await this.repository.createMessage({
+        conversationId,
+        workspaceId,
+        ownerId,
+        role: "assistant",
+        content: accumulated,
+        omniCore: omniCoreMetadata,
+        status: "complete",
+      });
+      await this.repository.touchConversation(conversationId, preview(accumulated));
+
+      yield { event: "done", data: { assistantMessage } };
+    } catch (error) {
+      if (accumulated.length > 0) {
+        await this.repository.createMessage({
+          conversationId,
+          workspaceId,
+          ownerId,
+          role: "assistant",
+          content: accumulated,
+          omniCore: omniCoreMetadata,
+          status: "incomplete",
+        });
+        await this.repository.touchConversation(conversationId, preview(accumulated));
+      }
+
+      yield { event: "error", data: toStreamErrorPayload(error) };
+    }
+  }
+
   /** Shared "own conversation or 404" lookup — `null` from the repository becomes the shared `CONVERSATION_NOT_FOUND`. */
   private async getOwnedConversationOrThrow(
     ownerId: string,
@@ -185,4 +308,36 @@ export class ConversationsService {
 function preview(text: string, maxLength = 140): string {
   const trimmed = text.trim();
   return trimmed.length > maxLength ? `${trimmed.slice(0, maxLength)}…` : trimmed;
+}
+
+/**
+ * Normalizes anything `sendMessageStream()`'s loop can catch into the
+ * `{code, message}` shape the LOCKED EVENT CONTRACT's `error` event
+ * requires. Every error this repository's domain layers actually
+ * throw is already an `HttpException` whose response body is exactly
+ * `{code, message}` — see `omniCoreDomainError`/`aiDomainError`/
+ * `conversationsDomainError` — so the common case here is reading that
+ * shape back out, never inventing new error text. The fallback branch
+ * (a non-`HttpException`, or one whose body doesn't match) exists only
+ * as a defensive last resort and deliberately never includes
+ * `error.message`/`error.stack` themselves in the emitted payload —
+ * that could be a raw SDK/Node error string, which is exactly the
+ * "stack traces, raw SDK internals" this event must never expose.
+ */
+function toStreamErrorPayload(error: unknown): { code: string; message: string } {
+  if (error instanceof HttpException) {
+    const response = error.getResponse();
+    if (
+      response &&
+      typeof response === "object" &&
+      typeof (response as { code?: unknown }).code === "string" &&
+      typeof (response as { message?: unknown }).message === "string"
+    ) {
+      return {
+        code: (response as { code: string }).code,
+        message: (response as { message: string }).message,
+      };
+    }
+  }
+  return { code: "INTERNAL_ERROR", message: "An unexpected error occurred while generating a response." };
 }

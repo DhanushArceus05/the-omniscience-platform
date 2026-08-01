@@ -59,6 +59,30 @@ export interface OmniProvider {
   generateText(modelId: ModelId, prompt: string): Promise<string>;
   generateStructured(modelId: ModelId, prompt: string, schemaName: string): Promise<unknown>;
   embed(modelId: ModelId, input: string): Promise<readonly number[]>;
+
+  /**
+   * Optional, additive streaming counterpart to `generateText` (Phase
+   * 6 Step 2). Yields incremental text chunks as they become
+   * available instead of resolving once with the complete string.
+   * Deliberately **not** part of the required interface surface: most
+   * adapters (every stub, plus Gemini/OpenAI even once they gain a
+   * real `generateText`) may never implement it, and callers
+   * (`StepExecutorService.executeStream`) already know to fall back to
+   * `generateText` — emitting its complete result as a single chunk —
+   * whenever a provider's own `generateTextStream` is absent. This
+   * keeps `generateText`'s existing contract, and every adapter that
+   * only implements it, completely unchanged.
+   *
+   * `options.signal`, when provided and aborted, must stop the
+   * underlying request as soon as practical (e.g. by forwarding it to
+   * the vendor SDK call) rather than silently continuing to consume
+   * vendor-billed tokens after a caller has already given up.
+   */
+  generateTextStream?(
+    modelId: ModelId,
+    prompt: string,
+    options?: { readonly signal?: AbortSignal },
+  ): AsyncIterable<string>;
 }
 
 /**

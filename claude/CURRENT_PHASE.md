@@ -46,12 +46,17 @@ detail)
 - **Phase 5 — OmniCore, Step 5 (Tool Calling Framework)**: implemented this session, fully verified
   in-sandbox — see the dedicated section at the end of this file.
 - **Phase 6 — Omniscience Assistant, Step 1 (Conversation & Message Persistence Foundation)**:
-  implemented this session — see the dedicated section at the end of this file. **Unlike Phase 5's
-  Steps 3-5, `@omniscience/api`'s install/build/typecheck/lint/test could not be run in this
-  sandbox this session** (no network egress at all — not even `corepack`/`npm install -g` succeed;
-  see that section's Verification status for the exact reason, the exact commands to run locally,
-  and what was manually cross-checked in their place). This is the last completed step; no further
-  step or phase has been started.
+  complete and verified — see the dedicated section at the end of this file.
+  `@omniscience/api`'s install/build/typecheck/lint/test have since all been run for real (outside
+  the original no-network-egress sandbox) and passed; committed, pushed, GitHub Actions green.
+- **Phase 6 — Omniscience Assistant, Step 2 (backend-only authenticated assistant response
+  streaming)**: implemented this session — see the dedicated section at the end of this file.
+  **Like Step 1 before it was verified, `@omniscience/api`'s install/build/typecheck/lint/test could
+  not be run in this sandbox this session** (no network egress at all; see that section's
+  Verification status for the exact reason, the exact commands to run locally, and what was
+  manually cross-checked in their place). Phase 6 Step 3 (the chat frontend that will consume this
+  endpoint) remains deferred — this is the last completed step; no further step or phase has been
+  started.
 
 
 ## Phase 1 — Premium UI Foundation
@@ -4329,7 +4334,7 @@ explicitly deferred to later steps or later phases.
 - **No workspace-membership/sharing model.** Ownership is strictly single-owner, matching
   `Workspace.ownerId`'s existing single-owner design — unchanged by this step.
 
-### Verification status — **implementation complete; full runtime verification blocked in this sandbox**
+### Verification status — **complete and verified**
 
 Every file in this step was implemented, and its logic was cross-checked by hand against every
 pattern it reuses: `WorkspacesService.getById()`'s exact `NotFoundException`/`{code, message}`
@@ -4340,11 +4345,12 @@ provider is configured, and every import against the actual exported symbol in i
 (this pass caught, and fixed, two real gaps: `WorkspacesModule` and `OmniCoreModule` did not
 previously export the services this step needs — both are now exported additively).
 
-This sandbox has no network egress (`corepack prepare`, `npm install -g typescript`, and a direct
-`curl` to `registry.npmjs.org` all fail with the identical `x-deny-reason: host_not_allowed` /
-HTTP 403 already documented elsewhere in this file for earlier phases), and no `node_modules`
-exists in the extracted archive. As a direct consequence, none of the following could be run for
-real in this environment and are **not verified**:
+The sandbox this step was originally implemented in had no network egress (`corepack prepare`,
+`npm install -g typescript`, and a direct `curl` to `registry.npmjs.org` all failed with the
+identical `x-deny-reason: host_not_allowed` / HTTP 403 already documented elsewhere in this file for
+earlier phases), and no `node_modules` existed in that extracted archive, so full runtime
+verification could not be completed in that environment. It has since been run for real, outside
+that sandbox, by a maintainer with network access:
 
 ```bash
 pnpm install --frozen-lockfile
@@ -4356,15 +4362,264 @@ pnpm test
 docker compose up -d   # real MongoDB for conversations.repository.spec.ts's real-infra suite
 ```
 
-**Before this step is considered done, a maintainer with network access must run the six commands
-above** (the exact sequence every prior phase's runtime verification has used) and confirm:
-`pnpm typecheck`/`pnpm lint`/`pnpm build` are clean; `pnpm test` is green, including
-`conversations.repository.spec.ts`'s real-Mongo suite actually connecting (not silently
-self-skipping — check its console output) and `conversations.e2e-spec.ts`'s full HTTP suite; and a
-manual smoke test (register → login → create workspace → create conversation → send a message with
-a real or fake-backed provider → reload the conversation) behaves as documented above.
+`pnpm typecheck`/`pnpm lint`/`pnpm build`/`pnpm test` all passed — including
+`conversations.repository.spec.ts`'s real-Mongo suite actually connecting (not self-skipping) and
+`conversations.e2e-spec.ts`'s full HTTP suite — a local runtime smoke test (register → login →
+create workspace → create conversation → send a message with a real or fake-backed provider →
+reload the conversation) behaved as documented above, and the result was committed, pushed, and
+GitHub Actions is green.
 
-This is Phase 6 Step 1. Phase 6 Steps 2 and onward, and Phase 7 onward, have not been started.
+This is Phase 6 Step 1 — complete and verified. Phase 6 Step 2 (backend-only authenticated
+assistant response streaming) is implemented below; Phase 6 Step 3 onward, and Phase 7 onward, have
+not been started.
+
+---
+
+# Phase 6 — Omniscience Assistant, Step 2
+
+## Backend-Only Authenticated Assistant Response Streaming
+
+Adds one new endpoint —
+`POST /workspaces/:workspaceId/conversations/:conversationId/messages/stream` — alongside Step 1's
+existing `POST .../messages`, which is completely unchanged. This step is **backend-only**: no
+`apps/web` chat UI, and no native `EventSource` client (see "Locked transport" below for why). The
+Phase 6 Step 3 chat frontend that will actually consume this endpoint remains deferred.
+
+### Locked transport
+
+SSE-formatted events (`event: <name>\ndata: <json>\n\n`, always ending with the required blank
+line) over an authenticated HTTP `POST`, consumed via `fetch()` + `ReadableStream` — deliberately
+not the native `EventSource` API. `EventSource` can only issue unauthenticated `GET` requests, so it
+has no way to attach the `Authorization: Bearer <token>` header this endpoint requires, and offers
+no reconnection guarantee worth relying on regardless. Response headers:
+
+```
+Content-Type: text/event-stream
+Cache-Control: no-cache
+Connection: keep-alive
+X-Accel-Buffering: no
+```
+
+### Locked event contract
+
+```
+event: start
+data: {"userMessage": <Message>}
+
+event: delta
+data: {"text": "<incremental text>"}
+
+event: done
+data: {"assistantMessage": <Message>}
+
+event: error
+data: {"code": "<existing domain error code>", "message": "<safe message>"}
+```
+
+`error.code` is always one of this repository's existing `AiDomainErrorCode`/
+`OmniCoreDomainErrorCode`/`ConversationsDomainErrorCode` values (e.g. `PROVIDER_RATE_LIMITED`,
+`PROVIDER_UNAVAILABLE`, `EXECUTION_CANCELLED`) — this step introduces no new domain error
+vocabulary, only a new transport for delivering one of those existing codes mid-stream instead of
+as an HTTP status. `error.message` is always the same already-sanitized message the corresponding
+`HttpException` already carries — never a raw stack trace, SDK internals, prompt content, or
+credentials.
+
+### Message status and legacy normalization
+
+`Message` (`packages/types/src/conversations.ts`) gained one new required field:
+`status: "complete" | "incomplete"`. Every message created through Step 1's non-streaming
+`sendMessage()` is unconditionally `"complete"` — it has no partial-text failure mode. A message
+created through `sendMessageStream()` carries whichever status genuinely applied when it was
+persisted. Legacy Mongo documents predating this step have no `status` field on disk at all —
+`ConversationsRepository.toMessage()` normalizes that absence to `"complete"` when mapping a
+document, so **no destructive migration of existing documents was needed or performed**.
+
+### OmniProvider — one new optional method
+
+```ts
+generateTextStream?(
+  modelId: ModelId,
+  prompt: string,
+  options?: { readonly signal?: AbortSignal },
+): AsyncIterable<string>;
+```
+
+Purely additive: `generateText()`'s existing contract, and every adapter that only implements it
+(every stub, plus Gemini and OpenAI), is completely unchanged. Implemented for real only in
+`AnthropicProvider`, via the SDK's `messages.stream()` helper's `.textStream` async iterable (a
+narrow `AnthropicTextStream`/`AnthropicMessagesClient.stream()` addition, mirroring exactly how
+`.create()`/`AnthropicMessagesClient` were already kept narrow and fakeable). Every other registered
+provider has no `generateTextStream` — `StepExecutorService.executeStream()`'s fallback branch
+detects its absence and calls the provider's existing `generateText()` instead, emitting its one
+complete result as a single SSE `delta` event immediately followed by `done`. **The endpoint never
+fails merely because the selected provider only supports non-streaming generation** — this fallback
+is exercised for real, over real HTTP, in `conversations.e2e-spec.ts` by configuring Gemini (which
+has a genuine `generateText` but, like OpenAI, has never had `generateTextStream` added) as the only
+eligible provider.
+
+`options.signal`, when provided and aborted, is forwarded to the underlying `client.messages.stream`
+call so the SDK aborts its own in-flight HTTP request — a caller giving up stops the vendor-billed
+generation immediately, rather than merely stops listening while it continues server-side.
+
+### OmniCore layer — one new method per existing service, diverging only at final delivery
+
+`StepExecutorService.executeStream()` → `ExecutionOrchestratorService.executeStream()` →
+`OmniCoreService.executeStream()`, each the streaming counterpart to that service's existing
+`execute()`, reusing the exact same classification/planning/model-selection/security/
+validation/error-mapping pipeline `execute()` already has — copied, not factored into a shared
+private helper, so a future change to `execute()`'s own pipeline doesn't have to first decide
+whether it also applies to streaming (see `ExecutionOrchestratorService.executeStream()`'s own doc
+comment). Only the final generation-delivery call diverges: instead of `await`-ing the provider's
+result to completion, `StepExecutorService.executeStream()` returns a *lazy* `textStream` — no
+provider request is made until it is actually iterated — so a caller can already know model
+selection has succeeded (and therefore that everything which can still fail with an ordinary HTTP
+status already has) before ever opening SSE response headers. `ExecutionOrchestratorService`'s
+version guards that it received a single-step, single-stage `TaskPlan` (the only shape
+`OmniCoreService`'s own upstream single-step guard ever produces today) and delegates directly to
+`StepExecutorService`, rather than walking `taskPlan.stages` the way `execute()` does — there is no
+multi-stage orchestration to do yet, and a still-streaming response has no `PlanExecutionResult` to
+attach (no per-stage/per-step status or timestamps have any meaning while generation is still in
+flight). Tool-routed steps (`step.toolCategory` set) are not supported by `executeStream()` — there
+is no meaningful token-by-token delta for a tool's JSON output, and no `TaskPlan` this phase produces
+ever sets `toolCategory` in practice — and throw the existing `UNSUPPORTED_CAPABILITY` code, not a
+new one, if that ever changes.
+
+### Persistence semantics (locked ordering)
+
+`ConversationsService.sendMessageStream()` is an async generator, not a callback/emitter — the
+controller consumes it with `for await`/`.next()` and is the only place SSE framing happens, so the
+generator itself stays fully testable without an HTTP server or a real `Response` object. Ordering,
+exactly as specified:
+
+1. Ownership is resolved via the same `getOwnedConversationOrThrow()` `sendMessage()` already uses —
+   identical `CONVERSATION_NOT_FOUND` behavior for a workspace/conversation mismatch, no separate
+   workspace-existence check that could reintroduce the information leak Step 1 already closed off.
+2. The user message is persisted before anything else can fail.
+3. `OmniCoreService.executeStream()` is awaited next — classification, planning, and model selection
+   all happen here, still before this generator's first `yield`, i.e. still before the controller
+   can have opened SSE response headers. A failure here (an unrecognized/ambiguous intent, an
+   invalid task plan, no compatible model, an unsupported capability) propagates as an ordinary
+   thrown error, caught by the existing `AllExceptionsFilter` exactly like any other route — a
+   normal HTTP error response, not a stream event.
+4. Only once that promise resolves does the generator `yield` its first event (`start`) — the
+   controller's cue to open SSE headers and begin writing frames.
+5. Deltas are accumulated locally as they're yielded, so the full text-so-far is always available
+   regardless of how the loop below ends.
+6. Exactly one assistant message is ever persisted: `status: "complete"` after the loop completes
+   normally, or — from a single `catch` block — `status: "incomplete"` if any non-empty text had
+   already been accumulated before a client disconnect, an explicit cancellation, or a mid-stream
+   provider error. Never both, and never an empty assistant message (the `catch` block only persists
+   when accumulated text is non-empty). A single sequential generator loop, not racing handlers, is
+   what makes "never twice" structurally true rather than merely convention — there is no second code
+   path that could independently decide to persist.
+
+Every failure the generator's `catch` block sees — cancellation or a genuine provider error — is
+handled identically: persist whatever non-empty text was accumulated as `"incomplete"`, then yield
+one terminal `error` event carrying the already-normalized `{code, message}` any domain
+`HttpException` already carries. Whether that event actually reaches a client (versus a connection
+that's already gone) is the controller's concern: `writeStreamEvent()` no-ops against an
+already-closed/destroyed response instead of throwing, and the generator is always drained to
+completion regardless, so its persistence side effects always run even once nothing is listening.
+
+### Cancellation
+
+One `AbortController` per request (`ConversationsController.sendMessageStream()`), whose `signal` is
+exactly what gets forwarded through `ConversationsService.sendMessageStream()` →
+`OmniCoreService.executeStream()` → `ExecutionOrchestratorService.executeStream()` →
+`StepExecutorService.executeStream()` → `OmniProvider.generateTextStream()` → the Anthropic SDK's
+own request-level `signal` option. `req`'s `"close"` event — fired on a genuine client disconnect
+and on an explicit client-side `fetch` abort alike — is the *only* thing that ever calls
+`controller.abort()`; a normal completion never does, which is what keeps a completed response's own
+trailing `"close"` event from ever being mistaken for a cancellation. A signal that aborts while a
+real stream is in flight surfaces as the existing `EXECUTION_CANCELLED` code (from
+`StepExecutorService.executeStream()`'s `streamGeneration()`), not a new one — reusing the exact
+vocabulary `execution-timeout.util.ts`'s `raceAgainstTimeoutAndCancellation` already established for
+the non-streaming path's own cancellation.
+
+### SDK — `sendMessageStream()`
+
+`@omniscience/sdk`'s `OmniscienceClient` gained `sendMessageStream()`, the authenticated
+`fetch()`-based streaming counterpart to `sendMessage()`. An async generator of typed
+`MessageStreamEvent`s (`packages/types/src/conversation-stream.ts`), in the exact order the server
+emits them. `parseIncrementalSseFrames()` buffers raw decoded text across `fetch` reads
+(`TextDecoder`'s own `{ stream: true }` mode, so a multi-byte UTF-8 character split across chunk
+boundaries is never mis-decoded) and only ever emits a frame once a complete `\n\n`-terminated block
+has accumulated — correct whether the network hands it one frame at a time, one frame split across
+many small reads, or several complete frames concatenated into a single read. A well-formed `error`
+event from the server is **yielded**, not thrown, so a caller can `switch` on `event.event`
+uniformly; a malformed frame (unparsable `data:` JSON) throws `ApiClientError` with
+`code: "INVALID_RESPONSE"`; an unrecognized `event:` name is skipped, forward-compatible with a
+future server-added event type. A non-2xx response *before* any SSE framing begins still throws
+`ApiClientError` exactly like every other method on this client — an ordinary HTTP error response,
+mirroring the endpoint's own locked error semantics.
+
+### Testing
+
+Provider (`anthropic.provider.spec.ts`): streaming chunks yielded in order, credential/model-id
+validation, empty-stream detection, `AbortSignal` forwarding, mid-stream and synchronous
+`client.messages.stream()` SDK error mapping. OmniCore
+(`step-executor.service.spec.ts`/`execution-orchestrator.service.spec.ts`/`omnicore.service.spec.ts`):
+eager model selection before any iteration, non-streaming fallback emitting one chunk, cancellation
+normalization to `EXECUTION_CANCELLED`, dependency-graph/single-step-plan guards, and that every
+domain error from a lower layer propagates unchanged. Conversations
+(`conversations.repository.spec.ts`/`conversations.service.spec.ts`/`conversations.controller.spec.ts`):
+legacy-status normalization, start→delta(s)→done ordering, exact persisted `omniCore` metadata and
+`status`, incomplete persistence on a mid-stream provider error or on cancellation, no persistence at
+all on a failure before any text, exactly-once assistant persistence, SSE header/framing correctness,
+close-listener registration and removal, and that a pre-yield failure never opens headers. SDK
+(`client.test.ts`): SSE frames split across arbitrary chunk boundaries (including mid-line and
+mid-UTF-8-character splits), multiple frames in one chunk, malformed JSON, an unrecognized event
+name, a non-2xx response, and a missing response body. E2E (`conversations.e2e-spec.ts`, real HTTP
+through the actual `AppModule`, a fake `ANTHROPIC_CLIENT`/`GEMINI_CLIENT`): the full
+start→delta(s)→done sequence with exact SSE headers and framing over the wire; the non-streaming
+fallback for real, by configuring Gemini as the only eligible provider; a provider failure before any
+delta (no assistant message persisted); a provider failure after partial output (persisted once,
+`"incomplete"`); a real client-side abort via raw `node:http` (destroying the client connection
+partway through, then polling until the server-side partial-text persistence is observed);
+authentication, ownership isolation, workspace/conversation mismatch, and validation failures.
+
+### Verification status — **implementation complete; full runtime verification blocked in this sandbox**
+
+Every new and modified file's imports, types, and reused shapes were manually cross-checked
+line-by-line against the actual exported symbols in the modules they reuse — the Anthropic SDK's
+`messages.stream()`/`.textStream` shape (checked against `anthropic.provider.spec.ts`'s existing
+`Anthropic.*Error` constructor usage for consistency), `HttpException.getResponse()`'s exact
+`{code, message}` shape, `ModelSelectorService`'s exact eligibility algorithm (credential- and
+`supportsExecution()`-gated, which is what the non-streaming-fallback e2e test needed to get right —
+an earlier draft of that test incorrectly assumed a credential-less request would reach a stub
+provider, when `NO_COMPATIBLE_MODEL` is actually what happens; it was rewritten to configure Gemini
+for real instead), and `ai-generate.e2e-spec.ts`'s exact `GEMINI_CLIENT`-override technique.
+
+This sandbox again had no network egress at all — the same `x-deny-reason: host_not_allowed`
+limitation Step 1 hit before it was verified outside the sandbox, and no `node_modules` in the
+extracted archive — so none of the following could be run for real in this environment and are
+**not verified**:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm typecheck
+pnpm lint
+pnpm build
+pnpm test
+docker compose up -d   # real MongoDB for conversations.repository.spec.ts's real-infra suite
+```
+
+**Before this step is considered done, a maintainer with network access must run the commands
+above** and confirm: `pnpm typecheck`/`pnpm lint`/`pnpm build` are clean; `pnpm test` is green,
+including `conversations.repository.spec.ts`'s real-Mongo suite actually connecting (not silently
+self-skipping) and `conversations.e2e-spec.ts`'s full HTTP suite, in particular the client-abort e2e
+test — it uses real `node:http` timing (destroying a live socket, then polling for server-side
+persistence) rather than a fake timer, and is the one test in this step with genuine, if bounded,
+flakiness risk in an unfamiliar CI environment; and a manual streaming smoke test (register → login
+→ create workspace → create conversation →
+`curl -N -X POST .../messages/stream -H "Authorization: Bearer <token>" -d '{"content":"hi"}'` with
+a real `ANTHROPIC_API_KEY` configured → confirm `start`/`delta`/`done` frames arrive incrementally,
+not buffered until the connection closes → reload the conversation and confirm the assistant message
+persisted with `status: "complete"`).
+
+This is Phase 6 Step 2. Phase 6 Step 3 (the chat frontend that will consume this endpoint, in
+`apps/web`) has not been started and was explicitly out of scope for this step. Phase 7 onward has
+not been started either.
 
 ---
 
@@ -4400,6 +4655,6 @@ No engineering work related to this feature should begin during the current acti
 
 Current development priority remains:
 
-> **Phase 6 — Omniscience Assistant (Step 1 implemented, pending runtime verification by a maintainer with network access; Steps 2+ not started)**
+> **Phase 6 — Omniscience Assistant (Step 1 complete and verified; Step 2 — backend-only authenticated assistant response streaming — implemented this session, pending runtime verification by a maintainer with network access; Step 3, the chat frontend, remains deferred; Steps 4+ not started)**
 
 All future planning should continue following the original platform roadmap before Arceus Activation Mode is started.

@@ -5,7 +5,7 @@ import { ExecutionOrchestratorService } from "./execution-orchestrator.service";
 import { StepExecutorService } from "./step-executor.service";
 
 describe("ExecutionOrchestratorService", () => {
-  const stepExecutor = { execute: jest.fn() };
+  const stepExecutor = { execute: jest.fn(), executeStream: jest.fn() };
   const logger = { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() };
   let service: ExecutionOrchestratorService;
 
@@ -268,5 +268,101 @@ describe("ExecutionOrchestratorService", () => {
     expect(result.stageResults[0]?.stepResults[0]?.startedAt).toEqual(expect.any(String));
     expect(result.stageResults[0]?.stepResults[0]?.completedAt).toEqual(expect.any(String));
     expect(typeof result.stageResults[0]?.stepResults[0]?.durationMs).toBe("number");
+  });
+
+  describe("executeStream — Phase 6 Step 2", () => {
+    function fakeStream(chunks: readonly string[]): AsyncIterable<string> {
+      return (async function* () {
+        for (const chunk of chunks) {
+          yield chunk;
+        }
+      })();
+    }
+
+    it("re-validates the dependency graph before delegating, same as execute()", async () => {
+      const plan = planFixture(
+        [
+          stepFixture({ stepId: "step-1", dependsOn: ["step-2"] }),
+          stepFixture({ stepId: "step-2", dependsOn: ["step-1"] }),
+        ],
+        [{ stageId: "stage-1", mode: "parallel", stepIds: ["step-1", "step-2"] }],
+      );
+
+      await expect(service.executeStream(plan)).rejects.toEqual(
+        expect.objectContaining({ response: expect.objectContaining({ code: "CIRCULAR_DEPENDENCY" }) }),
+      );
+      expect(stepExecutor.executeStream).not.toHaveBeenCalled();
+    });
+
+    it("delegates to stepExecutor.executeStream for the plan's one step, forwarding options", async () => {
+      const textStream = fakeStream(["hi"]);
+      stepExecutor.executeStream.mockResolvedValue({
+        textStream,
+        providerId: "anthropic",
+        modelId: "claude-sonnet-5",
+      });
+      const controller = new AbortController();
+      const plan = planFixture(
+        [stepFixture({ stepId: "step-1" })],
+        [{ stageId: "stage-1", mode: "sequential", stepIds: ["step-1"] }],
+      );
+
+      const output = await service.executeStream(plan, { signal: controller.signal });
+
+      expect(stepExecutor.executeStream).toHaveBeenCalledWith(
+        expect.objectContaining({ stepId: "step-1" }),
+        { signal: controller.signal },
+      );
+      expect(output).toEqual({ textStream, providerId: "anthropic", modelId: "claude-sonnet-5" });
+    });
+
+    it("throws INVALID_EXECUTION_STATE for a multi-step plan — streaming supports only a single step", async () => {
+      const plan = planFixture(
+        [stepFixture({ stepId: "step-1" }), stepFixture({ stepId: "step-2", dependsOn: ["step-1"] })],
+        [
+          { stageId: "stage-1", mode: "sequential", stepIds: ["step-1"] },
+          { stageId: "stage-2", mode: "sequential", stepIds: ["step-2"] },
+        ],
+      );
+
+      await expect(service.executeStream(plan)).rejects.toEqual(
+        expect.objectContaining({ response: expect.objectContaining({ code: "INVALID_EXECUTION_STATE" }) }),
+      );
+      expect(stepExecutor.executeStream).not.toHaveBeenCalled();
+    });
+
+    it("throws INVALID_EXECUTION_STATE for a multi-step single stage plan", async () => {
+      const plan = planFixture(
+        [stepFixture({ stepId: "step-1" }), stepFixture({ stepId: "step-2" })],
+        [{ stageId: "stage-1", mode: "parallel", stepIds: ["step-1", "step-2"] }],
+      );
+
+      await expect(service.executeStream(plan)).rejects.toEqual(
+        expect.objectContaining({ response: expect.objectContaining({ code: "INVALID_EXECUTION_STATE" }) }),
+      );
+      expect(stepExecutor.executeStream).not.toHaveBeenCalled();
+    });
+
+    it("throws INVALID_EXECUTION_STATE if the stage references a step id absent from the plan", async () => {
+      const plan = planFixture(
+        [stepFixture({ stepId: "step-1" })],
+        [{ stageId: "stage-1", mode: "sequential", stepIds: ["step-missing"] }],
+      );
+
+      await expect(service.executeStream(plan)).rejects.toEqual(
+        expect.objectContaining({ response: expect.objectContaining({ code: "INVALID_EXECUTION_STATE" }) }),
+      );
+    });
+
+    it("propagates a cancellation error from the step executor unchanged", async () => {
+      const cancelledError = { response: { code: "EXECUTION_CANCELLED" } };
+      stepExecutor.executeStream.mockRejectedValue(cancelledError);
+      const plan = planFixture(
+        [stepFixture({ stepId: "step-1" })],
+        [{ stageId: "stage-1", mode: "sequential", stepIds: ["step-1"] }],
+      );
+
+      await expect(service.executeStream(plan)).rejects.toBe(cancelledError);
+    });
   });
 });

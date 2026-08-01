@@ -1,4 +1,4 @@
-import { NotFoundException } from "@nestjs/common";
+import { HttpException, NotFoundException } from "@nestjs/common";
 import { Test, TestingModule } from "@nestjs/testing";
 import { OmniCoreService } from "../omnicore/omnicore.service";
 import { WorkspacesService } from "../workspaces/workspaces.service";
@@ -17,7 +17,7 @@ describe("ConversationsService", () => {
     listMessages: jest.fn(),
   };
   const workspaces = { getById: jest.fn() };
-  const omniCore = { execute: jest.fn() };
+  const omniCore = { execute: jest.fn(), executeStream: jest.fn() };
 
   const workspace = {
     id: "workspace_1",
@@ -250,6 +250,391 @@ describe("ConversationsService", () => {
       expect(workspaces.getById).not.toHaveBeenCalled();
       expect(repository.createMessage).not.toHaveBeenCalled();
       expect(omniCore.execute).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("sendMessageStream — Phase 6 Step 2", () => {
+    const userMessage = {
+      id: "665f1c2b9a4e8f0012345679",
+      conversationId: conversation.id,
+      role: "user" as const,
+      content: "Hello, OmniCore.",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      status: "complete" as const,
+    };
+    const completeAssistantMessage = {
+      id: "665f1c2b9a4e8f001234567a",
+      conversationId: conversation.id,
+      role: "assistant" as const,
+      content: "Hello! How can I help?",
+      createdAt: "2026-01-01T00:00:01.000Z",
+      status: "complete" as const,
+    };
+    const incompleteAssistantMessage = {
+      ...completeAssistantMessage,
+      content: "Hello! How can",
+      status: "incomplete" as const,
+    };
+
+    const omniCoreMetadata = {
+      planId: "plan_1",
+      intent: "simple-generation" as const,
+      matchedRuleId: "fast-rule.simple-generation",
+      confidence: 0.9,
+      providerId: "anthropic" as const,
+      modelId: "claude-sonnet-5" as const,
+      taskPlanId: "task-plan_1",
+    };
+
+    function fakeStream(chunks: readonly string[]): AsyncIterable<string> {
+      return (async function* () {
+        for (const chunk of chunks) {
+          yield chunk;
+        }
+      })();
+    }
+
+    function fakeFailingStream(
+      chunksBeforeFailure: readonly string[],
+      error: unknown,
+    ): AsyncIterable<string> {
+      return (async function* () {
+        for (const chunk of chunksBeforeFailure) {
+          yield chunk;
+        }
+        throw error;
+      })();
+    }
+
+    function streamResult(textStream: AsyncIterable<string>): {
+      planId: string;
+      intent: "simple-generation";
+      matchedRuleId: string;
+      confidence: number;
+      providerId: "anthropic";
+      modelId: "claude-sonnet-5";
+      taskPlan: { taskPlanId: string };
+      textStream: AsyncIterable<string>;
+    } {
+      return {
+        planId: omniCoreMetadata.planId,
+        intent: omniCoreMetadata.intent,
+        matchedRuleId: omniCoreMetadata.matchedRuleId,
+        confidence: omniCoreMetadata.confidence,
+        providerId: omniCoreMetadata.providerId,
+        modelId: omniCoreMetadata.modelId,
+        taskPlan: { taskPlanId: omniCoreMetadata.taskPlanId },
+        textStream,
+      };
+    }
+
+    async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {
+      const results: T[] = [];
+      for await (const item of iterable) {
+        results.push(item);
+      }
+      return results;
+    }
+
+    beforeEach(() => {
+      repository.getConversation.mockResolvedValue(conversation);
+    });
+
+    it("persists the user message before calling OmniCoreService.executeStream()", async () => {
+      const callOrder: string[] = [];
+      repository.createMessage.mockImplementation(async (input: { role: string }) => {
+        callOrder.push(`createMessage:${input.role}`);
+        return input.role === "user" ? userMessage : completeAssistantMessage;
+      });
+      omniCore.executeStream.mockImplementation(async () => {
+        callOrder.push("omniCore.executeStream");
+        return streamResult(fakeStream(["Hello!"]));
+      });
+      const controller = new AbortController();
+
+      await collect(
+        service.sendMessageStream(
+          "user_1",
+          "workspace_1",
+          conversation.id,
+          "Hello, OmniCore.",
+          controller.signal,
+        ),
+      );
+
+      expect(callOrder).toEqual([
+        "createMessage:user",
+        "omniCore.executeStream",
+        "createMessage:assistant",
+      ]);
+    });
+
+    it("forwards the caller's AbortSignal to OmniCoreService.executeStream()", async () => {
+      repository.createMessage
+        .mockResolvedValueOnce(userMessage)
+        .mockResolvedValueOnce(completeAssistantMessage);
+      omniCore.executeStream.mockResolvedValue(streamResult(fakeStream(["hi"])));
+      const controller = new AbortController();
+
+      await collect(
+        service.sendMessageStream(
+          "user_1",
+          "workspace_1",
+          conversation.id,
+          "Hello, OmniCore.",
+          controller.signal,
+        ),
+      );
+
+      expect(omniCore.executeStream).toHaveBeenCalledWith("Hello, OmniCore.", {
+        signal: controller.signal,
+      });
+    });
+
+    it("yields start, then one delta per chunk in order, then done", async () => {
+      repository.createMessage
+        .mockResolvedValueOnce(userMessage)
+        .mockResolvedValueOnce(completeAssistantMessage);
+      omniCore.executeStream.mockResolvedValue(streamResult(fakeStream(["Hel", "lo!"])));
+
+      const events = await collect(
+        service.sendMessageStream(
+          "user_1",
+          "workspace_1",
+          conversation.id,
+          "Hello, OmniCore.",
+          new AbortController().signal,
+        ),
+      );
+
+      expect(events).toEqual([
+        { event: "start", data: { userMessage } },
+        { event: "delta", data: { text: "Hel" } },
+        { event: "delta", data: { text: "lo!" } },
+        { event: "done", data: { assistantMessage: completeAssistantMessage } },
+      ]);
+    });
+
+    it("persists the accumulated text as a complete assistant message with trimmed OmniCore metadata, and touches the conversation", async () => {
+      repository.createMessage
+        .mockResolvedValueOnce(userMessage)
+        .mockResolvedValueOnce(completeAssistantMessage);
+      omniCore.executeStream.mockResolvedValue(streamResult(fakeStream(["Hello", "!"])));
+
+      await collect(
+        service.sendMessageStream(
+          "user_1",
+          "workspace_1",
+          conversation.id,
+          "Hello, OmniCore.",
+          new AbortController().signal,
+        ),
+      );
+
+      expect(repository.createMessage).toHaveBeenNthCalledWith(2, {
+        conversationId: conversation.id,
+        workspaceId: "workspace_1",
+        ownerId: "user_1",
+        role: "assistant",
+        content: "Hello!",
+        omniCore: omniCoreMetadata,
+        status: "complete",
+      });
+      expect(repository.touchConversation).toHaveBeenCalledWith(conversation.id, "Hello!");
+    });
+
+    it("persists accumulated non-empty text as incomplete, and yields a terminal error event, on a mid-stream provider error", async () => {
+      repository.createMessage
+        .mockResolvedValueOnce(userMessage)
+        .mockResolvedValueOnce(incompleteAssistantMessage);
+      const providerError = new HttpException(
+        { code: "PROVIDER_RATE_LIMITED", message: "The provider is rate limiting requests." },
+        429,
+      );
+      omniCore.executeStream.mockResolvedValue(
+        streamResult(fakeFailingStream(["Hello! How can"], providerError)),
+      );
+
+      const events = await collect(
+        service.sendMessageStream(
+          "user_1",
+          "workspace_1",
+          conversation.id,
+          "Hello, OmniCore.",
+          new AbortController().signal,
+        ),
+      );
+
+      expect(events).toEqual([
+        { event: "start", data: { userMessage } },
+        { event: "delta", data: { text: "Hello! How can" } },
+        {
+          event: "error",
+          data: { code: "PROVIDER_RATE_LIMITED", message: "The provider is rate limiting requests." },
+        },
+      ]);
+      expect(repository.createMessage).toHaveBeenNthCalledWith(2, {
+        conversationId: conversation.id,
+        workspaceId: "workspace_1",
+        ownerId: "user_1",
+        role: "assistant",
+        content: "Hello! How can",
+        omniCore: omniCoreMetadata,
+        status: "incomplete",
+      });
+      expect(repository.createMessage).toHaveBeenCalledTimes(2);
+      expect(repository.touchConversation).toHaveBeenCalledWith(conversation.id, "Hello! How can");
+    });
+
+    it("persists accumulated non-empty text as incomplete on cancellation (EXECUTION_CANCELLED), exactly like any other mid-stream failure", async () => {
+      repository.createMessage
+        .mockResolvedValueOnce(userMessage)
+        .mockResolvedValueOnce(incompleteAssistantMessage);
+      const cancelledError = new HttpException(
+        { code: "EXECUTION_CANCELLED", message: "Execution was cancelled while streaming." },
+        499,
+      );
+      omniCore.executeStream.mockResolvedValue(
+        streamResult(fakeFailingStream(["partial "], cancelledError)),
+      );
+
+      const events = await collect(
+        service.sendMessageStream(
+          "user_1",
+          "workspace_1",
+          conversation.id,
+          "Hello, OmniCore.",
+          new AbortController().signal,
+        ),
+      );
+
+      expect(events.at(-1)).toEqual({
+        event: "error",
+        data: { code: "EXECUTION_CANCELLED", message: "Execution was cancelled while streaming." },
+      });
+      expect(repository.createMessage).toHaveBeenCalledTimes(2);
+      expect(repository.createMessage).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ status: "incomplete", content: "partial " }),
+      );
+    });
+
+    it("never persists an assistant message, and never touches the conversation, when the failure happens before any text was accumulated", async () => {
+      repository.createMessage.mockResolvedValueOnce(userMessage);
+      const providerError = new HttpException(
+        { code: "PROVIDER_UNAVAILABLE", message: "The provider is currently unavailable." },
+        503,
+      );
+      omniCore.executeStream.mockResolvedValue(streamResult(fakeFailingStream([], providerError)));
+
+      const events = await collect(
+        service.sendMessageStream(
+          "user_1",
+          "workspace_1",
+          conversation.id,
+          "Hello, OmniCore.",
+          new AbortController().signal,
+        ),
+      );
+
+      expect(events).toEqual([
+        { event: "start", data: { userMessage } },
+        {
+          event: "error",
+          data: { code: "PROVIDER_UNAVAILABLE", message: "The provider is currently unavailable." },
+        },
+      ]);
+      expect(repository.createMessage).toHaveBeenCalledTimes(1);
+      expect(repository.touchConversation).not.toHaveBeenCalled();
+    });
+
+    it("normalizes a non-HttpException failure to a safe generic error event, never leaking the raw error message", async () => {
+      repository.createMessage.mockResolvedValueOnce(userMessage);
+      omniCore.executeStream.mockResolvedValue(
+        streamResult(fakeFailingStream([], new Error("raw internal stack-trace-looking detail"))),
+      );
+
+      const events = await collect(
+        service.sendMessageStream(
+          "user_1",
+          "workspace_1",
+          conversation.id,
+          "Hello, OmniCore.",
+          new AbortController().signal,
+        ),
+      );
+
+      const errorEvent = events.at(-1) as { event: string; data: { code: string; message: string } };
+      expect(errorEvent.event).toBe("error");
+      expect(errorEvent.data.code).toBe("INTERNAL_ERROR");
+      expect(errorEvent.data.message).not.toContain("raw internal stack-trace-looking detail");
+    });
+
+    it("keeps the user message persisted and yields no events at all when OmniCoreService.executeStream() itself fails before the first yield", async () => {
+      repository.createMessage.mockResolvedValueOnce(userMessage);
+      const planningError = new HttpException(
+        { code: "AMBIGUOUS_INTENT", message: "The request is ambiguous." },
+        422,
+      );
+      omniCore.executeStream.mockRejectedValue(planningError);
+
+      const generator = service.sendMessageStream(
+        "user_1",
+        "workspace_1",
+        conversation.id,
+        "Hello, OmniCore.",
+        new AbortController().signal,
+      );
+
+      await expect(generator.next()).rejects.toBe(planningError);
+      expect(repository.createMessage).toHaveBeenCalledTimes(1);
+      expect(repository.createMessage).toHaveBeenCalledWith({
+        conversationId: conversation.id,
+        workspaceId: "workspace_1",
+        ownerId: "user_1",
+        role: "user",
+        content: "Hello, OmniCore.",
+      });
+    });
+
+    it("throws CONVERSATION_NOT_FOUND before ever persisting a message or calling OmniCoreService for a foreign conversation", async () => {
+      repository.getConversation.mockResolvedValue(null);
+
+      const generator = service.sendMessageStream(
+        "user_2",
+        "workspace_1",
+        conversation.id,
+        "Hello, OmniCore.",
+        new AbortController().signal,
+      );
+
+      await expect(generator.next()).rejects.toMatchObject({
+        response: { code: "CONVERSATION_NOT_FOUND" },
+      });
+      expect(repository.createMessage).not.toHaveBeenCalled();
+      expect(omniCore.executeStream).not.toHaveBeenCalled();
+    });
+
+    it("never persists more than one assistant message total, regardless of how the stream ends", async () => {
+      repository.createMessage
+        .mockResolvedValueOnce(userMessage)
+        .mockResolvedValueOnce(completeAssistantMessage);
+      omniCore.executeStream.mockResolvedValue(streamResult(fakeStream(["Hello", "!"])));
+
+      await collect(
+        service.sendMessageStream(
+          "user_1",
+          "workspace_1",
+          conversation.id,
+          "Hello, OmniCore.",
+          new AbortController().signal,
+        ),
+      );
+
+      const assistantPersistCalls = repository.createMessage.mock.calls.filter(
+        ([input]: [{ role: string }]) => input.role === "assistant",
+      );
+      expect(assistantPersistCalls).toHaveLength(1);
     });
   });
 });

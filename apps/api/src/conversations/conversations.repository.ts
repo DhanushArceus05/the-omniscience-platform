@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, OnModuleInit } from "@nestjs/common";
-import type { Conversation, Message, MessageOmniCoreMetadata, MessageRole } from "@omniscience/types";
+import type { Conversation, Message, MessageOmniCoreMetadata, MessageRole, MessageStatus } from "@omniscience/types";
 import { ObjectId } from "mongodb";
 import type { Collection } from "mongodb";
 import { MongoService } from "../mongo/mongo.service";
@@ -15,7 +15,21 @@ interface ConversationDocument {
   lastMessagePreview: string | null;
 }
 
-/** The `messages` collection's on-disk document shape. */
+/**
+ * The `messages` collection's on-disk document shape.
+ *
+ * `status` is optional here deliberately: every message persisted
+ * before Phase 6 Step 2 has no such field on its Mongo document at
+ * all (there was only ever one way for a message to be created, and
+ * it always held the complete text). `toMessage` normalizes that
+ * absence to `"complete"` — see `MessageStatus`'s own doc comment in
+ * `@omniscience/types` — so no migration of existing documents is
+ * required. New documents created by the non-streaming `sendMessage`
+ * path also omit it, for the same reason it would only ever be
+ * `"complete"` there too; only `sendMessageStream` ever writes it
+ * explicitly, and only with `"incomplete"` when that's genuinely what
+ * happened.
+ */
 interface MessageDocument {
   _id: ObjectId;
   conversationId: string;
@@ -25,6 +39,7 @@ interface MessageDocument {
   content: string;
   createdAt: Date;
   omniCore?: MessageOmniCoreMetadata;
+  status?: MessageStatus;
 }
 
 interface KeysetCursor {
@@ -39,6 +54,13 @@ export interface CreateMessageInput {
   role: MessageRole;
   content: string;
   omniCore?: MessageOmniCoreMetadata;
+  /**
+   * Omit for a message that is unconditionally complete (every
+   * non-streaming `sendMessage` call). Pass explicitly — `"complete"`
+   * or `"incomplete"` — from `sendMessageStream`, which is the only
+   * caller that can ever produce the latter.
+   */
+  status?: MessageStatus;
 }
 
 /**
@@ -195,6 +217,7 @@ export class ConversationsRepository implements OnModuleInit {
       content: input.content,
       createdAt: new Date(),
       ...(input.omniCore ? { omniCore: input.omniCore } : {}),
+      ...(input.status ? { status: input.status } : {}),
     };
     await this.messagesCollection.insertOne(doc);
     return toMessage(doc);
@@ -266,6 +289,10 @@ function toMessage(doc: MessageDocument): Message {
     content: doc.content,
     createdAt: doc.createdAt.toISOString(),
     ...(doc.omniCore ? { omniCore: doc.omniCore } : {}),
+    // Legacy documents predating Phase 6 Step 2 have no `status` field
+    // at all — normalized to "complete" here, not by migrating those
+    // documents, per `MessageStatus`'s doc comment.
+    status: doc.status ?? "complete",
   };
 }
 

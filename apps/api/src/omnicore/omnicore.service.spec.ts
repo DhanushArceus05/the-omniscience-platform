@@ -10,7 +10,7 @@ describe("OmniCoreService", () => {
   const fastRules = { classify: jest.fn() };
   const planBuilder = { build: jest.fn() };
   const taskPlanner = { plan: jest.fn() };
-  const orchestrator = { execute: jest.fn() };
+  const orchestrator = { execute: jest.fn(), executeStream: jest.fn() };
   const logger = { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() };
   let service: OmniCoreService;
 
@@ -291,6 +291,144 @@ describe("OmniCoreService", () => {
       expect(logger.debug).not.toHaveBeenCalled();
       expect(logger.warn).not.toHaveBeenCalled();
       expect(logger.error).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("executeStream — Phase 6 Step 2", () => {
+    function fakeStream(chunks: readonly string[]): AsyncIterable<string> {
+      return (async function* () {
+        for (const chunk of chunks) {
+          yield chunk;
+        }
+      })();
+    }
+
+    function mockStreamingHappyPath(textStream: AsyncIterable<string>): void {
+      fastRules.classify.mockReturnValue(match);
+      planBuilder.build.mockReturnValue(plan);
+      taskPlanner.plan.mockReturnValue(taskPlan);
+      orchestrator.executeStream.mockResolvedValue({
+        textStream,
+        providerId: "anthropic",
+        modelId: "claude-sonnet-5",
+      });
+    }
+
+    it("classifies, builds a plan, and builds a task plan exactly like execute() does", async () => {
+      mockStreamingHappyPath(fakeStream(["hi"]));
+
+      await service.executeStream("hi there");
+
+      expect(fastRules.classify).toHaveBeenCalledWith("hi there");
+      expect(planBuilder.build).toHaveBeenCalledWith("hi there", match);
+      expect(taskPlanner.plan).toHaveBeenCalledWith(plan);
+    });
+
+    it("delegates to orchestrator.executeStream (not execute) with the built task plan and forwarded options", async () => {
+      mockStreamingHappyPath(fakeStream(["hi"]));
+      const controller = new AbortController();
+
+      await service.executeStream("hi there", { signal: controller.signal });
+
+      expect(orchestrator.executeStream).toHaveBeenCalledWith(taskPlan, { signal: controller.signal });
+      expect(orchestrator.execute).not.toHaveBeenCalled();
+    });
+
+    it("returns planId/intent/matchedRuleId/confidence/providerId/modelId/taskPlan/textStream — nothing else", async () => {
+      const textStream = fakeStream(["hi"]);
+      mockStreamingHappyPath(textStream);
+
+      const result = await service.executeStream("hi there");
+
+      expect(result).toEqual({
+        planId: "plan-1",
+        intent: "simple-generation",
+        matchedRuleId: "fast-rule.default-text-generation",
+        confidence: 0.75,
+        providerId: "anthropic",
+        modelId: "claude-sonnet-5",
+        taskPlan,
+        textStream,
+      });
+    });
+
+    it("resolves before the textStream is iterated — model selection already succeeded", async () => {
+      let iterated = false;
+      const textStream = (async function* () {
+        iterated = true;
+        yield "hi";
+      })();
+      mockStreamingHappyPath(textStream);
+
+      const result = await service.executeStream("hi there");
+
+      expect(iterated).toBe(false);
+      for await (const _chunk of result.textStream) {
+        // drain
+      }
+      expect(iterated).toBe(true);
+    });
+
+    it("propagates an INTENT_NOT_RECOGNIZED error from the fast-rules engine unchanged", async () => {
+      const error = { response: { code: "INTENT_NOT_RECOGNIZED" } };
+      fastRules.classify.mockImplementation(() => {
+        throw error;
+      });
+
+      await expect(service.executeStream("   ")).rejects.toBe(error);
+      expect(planBuilder.build).not.toHaveBeenCalled();
+      expect(taskPlanner.plan).not.toHaveBeenCalled();
+      expect(orchestrator.executeStream).not.toHaveBeenCalled();
+    });
+
+    it("propagates an AMBIGUOUS_INTENT error from the plan builder unchanged", async () => {
+      fastRules.classify.mockReturnValue({
+        ruleId: "fast-rule.ambiguous",
+        intent: "ambiguous",
+        confidence: 0.55,
+        alternateIntents: ["code-generation", "summarization"],
+      });
+      const error = { response: { code: "AMBIGUOUS_INTENT" } };
+      planBuilder.build.mockImplementation(() => {
+        throw error;
+      });
+
+      await expect(service.executeStream("Summarize this")).rejects.toBe(error);
+      expect(taskPlanner.plan).not.toHaveBeenCalled();
+      expect(orchestrator.executeStream).not.toHaveBeenCalled();
+    });
+
+    it("propagates a task-planning domain error from the task planner unchanged", async () => {
+      fastRules.classify.mockReturnValue(match);
+      planBuilder.build.mockReturnValue(plan);
+      const error = { response: { code: "CIRCULAR_DEPENDENCY" } };
+      taskPlanner.plan.mockImplementation(() => {
+        throw error;
+      });
+
+      await expect(service.executeStream("hi there")).rejects.toBe(error);
+      expect(orchestrator.executeStream).not.toHaveBeenCalled();
+    });
+
+    it("propagates a model-selection/orchestration error from orchestrator.executeStream unchanged — before any headers a caller might open", async () => {
+      fastRules.classify.mockReturnValue(match);
+      planBuilder.build.mockReturnValue(plan);
+      taskPlanner.plan.mockReturnValue(taskPlan);
+      const error = { response: { code: "NO_COMPATIBLE_MODEL" } };
+      orchestrator.executeStream.mockRejectedValue(error);
+
+      await expect(service.executeStream("hi there")).rejects.toBe(error);
+    });
+
+    it("rejects a plan with zero or multiple steps, same single-step guard as execute()", async () => {
+      fastRules.classify.mockReturnValue(match);
+      planBuilder.build.mockReturnValue({ ...plan, steps: [] });
+
+      await expect(service.executeStream("hi there")).rejects.toEqual(
+        expect.objectContaining({ response: expect.objectContaining({ code: "INTENT_NOT_RECOGNIZED" }) }),
+      );
+      expect(taskPlanner.plan).not.toHaveBeenCalled();
+      expect(orchestrator.executeStream).not.toHaveBeenCalled();
     });
   });
 });

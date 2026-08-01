@@ -24,6 +24,7 @@ import type {
   LogoutRequest,
   LogoutResponse,
   MeResponse,
+  MessageStreamEvent,
   RefreshRequest,
   RefreshResponse,
   RegisterRequest,
@@ -347,6 +348,122 @@ export class OmniscienceClient {
     );
   }
 
+  /**
+   * `POST /workspaces/:workspaceId/conversations/:conversationId/messages/stream`
+   * — Phase 6 Step 2. The authenticated, `fetch()`-based streaming
+   * counterpart to `sendMessage()`. Deliberately not built on the
+   * native `EventSource` API: `EventSource` can only issue
+   * unauthenticated `GET` requests, so it has no way to attach the
+   * `Authorization` header this endpoint requires (and offers no real
+   * reconnection guarantee worth relying on regardless) — see
+   * `apps/api`'s `ConversationsController.sendMessageStream` doc
+   * comment for the server-side half of this same reasoning.
+   *
+   * An async generator of typed `MessageStreamEvent`s, in the exact
+   * order the server emits them: one `start`, zero or more `delta`,
+   * then exactly one `done` or `error` ends the stream. Robust to the
+   * two ways SSE bytes can be chopped by the network — a single
+   * logical frame split across multiple `fetch` chunks, and multiple
+   * complete frames delivered together in one chunk — via
+   * `parseIncrementalSseFrames`, which only ever emits a frame once a
+   * complete `\n\n`-terminated block has accumulated in its buffer,
+   * decoding with `TextDecoder`'s own `{ stream: true }` mode so a
+   * multi-byte UTF-8 character split across chunk boundaries is never
+   * mis-decoded either.
+   *
+   * A well-formed `error` event from the server is **yielded**, not
+   * thrown — the same terminal domain codes (e.g.
+   * `EXECUTION_CANCELLED`, a mapped provider failure)
+   * `sendMessage()`'s `ApiClientError.code` would already carry are
+   * available on `event.data.code` for a caller that wants to `switch`
+   * on `event.event` uniformly instead of wrapping this call in a
+   * separate try/catch for exactly one branch. A non-2xx response
+   * *before* any SSE framing begins (a 401, 404, 429, or similar) still
+   * throws `ApiClientError`, identically to every other method on this
+   * client — that's an ordinary HTTP error response, not a stream
+   * event, exactly mirroring the endpoint's own "LOCKED ERROR
+   * SEMANTICS": headers for SSE are never opened server-side until
+   * everything that can still fail with a normal HTTP status already
+   * has. A malformed frame this client can't parse (unparsable `data:`
+   * JSON) throws `ApiClientError` with `code: "INVALID_RESPONSE"`
+   * rather than letting a raw `JSON.parse` exception escape; an
+   * `event:` name this client doesn't recognize is skipped rather than
+   * thrown on, so a future server-added event type doesn't break an
+   * already-shipped client.
+   *
+   * `options.signal`, if given, aborts the underlying `fetch` — the
+   * same signal a caller would pass to cancel any other in-flight
+   * `fetch` call.
+   */
+  async *sendMessageStream(
+    accessToken: string,
+    workspaceId: string,
+    conversationId: string,
+    content: string,
+    options: { readonly signal?: AbortSignal } = {},
+  ): AsyncGenerator<MessageStreamEvent> {
+    const url = `${this.apiBaseUrl}/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}/messages/stream`;
+
+    let response: Response;
+    try {
+      response = await this.fetchImpl(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ content }),
+        signal: options.signal,
+      });
+    } catch (error) {
+      if (options.signal?.aborted) {
+        // Not a network failure — the caller asked to stop. Let the
+        // `AbortError` (or whatever `fetchImpl` throws for an aborted
+        // request) propagate as-is, rather than reporting it as a
+        // misleading `NETWORK_ERROR`.
+        throw error;
+      }
+      throw new ApiClientError({
+        code: "NETWORK_ERROR",
+        message: "Could not reach the server. Check your connection and try again.",
+        status: 0,
+      });
+    }
+
+    if (!response.ok) {
+      // Ordinary HTTP error response — SSE headers were never opened
+      // server-side — so the body is the same `ApiError` envelope every
+      // other method on this client already unwraps.
+      let json: unknown;
+      try {
+        json = await response.json();
+      } catch {
+        throw new ApiClientError({
+          code: "INVALID_RESPONSE",
+          message: `Request to ${url} returned an unreadable response (status ${response.status}).`,
+          status: response.status,
+        });
+      }
+      const errorBody = json as
+        | { error?: { code?: unknown; message?: unknown; details?: unknown } }
+        | null;
+      const code =
+        typeof errorBody?.error?.code === "string" ? errorBody.error.code : "UNKNOWN_ERROR";
+      const message =
+        typeof errorBody?.error?.message === "string"
+          ? errorBody.error.message
+          : `Request to ${url} failed with status ${response.status}`;
+      throw new ApiClientError({ code, message, status: response.status, details: errorBody?.error?.details });
+    }
+
+    if (!response.body) {
+      throw new ApiClientError({
+        code: "INVALID_RESPONSE",
+        message: `Request to ${url} succeeded but returned no readable stream body.`,
+        status: response.status,
+      });
+    }
+
+    yield* parseIncrementalSseFrames(response.body, url);
+  }
+
   /** `PATCH /users/me` — Phase 2 Step 6. Updates the caller's own display name. */
   async updateProfile(
     accessToken: string,
@@ -532,4 +649,113 @@ export class OmniscienceClient {
 
     return (json as { data: T }).data;
   }
+}
+
+/** Every `event:` name `MessageStreamEvent` (Phase 6 Step 2) declares — anything else in a frame's `event:` line is treated as forward-compatible and skipped, not thrown on. */
+const KNOWN_STREAM_EVENT_NAMES: ReadonlySet<string> = new Set(["start", "delta", "done", "error"]);
+
+/**
+ * Reads `body` incrementally and yields one `MessageStreamEvent` per
+ * complete SSE frame (`event: ...\ndata: ...\n\n`), used by
+ * `sendMessageStream()`. Kept as a standalone function, not a private
+ * method, so it depends on nothing from `OmniscienceClient` beyond the
+ * two arguments it's given — the whole point of pulling this out of
+ * the method body is that it's the one piece worth unit testing with a
+ * hand-built `ReadableStream` feeding it arbitrary chunk boundaries,
+ * with no `OmniscienceClient` instance, `fetch`, or network involved
+ * at all.
+ *
+ * Buffers raw decoded text across reads (`TextDecoder`'s own
+ * `{ stream: true }` mode, so a multi-byte UTF-8 character split
+ * across two chunks is never mis-decoded) and only ever emits a frame
+ * once a full `\n\n`-terminated block has accumulated — correct
+ * whether the network hands this a frame in one piece, split across
+ * many small reads, or several complete frames concatenated into one
+ * read.
+ */
+async function* parseIncrementalSseFrames(
+  body: ReadableStream<Uint8Array>,
+  url: string,
+): AsyncGenerator<MessageStreamEvent> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary !== -1) {
+        const rawFrame = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        const event = parseStreamFrame(rawFrame, url);
+        if (event) {
+          yield event;
+        }
+        boundary = buffer.indexOf("\n\n");
+      }
+    }
+
+    // A well-behaved server (this one included) always terminates its
+    // final frame with the required trailing blank line before closing
+    // the connection, so `buffer` is normally empty by this point.
+    // Handling one last non-terminated frame defensively costs nothing
+    // and avoids silently dropping data from a server that closes the
+    // connection a moment early.
+    const trailing = buffer.trim();
+    if (trailing.length > 0) {
+      const event = parseStreamFrame(trailing, url);
+      if (event) {
+        yield event;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+/**
+ * Parses one already-isolated SSE frame's raw text (no trailing blank
+ * line) into a `MessageStreamEvent`, or `null` for a frame this client
+ * intentionally ignores (no recognized `event:` line — either a
+ * blank/comment-only frame, or a future event name this client version
+ * doesn't know about yet). Throws `ApiClientError` (`code:
+ * "INVALID_RESPONSE"`) for a frame that *does* name a known event but
+ * whose `data:` line(s) aren't valid JSON — that's not something a
+ * caller should have to defend against per-event, so it fails loudly
+ * here instead of handing a caller a broken partial `MessageStreamEvent`.
+ */
+function parseStreamFrame(rawFrame: string, url: string): MessageStreamEvent | null {
+  let eventName: string | null = null;
+  const dataLines: string[] = [];
+
+  for (const line of rawFrame.split("\n")) {
+    if (line.startsWith("event:")) {
+      eventName = line.slice("event:".length).trim();
+    } else if (line.startsWith("data:")) {
+      dataLines.push(line.slice("data:".length).trimStart());
+    }
+  }
+
+  if (!eventName || !KNOWN_STREAM_EVENT_NAMES.has(eventName)) {
+    return null;
+  }
+
+  let data: unknown;
+  try {
+    data = JSON.parse(dataLines.join("\n"));
+  } catch {
+    throw new ApiClientError({
+      code: "INVALID_RESPONSE",
+      message: `Request to ${url} sent a malformed "${eventName}" stream event.`,
+      status: 200,
+    });
+  }
+
+  return { event: eventName, data } as MessageStreamEvent;
 }

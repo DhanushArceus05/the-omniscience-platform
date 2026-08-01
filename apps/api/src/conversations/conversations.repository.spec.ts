@@ -253,6 +253,56 @@ describe("ConversationsRepository (real MongoDB)", () => {
     expect(nextCursor).toBeNull();
   });
 
+  it("normalizes a message with no explicit status to \"complete\" — the non-streaming sendMessage path (Phase 6 Step 1) never passes status", async () => {
+    if (!reachable) return;
+
+    const conversation = await repository.createConversation("user_1", "workspace_1");
+    const message = await repository.createMessage({
+      conversationId: conversation.id,
+      workspaceId: "workspace_1",
+      ownerId: "user_1",
+      role: "user",
+      content: "Hello, OmniCore.",
+    });
+
+    expect(message.status).toBe("complete");
+
+    const { messages } = await repository.listMessages("user_1", "workspace_1", conversation.id, {
+      limit: 20,
+    });
+    expect(messages[0]?.status).toBe("complete");
+  });
+
+  it("persists and round-trips an explicit \"incomplete\" status — the streaming sendMessageStream path (Phase 6 Step 2)", async () => {
+    if (!reachable) return;
+
+    const conversation = await repository.createConversation("user_1", "workspace_1");
+    const message = await repository.createMessage({
+      conversationId: conversation.id,
+      workspaceId: "workspace_1",
+      ownerId: "user_1",
+      role: "assistant",
+      content: "This response was cut sh",
+      status: "incomplete",
+      omniCore: {
+        planId: "plan_1",
+        intent: "simple-generation",
+        matchedRuleId: "fast-rule.simple-generation",
+        confidence: 0.9,
+        providerId: "anthropic",
+        modelId: "claude-sonnet-5",
+        taskPlanId: "task-plan_1",
+      },
+    });
+
+    expect(message.status).toBe("incomplete");
+
+    const { messages } = await repository.listMessages("user_1", "workspace_1", conversation.id, {
+      limit: 20,
+    });
+    expect(messages[0]?.status).toBe("incomplete");
+  });
+
   it("paginates messages chronologically with a bounded limit and a usable nextCursor", async () => {
     if (!reachable) return;
 

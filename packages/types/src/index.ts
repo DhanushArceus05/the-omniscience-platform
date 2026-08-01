@@ -55,12 +55,20 @@ export type {
   GetConversationResponse,
   MessageOmniCoreMetadata,
   MessageRole,
+  MessageStatus,
   Message,
   ListMessagesQuery,
   ListMessagesResponse,
   SendMessageRequest,
   SendMessageResponse,
 } from "./conversations";
+export type {
+  MessageStreamStartEvent,
+  MessageStreamDeltaEvent,
+  MessageStreamDoneEvent,
+  MessageStreamErrorEvent,
+  MessageStreamEvent,
+} from "./conversation-stream";
 export type {
   ProviderId,
   ModelId,

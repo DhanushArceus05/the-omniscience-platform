@@ -172,4 +172,81 @@ export class AnthropicProvider extends StubProviderDescriptor {
 
     return text;
   }
+
+  /**
+   * The streaming counterpart to `generateText` (Phase 6 Step 2) —
+   * this adapter's only real implementation of the optional
+   * `OmniProvider.generateTextStream` method. Shares every validation
+   * step `generateText` already has (credential check first, then
+   * model-registration check) and the exact same error normalization
+   * (`mapAnthropicError`) for anything the SDK call itself throws, so
+   * a caller sees identical failure behavior whether it called this
+   * method or `generateText` for the same bad input.
+   *
+   * `options.signal`, if given, is forwarded straight to the
+   * underlying `client.messages.stream(...)` call — the SDK aborts its
+   * own in-flight HTTP request when that signal fires, which is what
+   * turns an aborted `AbortSignal` into an actual stopped vendor call
+   * rather than a caller that merely stops listening while billed
+   * generation continues server-side.
+   *
+   * Mirrors `generateText`'s "never silently return an empty string"
+   * guarantee: if the stream completes having yielded no non-empty
+   * text chunk at all, this throws `PROVIDER_RESPONSE_INVALID` exactly
+   * as the non-streaming path does for an empty response — the one
+   * difference being this can only be detected *after* the stream
+   * has already finished, since there is no single response body to
+   * inspect up front.
+   */
+  async *generateTextStream(
+    modelId: ModelId,
+    prompt: string,
+    options: { readonly signal?: AbortSignal } = {},
+  ): AsyncIterable<string> {
+    if (!this.hasCredential()) {
+      throw aiDomainError(
+        "PROVIDER_NOT_CONFIGURED",
+        `Provider "${this.providerId}" has no configured credentials.`,
+      );
+    }
+
+    const model = this.models.find((candidate) => candidate.modelId === modelId);
+    if (!model) {
+      throw aiDomainError(
+        "MODEL_NOT_FOUND",
+        `No model "${modelId}" is registered for provider "${this.providerId}".`,
+      );
+    }
+
+    let textStream: AsyncIterable<string>;
+    try {
+      const stream = this.client.messages.stream(
+        { model: modelId, max_tokens: DEFAULT_MAX_TOKENS, messages: [{ role: "user", content: prompt }] },
+        { signal: options.signal },
+      );
+      textStream = stream.textStream;
+    } catch (error) {
+      throw mapAnthropicError(error, { providerId: this.providerId, modelId }, this.logger);
+    }
+
+    let emittedNonEmptyChunk = false;
+    try {
+      for await (const chunk of textStream) {
+        if (chunk.length === 0) {
+          continue;
+        }
+        emittedNonEmptyChunk = true;
+        yield chunk;
+      }
+    } catch (error) {
+      throw mapAnthropicError(error, { providerId: this.providerId, modelId }, this.logger);
+    }
+
+    if (!emittedNonEmptyChunk) {
+      throw aiDomainError(
+        "PROVIDER_RESPONSE_INVALID",
+        `Provider "${this.providerId}" returned an empty or unsupported response for model "${modelId}".`,
+      );
+    }
+  }
 }

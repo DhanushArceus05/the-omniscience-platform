@@ -46,6 +46,7 @@ describe("conversation/message type shapes", () => {
       role: "user",
       content: "Hello, OmniCore.",
       createdAt: "2026-07-28T00:00:00.000Z",
+      status: "complete",
     };
 
     expect(message.role).toBe("user");
@@ -59,6 +60,7 @@ describe("conversation/message type shapes", () => {
       role: "assistant",
       content: "Hello! How can I help?",
       createdAt: "2026-07-28T00:00:01.000Z",
+      status: "complete",
       omniCore: {
         planId: "plan_1",
         intent: "simple-generation",
@@ -83,6 +85,7 @@ describe("conversation/message type shapes", () => {
           role: "user",
           content: "Hello, OmniCore.",
           createdAt: "2026-07-28T00:00:00.000Z",
+          status: "complete",
         },
       ],
       nextCursor: null,
@@ -99,6 +102,7 @@ describe("conversation/message type shapes", () => {
         role: "user",
         content: "Hello, OmniCore.",
         createdAt: "2026-07-28T00:00:00.000Z",
+        status: "complete",
       },
       assistantMessage: {
         id: "665f1c2b9a4e8f001234567a",
@@ -106,6 +110,7 @@ describe("conversation/message type shapes", () => {
         role: "assistant",
         content: "Hello! How can I help?",
         createdAt: "2026-07-28T00:00:01.000Z",
+        status: "complete",
         omniCore: {
           planId: "plan_1",
           intent: "simple-generation",
@@ -120,5 +125,18 @@ describe("conversation/message type shapes", () => {
 
     expect(response.userMessage.role).toBe("user");
     expect(response.assistantMessage.role).toBe("assistant");
+  });
+
+  it("builds a valid incomplete assistant Message — a stream cut short by cancellation or a provider failure (Phase 6 Step 2)", () => {
+    const message: Message = {
+      id: "665f1c2b9a4e8f001234567a",
+      conversationId: "665f1c2b9a4e8f0012345678",
+      role: "assistant",
+      content: "This response was cut sh",
+      createdAt: "2026-07-28T00:00:01.000Z",
+      status: "incomplete",
+    };
+
+    expect(message.status).toBe("incomplete");
   });
 });

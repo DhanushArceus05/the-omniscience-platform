@@ -23,11 +23,29 @@ export const ANTHROPIC_CLIENT = "ANTHROPIC_CLIENT";
  * files, models listing, beta namespaces, etc.) is used by this
  * adapter in Step 2.
  */
+/** The result of starting a streamed Anthropic call — the one thing `AnthropicProvider.generateTextStream` actually needs: incremental text chunks, in order, as they arrive. Deliberately narrower than the SDK's own `MessageStream` (no `.finalMessage()`, no raw event access, no `.on(...)` listeners) — same "narrow interface, easy to fake in tests" reasoning `AnthropicMessagesClient` itself already documents. */
+export interface AnthropicTextStream {
+  readonly textStream: AsyncIterable<string>;
+}
+
 export interface AnthropicMessagesClient {
   readonly messages: {
     create(
       params: Anthropic.MessageCreateParamsNonStreaming,
     ): Promise<Anthropic.Message>;
+    /**
+     * The streaming counterpart to `create` (Phase 4 Step 2 → Phase 6
+     * Step 2). Takes the same request shape `create` does (model,
+     * max_tokens, messages) — streaming vs. non-streaming is a
+     * property of *which method is called*, not an extra `stream:
+     * true` flag a caller could get wrong — plus an optional
+     * `AbortSignal` so an in-flight vendor request can actually be
+     * cancelled, not just have its result discarded.
+     */
+    stream(
+      params: Anthropic.MessageCreateParamsNonStreaming,
+      options?: { readonly signal?: AbortSignal },
+    ): AnthropicTextStream;
   };
 }
 
@@ -60,11 +78,60 @@ export interface AnthropicMessagesClient {
  * would risk double-retrying or disagreeing with the SDK's own rules.
  */
 function createAnthropicClient(env: Env): AnthropicMessagesClient {
-  return new Anthropic({
+  const client = new Anthropic({
     apiKey: env.ANTHROPIC_API_KEY ?? "not-configured",
     timeout: env.AI_REQUEST_TIMEOUT_MS,
     maxRetries: env.AI_MAX_RETRIES,
   });
+
+  // Explicitly adapted (rather than returning `client` directly, which
+  // Step 2's `create`-only interface could get away with via
+  // structural typing) now that `AnthropicMessagesClient` also
+  // declares `stream`. The installed `@anthropic-ai/sdk` version's own
+  // `messages.stream(...)` return type has no `.textStream` convenience
+  // property in its public type declarations (only a raw
+  // `AsyncIterable` of Messages-API SSE events — `message_start`,
+  // `content_block_start`, `content_block_delta`, `content_block_stop`,
+  // `message_delta`, `message_stop`: the same stable, publicly
+  // documented event set the Messages API itself emits over the wire),
+  // so `extractTextDeltas` below does that extraction itself. This
+  // wrapper is the one place any of this is adapted, so nothing else in
+  // this module ever references SDK members `AnthropicMessagesClient`
+  // doesn't declare.
+  return {
+    messages: {
+      create: (params) => client.messages.create(params),
+      stream: (params, options) => ({
+        textStream: extractTextDeltas(client.messages.stream(params, options)),
+      }),
+    },
+  };
+}
+
+/**
+ * Narrows the real SDK's raw Messages-API SSE event stream down to
+ * plain text chunks. `events`'s type is derived directly from the
+ * installed `@anthropic-ai/sdk` version's own declared return type for
+ * `messages.stream(...)` (`ReturnType<Anthropic["messages"]["stream"]>`)
+ * rather than a hand-written approximation of it, so this stays
+ * correct across SDK versions without needing to know or name that
+ * return type.
+ *
+ * Only a `content_block_delta` event whose `delta.type` is
+ * `"text_delta"` ever produces a chunk — every other event type
+ * (including `input_json_delta`, for a tool-use content block this
+ * adapter never requests) is silently skipped, exactly like this
+ * adapter's non-streaming `generateText` already only ever reads
+ * `content` blocks of `type: "text"` and ignores the rest.
+ */
+async function* extractTextDeltas(
+  events: ReturnType<Anthropic["messages"]["stream"]>,
+): AsyncGenerator<string> {
+  for await (const event of events) {
+    if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+      yield event.delta.text;
+    }
+  }
 }
 
 /** Nest provider for `ANTHROPIC_CLIENT` — real SDK client, built from the validated `Env`. */

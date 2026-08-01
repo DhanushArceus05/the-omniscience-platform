@@ -1,7 +1,9 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { Logger } from "pino";
 import type {
+  ModelId,
   PlanExecutionResult,
+  ProviderId,
   StageExecutionResult,
   StepExecutionResult,
   TaskPlan,
@@ -16,6 +18,13 @@ import { StepExecutorService } from "./step-executor.service";
 export interface PlanExecutionOptions {
   readonly timeoutMs?: number;
   readonly signal?: AbortSignal;
+}
+
+/** What `executeStream()` (Phase 6 Step 2) returns — see that method's doc comment for why this is not a `PlanExecutionResult`. */
+export interface StreamingPlanExecutionOutput {
+  readonly textStream: AsyncIterable<string>;
+  readonly providerId: ProviderId;
+  readonly modelId: ModelId;
 }
 
 /**
@@ -211,6 +220,64 @@ export class ExecutionOrchestratorService {
       // `STEP_EXECUTION_FAILED` or any other code of this service's own.
       throw error;
     }
+  }
+
+  /**
+   * The streaming counterpart to `execute()` (Phase 6 Step 2).
+   * Re-validates `taskPlan.steps` through the same
+   * `DependencyGraphService.layers()` call `execute()` already makes,
+   * then — since streaming supports only a single-step, single-stage
+   * plan (`StepExecutorService.executeStream` has no concept of
+   * "run this step, then stream the next") — resolves exactly the one
+   * step `OmniCoreService.executeStream`'s own single-step guard
+   * already guarantees exists, and delegates to
+   * `StepExecutorService.executeStream` for it.
+   *
+   * Deliberately does *not* walk `taskPlan.stages` the way `execute()`
+   * does, and returns no `PlanExecutionResult` — there is no
+   * multi-stage/multi-step orchestration to do yet (every `TaskPlan`
+   * reaching this method has exactly one stage and one step, enforced
+   * upstream), and a `PlanExecutionResult`'s per-stage/per-step
+   * `status`/timestamps have no meaning for a response that is still
+   * streaming. The one thing a caller actually needs —
+   * `taskPlanId`/`providerId`/`modelId` for `MessageOmniCoreMetadata`
+   * — it already has from `taskPlan` and this method's own return
+   * value, without needing that wrapper type at all. If a future phase
+   * teaches streaming to span more than one step, this is the method
+   * that grows a real per-stage loop — `execute()` itself would not
+   * need to change.
+   */
+  async executeStream(taskPlan: TaskPlan, options: PlanExecutionOptions = {}): Promise<StreamingPlanExecutionOutput> {
+    this.dependencyGraph.layers(taskPlan.steps);
+
+    // Destructured into a single local rather than repeatedly indexing
+    // `taskPlan.stages[0]` — with `noUncheckedIndexedAccess`, each
+    // indexed access is independently typed as possibly `undefined`
+    // regardless of an earlier `.length` check, but a single local
+    // variable narrows normally through the guard below, same as any
+    // other `if (!x) { throw/return; }` check does.
+    const [firstStage, ...otherStages] = taskPlan.stages;
+    if (!firstStage || otherStages.length > 0 || firstStage.stepIds.length !== 1) {
+      throw omniCoreDomainError(
+        "INVALID_EXECUTION_STATE",
+        "Streaming execution supports only a single-stage, single-step task plan.",
+        { taskPlanId: taskPlan.taskPlanId, stageCount: taskPlan.stages.length },
+      );
+    }
+
+    const [stepId] = firstStage.stepIds;
+    const step = taskPlan.steps.find((candidate) => candidate.stepId === stepId);
+    if (!step) {
+      throw omniCoreDomainError(
+        "INVALID_EXECUTION_STATE",
+        `Stage "${firstStage.stageId}" references step "${stepId}", which is not present in the plan.`,
+        { stageId: firstStage.stageId, stepId },
+      );
+    }
+
+    this.logger.debug({ taskPlanId: taskPlan.taskPlanId, stepId: step.stepId }, "omnicore: streaming step execution starting");
+
+    return this.stepExecutor.executeStream(step, options);
   }
 
   /** Best-effort extraction of a thrown error's domain `code`, for the structured failure log only — never thrown or returned itself. */

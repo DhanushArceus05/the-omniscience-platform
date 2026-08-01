@@ -1,12 +1,39 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { Logger } from "pino";
-import type { OmniCoreExecuteResponse } from "@omniscience/types";
+import type { ModelId, OmniCoreExecuteResponse, ProviderId, TaskPlan } from "@omniscience/types";
 import { LOGGER } from "../config/config.constants";
 import { CapabilityPlanBuilderService } from "./capability-plan-builder.service";
 import { ExecutionOrchestratorService } from "./execution-orchestrator.service";
 import { FastRulesEngineService } from "./fast-rules-engine.service";
 import { omniCoreDomainError } from "./omnicore.errors";
 import { TaskPlannerService } from "./task-planner.service";
+
+/**
+ * What `executeStream()` (Phase 6 Step 2) returns — the streaming
+ * counterpart to `OmniCoreExecuteResponse`. Not itself part of
+ * `@omniscience/types`: unlike that type, this is never serialized
+ * over the wire as-is (`ConversationsService.sendMessageStream`
+ * consumes `textStream` server-side and emits its own
+ * `MessageStreamEvent`s instead), so it has no reason to live in the
+ * shared wire-contracts package.
+ *
+ * Deliberately has no `execution: PlanExecutionResult` field the way
+ * `OmniCoreExecuteResponse` has `execution` — see
+ * `ExecutionOrchestratorService.executeStream`'s doc comment for why a
+ * still-streaming response has no `PlanExecutionResult` to attach. The
+ * one thing a `PlanExecutionResult` would have offered a caller here —
+ * `taskPlanId`/`providerId`/`modelId` — is already present directly.
+ */
+export interface OmniCoreExecuteStreamResult {
+  readonly planId: string;
+  readonly intent: string;
+  readonly matchedRuleId: string;
+  readonly confidence: number;
+  readonly providerId: ProviderId;
+  readonly modelId: ModelId;
+  readonly taskPlan: TaskPlan;
+  readonly textStream: AsyncIterable<string>;
+}
 
 /**
  * `OmniCoreService` — OmniCore's orchestration entry point (Phase 5
@@ -143,6 +170,68 @@ export class OmniCoreService {
       modelId: stepResult.modelId,
       taskPlan,
       execution,
+    };
+  }
+
+  /**
+   * The streaming counterpart to `execute()` (Phase 6 Step 2).
+   * Classification, capability-plan building, the single-step guard,
+   * and task planning are byte-for-byte the same steps `execute()`
+   * already runs — copied, not extracted into a shared private
+   * helper, so that a future change to `execute()`'s own pipeline
+   * doesn't have to first decide whether it also applies to streaming
+   * (the same reasoning `ExecutionOrchestratorService.executeStream`'s
+   * doc comment gives for not sharing its stage-walking loop). Only
+   * the final step — orchestration — diverges: `execute()` awaits
+   * `orchestrator.execute()` to full completion, while this method
+   * awaits `orchestrator.executeStream()`, which itself only resolves
+   * once model selection has already succeeded but before any actual
+   * generation request has been made (see that method's doc comment).
+   * That means this method's returned promise can still fail with
+   * every domain error `execute()`'s promise can — an unrecognized or
+   * ambiguous intent, an invalid task plan, no compatible model, an
+   * unsupported capability — before a caller
+   * (`ConversationsService.sendMessageStream`) ever opens SSE response
+   * headers, exactly as the Phase 6 Step 2 spec requires.
+   */
+  async executeStream(prompt: string, options: { readonly signal?: AbortSignal } = {}): Promise<OmniCoreExecuteStreamResult> {
+    const match = this.fastRules.classify(prompt);
+    const plan = this.planBuilder.build(prompt, match);
+
+    const [step, ...rest] = plan.steps;
+    if (!step || rest.length > 0) {
+      throw omniCoreDomainError(
+        "INTENT_NOT_RECOGNIZED",
+        "OmniCore Step 1 supports only single-step capability plans.",
+      );
+    }
+
+    const taskPlan = this.taskPlanner.plan(plan);
+
+    const { textStream, providerId, modelId } = await this.orchestrator.executeStream(taskPlan, options);
+
+    this.logger.debug(
+      {
+        planId: plan.planId,
+        intent: plan.intent,
+        matchedRuleId: match.ruleId,
+        confidence: match.confidence,
+        providerId,
+        modelId,
+        taskPlanId: taskPlan.taskPlanId,
+      },
+      "omnicore: streaming capability plan execution starting",
+    );
+
+    return {
+      planId: plan.planId,
+      intent: plan.intent,
+      matchedRuleId: match.ruleId,
+      confidence: match.confidence,
+      providerId,
+      modelId,
+      taskPlan,
+      textStream,
     };
   }
 }

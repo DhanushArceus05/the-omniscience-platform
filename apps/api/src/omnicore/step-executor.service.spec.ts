@@ -175,4 +175,156 @@ describe("StepExecutorService", () => {
       await expect(service.execute(stepFixture({ toolCategory: "echo" }))).rejects.toBe(error);
     });
   });
+
+  describe("executeStream — Phase 6 Step 2", () => {
+    async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {
+      const results: T[] = [];
+      for await (const item of iterable) {
+        results.push(item);
+      }
+      return results;
+    }
+
+    function fakeStream(chunks: readonly string[]): AsyncIterable<string> {
+      return (async function* () {
+        for (const chunk of chunks) {
+          yield chunk;
+        }
+      })();
+    }
+
+    it("throws UNSUPPORTED_CAPABILITY for a step requiring a capability this phase cannot execute, and never selects a model", async () => {
+      await expect(service.executeStream(stepFixture({ capabilities: ["vision"] }))).rejects.toEqual(
+        expect.objectContaining({ response: expect.objectContaining({ code: "UNSUPPORTED_CAPABILITY" }) }),
+      );
+      expect(selector.select).not.toHaveBeenCalled();
+    });
+
+    it("throws UNSUPPORTED_CAPABILITY for a tool-routed step — streaming does not support tools", async () => {
+      await expect(service.executeStream(stepFixture({ toolCategory: "echo" }))).rejects.toEqual(
+        expect.objectContaining({ response: expect.objectContaining({ code: "UNSUPPORTED_CAPABILITY" }) }),
+      );
+      expect(toolExecutor.execute).not.toHaveBeenCalled();
+      expect(selector.select).not.toHaveBeenCalled();
+    });
+
+    it("throws EXECUTION_CANCELLED immediately if the signal is already aborted, and never selects a model", async () => {
+      const controller = new AbortController();
+      controller.abort();
+
+      await expect(service.executeStream(stepFixture(), { signal: controller.signal })).rejects.toEqual(
+        expect.objectContaining({ response: expect.objectContaining({ code: "EXECUTION_CANCELLED" }) }),
+      );
+      expect(selector.select).not.toHaveBeenCalled();
+    });
+
+    it("resolves model selection eagerly — before the returned textStream is ever iterated", async () => {
+      const generateTextStream = jest.fn().mockReturnValue(fakeStream(["hi"]));
+      selector.select.mockReturnValue({
+        model: { providerId: "anthropic", modelId: "claude-sonnet-5" },
+        matchedRule: "priority-fallback",
+      });
+      registry.getById.mockReturnValue({ generateTextStream });
+
+      const output = await service.executeStream(stepFixture());
+
+      // Model selection already happened as part of the awaited promise
+      // above — the provider itself has not been called yet, because
+      // nothing has iterated `output.textStream` yet.
+      expect(selector.select).toHaveBeenCalledWith({ requiredCapabilities: ["text-generation"] });
+      expect(output.providerId).toBe("anthropic");
+      expect(output.modelId).toBe("claude-sonnet-5");
+      expect(generateTextStream).not.toHaveBeenCalled();
+
+      await collect(output.textStream);
+      expect(generateTextStream).toHaveBeenCalledWith("claude-sonnet-5", "hi there", { signal: undefined });
+    });
+
+    it("yields every chunk from a provider that implements generateTextStream, in order", async () => {
+      const generateTextStream = jest.fn().mockReturnValue(fakeStream(["Hel", "lo!"]));
+      selector.select.mockReturnValue({
+        model: { providerId: "anthropic", modelId: "claude-sonnet-5" },
+        matchedRule: "priority-fallback",
+      });
+      registry.getById.mockReturnValue({ generateTextStream });
+
+      const output = await service.executeStream(stepFixture());
+      const chunks = await collect(output.textStream);
+
+      expect(chunks).toEqual(["Hel", "lo!"]);
+    });
+
+    it("falls back to generateText, emitting its complete result as a single chunk, when the provider has no generateTextStream", async () => {
+      const generateText = jest.fn().mockResolvedValue("Complete non-streaming response.");
+      selector.select.mockReturnValue({
+        model: { providerId: "openai", modelId: "gpt-4o" },
+        matchedRule: "priority-fallback",
+      });
+      registry.getById.mockReturnValue({ generateText });
+
+      const output = await service.executeStream(stepFixture());
+      const chunks = await collect(output.textStream);
+
+      expect(chunks).toEqual(["Complete non-streaming response."]);
+      expect(generateText).toHaveBeenCalledWith("gpt-4o", "hi there");
+    });
+
+    it("propagates a non-cancellation provider error unchanged while iterating a real stream", async () => {
+      const providerError = { response: { code: "PROVIDER_RATE_LIMITED" } };
+      const generateTextStream = jest.fn().mockReturnValue({
+        [Symbol.asyncIterator]: async function* () {
+          yield "partial ";
+          throw providerError;
+        },
+      });
+      selector.select.mockReturnValue({
+        model: { providerId: "anthropic", modelId: "claude-sonnet-5" },
+        matchedRule: "priority-fallback",
+      });
+      registry.getById.mockReturnValue({ generateTextStream });
+
+      const output = await service.executeStream(stepFixture());
+
+      await expect(collect(output.textStream)).rejects.toBe(providerError);
+    });
+
+    it("normalizes a mid-stream failure to EXECUTION_CANCELLED when the signal is aborted at that point", async () => {
+      const controller = new AbortController();
+      const generateTextStream = jest.fn().mockReturnValue({
+        [Symbol.asyncIterator]: async function* () {
+          yield "partial ";
+          controller.abort();
+          throw new DOMException("The operation was aborted.", "AbortError");
+        },
+      });
+      selector.select.mockReturnValue({
+        model: { providerId: "anthropic", modelId: "claude-sonnet-5" },
+        matchedRule: "priority-fallback",
+      });
+      registry.getById.mockReturnValue({ generateTextStream });
+
+      const output = await service.executeStream(stepFixture(), { signal: controller.signal });
+
+      await expect(collect(output.textStream)).rejects.toEqual(
+        expect.objectContaining({ response: expect.objectContaining({ code: "EXECUTION_CANCELLED" }) }),
+      );
+    });
+
+    it("cancellation propagates through the same AbortSignal reference into generateTextStream", async () => {
+      const controller = new AbortController();
+      const generateTextStream = jest.fn().mockReturnValue(fakeStream(["hi"]));
+      selector.select.mockReturnValue({
+        model: { providerId: "anthropic", modelId: "claude-sonnet-5" },
+        matchedRule: "priority-fallback",
+      });
+      registry.getById.mockReturnValue({ generateTextStream });
+
+      const output = await service.executeStream(stepFixture(), { signal: controller.signal });
+      await collect(output.textStream);
+
+      expect(generateTextStream).toHaveBeenCalledWith("claude-sonnet-5", "hi there", {
+        signal: controller.signal,
+      });
+    });
+  });
 });

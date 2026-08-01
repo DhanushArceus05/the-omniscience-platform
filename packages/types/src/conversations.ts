@@ -56,6 +56,22 @@ export interface MessageOmniCoreMetadata {
 
 export type MessageRole = "user" | "assistant";
 
+/**
+ * Whether a persisted message's `content` is the full text it was
+ * ever going to have (`"complete"`) or was cut short by a client
+ * disconnect, an explicit cancellation, or a provider failure partway
+ * through a Phase 6 Step 2 streamed response (`"incomplete"`).
+ *
+ * Every message created before Phase 6 Step 2 has no `status` field
+ * on its Mongo document at all — there was only ever one way for a
+ * message to be persisted, and it was always the complete text.
+ * `ConversationsRepository` normalizes that legacy absence to
+ * `"complete"` when mapping a document to this type, so `status` is
+ * always present on a `Message` a caller sees, never `undefined` —
+ * no destructive migration of existing documents is required.
+ */
+export type MessageStatus = "complete" | "incomplete";
+
 export interface Message {
   id: string;
   conversationId: string;
@@ -64,6 +80,14 @@ export interface Message {
   createdAt: string;
   /** Only present on `role: "assistant"` messages. */
   omniCore?: MessageOmniCoreMetadata;
+  /**
+   * Always `"complete"` for a message created through the
+   * non-streaming `POST .../messages` endpoint (Phase 6 Step 1) — it
+   * has no partial-text failure mode. A message created through the
+   * streaming `POST .../messages/stream` endpoint (Phase 6 Step 2)
+   * carries whichever status actually applied when it was persisted.
+   */
+  status: MessageStatus;
 }
 
 export interface ListMessagesQuery {

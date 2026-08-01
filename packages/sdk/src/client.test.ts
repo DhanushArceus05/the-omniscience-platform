@@ -739,4 +739,201 @@ describe("OmniscienceClient conversation/message methods (Phase 6 Step 1)", () =
       client.sendMessage("access-token", "workspace_1", conversation.id, "hi"),
     ).rejects.toMatchObject({ code: "AMBIGUOUS_INTENT", status: 422 });
   });
+
+  describe("sendMessageStream() — Phase 6 Step 2", () => {
+    function sseBody(chunks: readonly string[]): ReadableStream<Uint8Array> {
+      const encoder = new TextEncoder();
+      let index = 0;
+      return new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (index >= chunks.length) {
+            controller.close();
+            return;
+          }
+          controller.enqueue(encoder.encode(chunks[index]));
+          index += 1;
+        },
+      });
+    }
+
+    function mockStreamFetch(chunks: readonly string[], status = 200): typeof fetch {
+      return vi.fn().mockResolvedValue({
+        ok: true,
+        status,
+        body: sseBody(chunks),
+      }) as unknown as typeof fetch;
+    }
+
+    async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {
+      const results: T[] = [];
+      for await (const item of iterable) {
+        results.push(item);
+      }
+      return results;
+    }
+
+    const startFrame = `event: start\ndata: ${JSON.stringify({ userMessage })}\n\n`;
+    const deltaFrame = (text: string) => `event: delta\ndata: ${JSON.stringify({ text })}\n\n`;
+    const doneFrame = `event: done\ndata: ${JSON.stringify({ assistantMessage })}\n\n`;
+
+    it("posts content to .../messages/stream with the expected request shape, headers, and AbortSignal", async () => {
+      const fetchImpl = mockStreamFetch([startFrame, doneFrame]);
+      const client = makeClient(fetchImpl);
+      const controller = new AbortController();
+
+      await collect(
+        client.sendMessageStream("access-token", "workspace_1", conversation.id, "Hello, OmniCore.", {
+          signal: controller.signal,
+        }),
+      );
+
+      expect(fetchImpl).toHaveBeenCalledWith(
+        `http://localhost:4000/workspaces/workspace_1/conversations/${conversation.id}/messages/stream`,
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer access-token" },
+          body: JSON.stringify({ content: "Hello, OmniCore." }),
+          signal: controller.signal,
+        }),
+      );
+    });
+
+    it("yields typed start/delta/done events in order for a well-formed single-chunk stream", async () => {
+      const fetchImpl = mockStreamFetch([startFrame + deltaFrame("Hel") + deltaFrame("lo!") + doneFrame]);
+      const client = makeClient(fetchImpl);
+
+      const events = await collect(
+        client.sendMessageStream("access-token", "workspace_1", conversation.id, "hi"),
+      );
+
+      expect(events).toEqual([
+        { event: "start", data: { userMessage } },
+        { event: "delta", data: { text: "Hel" } },
+        { event: "delta", data: { text: "lo!" } },
+        { event: "done", data: { assistantMessage } },
+      ]);
+    });
+
+    it("reassembles a single frame split across multiple network chunks, at an arbitrary byte boundary", async () => {
+      const wholeFrame = deltaFrame("reassembled text");
+      const splitPoint = 7; // deliberately mid-line, not on a frame or line boundary
+      const fetchImpl = mockStreamFetch([
+        startFrame.slice(0, -1), // even the *previous* frame's trailing "\n" is split off
+        `${startFrame.slice(-1)}${wholeFrame.slice(0, splitPoint)}`,
+        wholeFrame.slice(splitPoint),
+      ]);
+      const client = makeClient(fetchImpl);
+
+      const events = await collect(
+        client.sendMessageStream("access-token", "workspace_1", conversation.id, "hi"),
+      );
+
+      expect(events).toEqual([
+        { event: "start", data: { userMessage } },
+        { event: "delta", data: { text: "reassembled text" } },
+      ]);
+    });
+
+    it("emits multiple complete frames delivered together in a single network chunk", async () => {
+      const fetchImpl = mockStreamFetch([startFrame + deltaFrame("a") + deltaFrame("b") + doneFrame]);
+      const client = makeClient(fetchImpl);
+
+      const events = await collect(
+        client.sendMessageStream("access-token", "workspace_1", conversation.id, "hi"),
+      );
+
+      expect(events.map((event) => event.event)).toEqual(["start", "delta", "delta", "done"]);
+    });
+
+    it("correctly decodes a multi-byte UTF-8 character split across two chunks", async () => {
+      const frame = deltaFrame("caf\u00e9"); // "café" — é is a 2-byte UTF-8 character
+      const bytes = new TextEncoder().encode(frame);
+      // Split the raw bytes, not the string, so the split can land in the
+      // middle of the multi-byte character's encoding.
+      const splitIndex = bytes.length - 2;
+      const client = makeClient(
+        vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          body: new ReadableStream<Uint8Array>({
+            pull(controller) {
+              controller.enqueue(bytes.slice(0, splitIndex));
+              controller.enqueue(bytes.slice(splitIndex));
+              controller.close();
+            },
+          }),
+        }) as unknown as typeof fetch,
+      );
+
+      const events = await collect(
+        client.sendMessageStream("access-token", "workspace_1", conversation.id, "hi"),
+      );
+
+      expect(events).toEqual([{ event: "delta", data: { text: "caf\u00e9" } }]);
+    });
+
+    it("yields a well-formed error event rather than throwing", async () => {
+      const errorFrame = `event: error\ndata: ${JSON.stringify({ code: "EXECUTION_CANCELLED", message: "Execution was cancelled while streaming." })}\n\n`;
+      const fetchImpl = mockStreamFetch([startFrame + deltaFrame("partial") + errorFrame]);
+      const client = makeClient(fetchImpl);
+
+      const events = await collect(
+        client.sendMessageStream("access-token", "workspace_1", conversation.id, "hi"),
+      );
+
+      expect(events.at(-1)).toEqual({
+        event: "error",
+        data: { code: "EXECUTION_CANCELLED", message: "Execution was cancelled while streaming." },
+      });
+    });
+
+    it("throws ApiClientError with code INVALID_RESPONSE for a known event whose data isn't valid JSON", async () => {
+      const malformedFrame = "event: delta\ndata: {not-json\n\n";
+      const fetchImpl = mockStreamFetch([startFrame + malformedFrame]);
+      const client = makeClient(fetchImpl);
+
+      await expect(
+        collect(client.sendMessageStream("access-token", "workspace_1", conversation.id, "hi")),
+      ).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+    });
+
+    it("silently skips a frame with an unrecognized event name, forward-compatible with a future server-added event", async () => {
+      const futureFrame = `event: heartbeat\ndata: ${JSON.stringify({})}\n\n`;
+      const fetchImpl = mockStreamFetch([startFrame + futureFrame + doneFrame]);
+      const client = makeClient(fetchImpl);
+
+      const events = await collect(
+        client.sendMessageStream("access-token", "workspace_1", conversation.id, "hi"),
+      );
+
+      expect(events.map((event) => event.event)).toEqual(["start", "done"]);
+    });
+
+    it("throws ApiClientError with the backend's structured code/message for a non-2xx response before any SSE framing begins", async () => {
+      const client = makeClient(
+        vi.fn().mockResolvedValue({
+          ok: false,
+          status: 404,
+          json: async () => ({
+            success: false,
+            error: { code: "CONVERSATION_NOT_FOUND", message: "Conversation not found." },
+          }),
+        }) as unknown as typeof fetch,
+      );
+
+      await expect(
+        collect(client.sendMessageStream("access-token", "workspace_1", "missing-conversation", "hi")),
+      ).rejects.toMatchObject({ code: "CONVERSATION_NOT_FOUND", status: 404 });
+    });
+
+    it("throws ApiClientError with code INVALID_RESPONSE when a successful response has no readable body", async () => {
+      const client = makeClient(
+        vi.fn().mockResolvedValue({ ok: true, status: 200, body: null }) as unknown as typeof fetch,
+      );
+
+      await expect(
+        collect(client.sendMessageStream("access-token", "workspace_1", conversation.id, "hi")),
+      ).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+    });
+  });
 });

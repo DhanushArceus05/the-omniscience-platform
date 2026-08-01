@@ -582,8 +582,8 @@ built yet; only the generic framework and three foundation tools exist).
   which ChatGPT will perform the full Phase 2 senior architecture/security/code-quality review
   before Phase 3 begins.
 
-**Phase 6 — Omniscience Assistant, Step 1 (Conversation & Message Persistence Foundation):
-implemented this session** on top of the completed Phase 0-5 foundation (Phase 4 — OmniProvider &
+**Phase 6 — Omniscience Assistant, Step 1 (Conversation & Message Persistence Foundation): complete
+and verified.** Built on top of the completed Phase 0-5 foundation (Phase 4 — OmniProvider &
 Model Manager, and Phase 5 — OmniCore Steps 1-5, all already complete per the checklist below).
 Delivers `MongoModule`/`MongoService` (the first module to actually use the long-provisioned but
 previously untouched `MONGO_URL`) and a new `ConversationsModule` — five endpoints
@@ -598,23 +598,55 @@ this step touches already-completed Phase 3/5 code, and purely additive, same "w
 `exports` array cannot change existing behavior" reasoning Phase 2 Step 8's `RefreshTokenStore`
 export already established. If OmniCore execution fails, the already-persisted user message stays
 persisted and no assistant message is ever created — the OmniCore domain error propagates
-unchanged. **Unlike every prior session referenced above, this sandbox had *no* network egress at
-all** — not `pnpm`/`corepack`, not a direct `npm install -g`, not even a bare `curl` to
-`registry.npmjs.org` (all fail identically with `x-deny-reason: host_not_allowed` / HTTP 403), and
-no `node_modules` exists in the extracted archive — so `pnpm install`/`build`/`lint`/`typecheck`/
-`test` and `docker compose up -d` (for `conversations.repository.spec.ts`'s real-Mongo suite) could
-not be run at all this session, not even partially. In their place, every new file's imports,
-types, and reused error/response shapes were manually cross-checked line-by-line against the
-actual exported symbols and shapes in the modules they reuse (`WorkspacesService.getById()`'s exact
-exception shape, `OmniCoreExecuteResponse`'s exact field names, `ai-generate.e2e-spec.ts`'s exact
-`ANTHROPIC_CLIENT`-override technique) — this cross-check is what caught the two missing exports
-above. See `claude/CURRENT_PHASE.md`'s "Phase 6 — Omniscience Assistant, Step 1" section for the
-full implementation summary and the exact commands **you must run locally** before this step is
-considered verified: `pnpm install --frozen-lockfile`, `pnpm --filter @omniscience/api exec prisma
-generate`, `pnpm typecheck`, `pnpm lint`, `pnpm build`, `pnpm test` (checking that
-`conversations.repository.spec.ts` actually connects to real Mongo rather than self-skipping), and
-`docker compose up -d` plus a manual HTTP smoke test. This is Phase 6 Step 1; no further Phase 6
-step has been started.
+unchanged. `pnpm typecheck`, `pnpm lint`, `pnpm build`, `pnpm test`, a local runtime verification
+pass, and the commit/push to GitHub Actions have all since passed — this step is fully verified,
+committed, pushed, and CI is green. See `claude/CURRENT_PHASE.md`'s "Phase 6 — Omniscience
+Assistant, Step 1" section for the full implementation summary.
+
+**Phase 6 — Omniscience Assistant, Step 2 (backend-only authenticated assistant response
+streaming): implemented this session**, on top of Step 1's now-verified conversation/message
+persistence foundation. Adds one new endpoint,
+`POST /workspaces/:workspaceId/conversations/:conversationId/messages/stream`, alongside the
+existing non-streaming `POST .../messages` endpoint, which is completely unchanged. The new
+endpoint is SSE-formatted events over an authenticated `fetch()` + `ReadableStream`-consumed POST —
+deliberately not native `EventSource`, which cannot attach the `Authorization` header this endpoint
+requires and offers no reconnection guarantee worth relying on regardless. `OmniProvider` gained one
+new *optional* method, `generateTextStream?()` — additive only, `generateText()`'s existing contract
+and every adapter that only implements it are unchanged — implemented for real only in
+`AnthropicProvider` (via the SDK's `messages.stream()` helper); every other registered provider
+(Gemini, OpenAI) has no such method, so a request routed to one of them falls back to the existing
+`generateText()`, emitting its one complete result as a single SSE `delta` event followed
+immediately by `done` — the endpoint never fails merely because the selected provider only supports
+non-streaming generation. `StepExecutorService`, `ExecutionOrchestratorService`, and
+`OmniCoreService` each gained one matching, additive `executeStream()` method reusing every step
+`execute()`'s own pipeline already has (classification, planning, model selection, security,
+validation, error mapping) — only the final generation-delivery call diverges. `Message` gained one
+new field, `status: "complete" | "incomplete"` — legacy Mongo documents predating this step have no
+such field at all and are normalized to `"complete"` when read, so no destructive migration was
+needed. Persistence follows the spec's exact ordering: the user message is persisted, then
+classification/planning/model selection complete (still capable of failing with an ordinary HTTP
+error, before SSE headers are ever opened), then exactly one assistant message is persisted once —
+`"complete"` after a normal finish, `"incomplete"` (with whatever non-empty text had already
+accumulated) after a client disconnect, an explicit cancellation, or a provider failure partway
+through; never an empty assistant message, and never a duplicate persistence, guarded by a single
+sequential generator loop rather than racing handlers. Cancellation is one `AbortController` per
+request, whose `signal` is forwarded unchanged through every layer down to the Anthropic SDK's own
+request-level `signal` option; a genuine client disconnect (`req`'s `"close"` event) is the only
+thing that ever triggers it. `@omniscience/sdk`'s `OmniscienceClient` gained a matching
+`sendMessageStream()`, with an incremental SSE frame parser robust to arbitrary chunk boundaries,
+multi-byte UTF-8 splits across chunk boundaries, multiple frames in one chunk, and malformed/unknown
+event frames. **This sandbox again had no network egress at all** — the same `x-deny-reason:
+host_not_allowed` limitation Step 1 hit before it was verified outside the sandbox — so
+`pnpm install`/`typecheck`/`lint`/`build`/`test` could not be run here either; every new and
+modified file's imports, types, and reused shapes were instead manually cross-checked line-by-line
+against the actual exported symbols in the modules they reuse (the Anthropic SDK's
+`messages.stream()`/`textStream` shape, `HttpException.getResponse()`'s exact `{code, message}`
+shape, `ai-generate.e2e-spec.ts`'s exact `GEMINI_CLIENT`-override technique for exercising the
+non-streaming fallback for real). See `claude/CURRENT_PHASE.md`'s "Phase 6 — Omniscience Assistant,
+Step 2" section for the full implementation summary and the exact commands **you must run locally**
+before this step is considered verified. Phase 6 Step 3 (the chat frontend that will actually
+consume this endpoint, in `apps/web`) has not been started and was explicitly out of scope for this
+step — `apps/web` was not touched.
 
 ## Repository Rule
 
@@ -748,12 +780,23 @@ This document is considered the authoritative long-term vision for the feature.
 - Phase 5, Step 3 (Task Planning Engine): ✅ Complete
 - Phase 5, Step 4 (Execution Orchestration Engine): ✅ Complete
 - Phase 5, Step 5 (Tool Calling Framework): ✅ Complete
-- Phase 6, Step 1 (Conversation & Message Persistence Foundation): ⚠️ Implemented this session;
-  runtime verification (`pnpm install`/`typecheck`/`lint`/`build`/`test`, real MongoDB) pending —
-  this sandbox has no network egress at all. See `claude/CURRENT_PHASE.md`'s "Phase 6 — Omniscience
-  Assistant, Step 1" section for the full implementation summary, what was manually cross-checked
-  in place of running the tools, and the exact commands a maintainer with network access must run
-  before this step is marked complete.
+- Phase 6, Step 1 (Conversation & Message Persistence Foundation): ✅ Complete. Verified —
+  `pnpm typecheck`/`lint`/`build`/`test` all passed, committed, pushed, and GitHub Actions is green.
+  See `claude/CURRENT_PHASE.md`'s "Phase 6 — Omniscience Assistant, Step 1" section for the full
+  implementation summary.
+- Phase 6, Step 2 (backend-only authenticated assistant response streaming): ⚠️ Implemented this
+  session; runtime verification (`pnpm install`/`typecheck`/`lint`/`build`/`test`, real MongoDB, a
+  manual streaming smoke test) pending — this sandbox has no network egress at all, the same
+  limitation Step 1 noted before it was verified outside the sandbox. Adds
+  `POST /workspaces/:workspaceId/conversations/:conversationId/messages/stream` — an
+  authenticated-POST, `fetch()` + `ReadableStream`-consumed SSE endpoint, deliberately not built on
+  native `EventSource` (it cannot attach the `Authorization` header this endpoint requires) —
+  alongside the existing non-streaming `POST .../messages` endpoint, unchanged. See
+  `claude/CURRENT_PHASE.md`'s "Phase 6 — Omniscience Assistant, Step 2" section for the full
+  implementation summary, what was manually cross-checked in place of running the tools, and the
+  exact commands a maintainer with network access must run before this step is marked complete.
+  Phase 6 Step 3 (the chat frontend that will actually consume this endpoint) remains deferred —
+  not started.
 - Arceus Activation Mode: 🔒 Locked Future Phase (Not Started)
 
 No implementation work for Arceus Activation Mode should begin until the planned platform roadmap has reached its intended completion.
