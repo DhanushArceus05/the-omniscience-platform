@@ -1,0 +1,49 @@
+/*
+ * Phase 6 Step 3 — small, additive rules only. Every color/spacing value
+ * below is an existing design token (see packages/ui/src/styles/tokens.css);
+ * this file does not introduce a new visual language, only the few
+ * layout/animation rules no existing component already covers.
+ */
+
+.omni-chat-cursor {
+  display: inline-block;
+  margin-left: 2px;
+  animation: omni-chat-cursor-blink 1s step-start infinite;
+  opacity: 0.6;
+}
+
+@keyframes omni-chat-cursor-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .omni-chat-cursor {
+    animation: none;
+  }
+}
+
+.omni-chat-message-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--omni-space-4);
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  padding: var(--omni-space-2);
+}
+
+.omni-chat-conversation-list-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+}
+
+.omni-chat-conversation-list-item[aria-current="true"] {
+  outline: 2px solid var(--omni-color-accent, currentColor);
+  outline-offset: 2px;
+}

@@ -23,11 +23,15 @@ interface ModulePlaceholder {
 /**
  * Future workspace modules. Deliberately inert (no `onClick`, no route) —
  * Phase 3 Step 4 is UI scaffolding only, per `claude/CURRENT_PHASE.md`:
- * AI Assistant/Documents/Knowledge Base/Agents/Files/Tasks/Activity are
- * all later-phase functionality, not implemented here.
+ * Documents/Knowledge Base/Agents/Files/Tasks/Activity are all
+ * later-phase functionality, not implemented here.
+ *
+ * "AI Assistant" is deliberately no longer in this list — Phase 6 Step 3
+ * replaced that placeholder with a real, active entry point (see the
+ * dedicated card rendered above this grid) linking to
+ * `/app/workspace/:workspaceId/chat`.
  */
 const MODULE_PLACEHOLDERS: ModulePlaceholder[] = [
-  { icon: "🤖", title: "AI Assistant", description: "Chat with an assistant scoped to this workspace." },
   { icon: "📄", title: "Documents", description: "Draft, store, and organize workspace documents." },
   { icon: "📚", title: "Knowledge Base", description: "Curated context your AI modules can draw on." },
   { icon: "🧩", title: "Agents", description: "Autonomous agents configured for this workspace." },
@@ -192,6 +196,28 @@ export function WorkspaceDetail({ workspaceId }: { workspaceId: string }): JSX.E
           }}
           aria-label="Workspace modules"
         >
+          <Link
+            to={`/app/workspace/${encodeURIComponent(workspace.id)}/chat`}
+            className="omni-card omni-card--interactive"
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+                gap: "var(--omni-space-2)",
+              }}
+            >
+              <span aria-hidden="true" style={{ fontSize: "var(--omni-text-lg)" }}>
+                🤖
+              </span>
+              <Badge tone="accent">New</Badge>
+            </div>
+            <p style={{ margin: "var(--omni-space-3) 0 0", fontWeight: 600 }}>AI Assistant</p>
+            <p style={{ margin: "var(--omni-space-1) 0 0", fontSize: "var(--omni-text-sm)", opacity: 0.7 }}>
+              Chat with an assistant scoped to this workspace.
+            </p>
+          </Link>
           {MODULE_PLACEHOLDERS.map((module) => (
             <Card key={module.title} className="omni-card--placeholder" aria-disabled="true">
               <div

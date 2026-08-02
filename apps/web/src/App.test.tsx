@@ -51,6 +51,7 @@ vi.mock("@omniscience/sdk", async () => {
         createdAt: "2026-01-01T00:00:00.000Z",
         updatedAt: "2026-01-01T00:00:00.000Z",
       }),
+      listConversations: vi.fn().mockResolvedValue({ conversations: [], nextCursor: null }),
     })),
   };
 });
@@ -136,6 +137,19 @@ describe("App routing", () => {
     renderAt("/app/workspace/workspace_1");
     expect(await screen.findByRole("heading", { name: "Research" })).toBeTruthy();
     expect(screen.getByText("Deep-dive projects")).toBeTruthy();
+    expect(screen.queryByText("Page not found")).toBeNull();
+  });
+
+  it("redirects an unauthenticated visit to /app/workspace/:workspaceId/chat to /login", () => {
+    renderAt("/app/workspace/workspace_1/chat");
+    expect(screen.getByRole("heading", { name: "Welcome back" })).toBeTruthy();
+  });
+
+  it("renders the Phase 6 Step 3 chat page at /app/workspace/:workspaceId/chat", async () => {
+    seedSession();
+    renderAt("/app/workspace/workspace_1/chat");
+    expect(await screen.findByText("Conversations")).toBeTruthy();
+    expect(await screen.findByText("No conversations yet")).toBeTruthy();
     expect(screen.queryByText("Page not found")).toBeNull();
   });
 });

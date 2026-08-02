@@ -12,6 +12,7 @@ import { ResetPasswordPage } from "./pages/ResetPasswordPage";
 import { AppShellPreviewPage } from "./pages/AppShellPreviewPage";
 import { AccountSettingsPage } from "./pages/AccountSettingsPage";
 import { WorkspacePage } from "./pages/WorkspacePage";
+import { ChatPage } from "./pages/ChatPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 
 /**
@@ -68,6 +69,14 @@ export function App(): JSX.Element {
               element={
                 <ProtectedRoute>
                   <WorkspacePage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/app/workspace/:workspaceId/chat"
+              element={
+                <ProtectedRoute>
+                  <ChatPage />
                 </ProtectedRoute>
               }
             />

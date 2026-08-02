@@ -91,19 +91,18 @@ describe("WorkspaceDetail", () => {
     expect(screen.getByText("workspace_1")).toBeTruthy();
     expect(getWorkspace).toHaveBeenCalledWith("access-token", "workspace_1");
 
-    // The seven module placeholders are all present and clearly non-final.
-    for (const title of [
-      "AI Assistant",
-      "Documents",
-      "Knowledge Base",
-      "Agents",
-      "Files",
-      "Tasks",
-      "Activity",
-    ]) {
+    // The six remaining module placeholders are still present and clearly non-final.
+    for (const title of ["Documents", "Knowledge Base", "Agents", "Files", "Tasks", "Activity"]) {
       expect(screen.getByText(title)).toBeTruthy();
     }
-    expect(screen.getAllByText("Coming soon")).toHaveLength(7);
+    expect(screen.getAllByText("Coming soon")).toHaveLength(6);
+
+    // Phase 6 Step 3 — "AI Assistant" is now a real, active entry point
+    // into the chat route, not a placeholder.
+    expect(screen.getByText("AI Assistant")).toBeTruthy();
+    expect(screen.getByText("New")).toBeTruthy();
+    const chatLink = screen.getByRole("link", { name: /AI Assistant/ });
+    expect(chatLink.getAttribute("href")).toBe("/app/workspace/workspace_1/chat");
   });
 
   it("shows a dedicated not-found state for a missing or foreign workspace id, with a way back", async () => {
