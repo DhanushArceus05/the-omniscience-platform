@@ -73,7 +73,27 @@ afterEach(() => {
   window.localStorage.clear();
   cleanup();
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
+
+/**
+ * Installs a `window.matchMedia` stub matching `ChatPanel`'s own
+ * `COMPACT_CHAT_QUERY` (`max-width: 900px`), mirroring how
+ * `AppShell.test.tsx` stubs its own breakpoint.
+ */
+function stubCompactChat(isCompact: boolean) {
+  const mql = {
+    matches: isCompact,
+    media: "(max-width: 900px)",
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+    onchange: null,
+  };
+  vi.stubGlobal("matchMedia", vi.fn().mockReturnValue(mql));
+}
 
 describe("ChatPanel", () => {
   it("shows a prompt to select a conversation before any is active", async () => {
@@ -169,5 +189,63 @@ describe("ChatPanel", () => {
     fireEvent.click(buttons[1]!);
 
     await waitFor(() => expect(firstStreamAborted).toBe(true));
+  });
+
+  describe("compact layout (<=900px)", () => {
+    it("shows no Conversations toggle on a normal/desktop width", async () => {
+      stubCompactChat(false);
+      seedSession();
+      const getMe = vi.fn().mockResolvedValue(USER);
+      const listConversations = vi.fn().mockResolvedValue({ conversations: [conversation()], nextCursor: null });
+      mockClient({ getMe, listConversations });
+      renderPanel();
+
+      await waitFor(() => expect(listConversations).toHaveBeenCalled());
+      expect(screen.queryByRole("button", { name: /Conversations/ })).toBeNull();
+      // The single conversation list is still directly present (no overlay).
+      expect(screen.getByLabelText("Conversation list")).toBeTruthy();
+    });
+
+    it("moves the conversation list into an off-canvas panel opened by a toggle, closable via Escape", async () => {
+      stubCompactChat(true);
+      seedSession();
+      const getMe = vi.fn().mockResolvedValue(USER);
+      const listConversations = vi.fn().mockResolvedValue({ conversations: [conversation()], nextCursor: null });
+      mockClient({ getMe, listConversations });
+      renderPanel();
+
+      await waitFor(() => expect(listConversations).toHaveBeenCalled());
+      const toggle = screen.getByRole("button", { name: /Conversations/ });
+      expect(toggle.getAttribute("aria-expanded")).toBe("false");
+
+      fireEvent.click(toggle);
+      expect(toggle.getAttribute("aria-expanded")).toBe("true");
+      expect(screen.getByRole("dialog", { name: "Conversations" })).toBeTruthy();
+
+      fireEvent.keyDown(document, { key: "Escape" });
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(document.activeElement).toBe(toggle);
+    });
+
+    it("closing the panel by selecting a conversation returns to a single, non-duplicated conversation list", async () => {
+      stubCompactChat(true);
+      seedSession();
+      const getMe = vi.fn().mockResolvedValue(USER);
+      const listConversations = vi.fn().mockResolvedValue({ conversations: [conversation()], nextCursor: null });
+      const listMessages = vi.fn().mockResolvedValue({ messages: [], nextCursor: null });
+      mockClient({ getMe, listConversations, listMessages });
+      renderPanel();
+
+      await waitFor(() => expect(listConversations).toHaveBeenCalled());
+      fireEvent.click(screen.getByRole("button", { name: /Conversations/ }));
+
+      // Exactly one conversation list/button — never a second copy
+      // duplicated between an inline layout and the drawer.
+      expect(screen.getAllByLabelText("Conversation list")).toHaveLength(1);
+      fireEvent.click(screen.getByRole("button", { name: /Conversation —/ }));
+
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(screen.getAllByLabelText("Conversation list")).toHaveLength(1);
+    });
   });
 });

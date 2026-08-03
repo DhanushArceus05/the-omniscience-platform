@@ -55,7 +55,7 @@ export function ConversationThread({ workspaceId, conversationId }: Conversation
 
   if (historyState.phase === "loading") {
     return (
-      <div style={{ display: "flex", flexDirection: "column", gap: "var(--omni-space-4)" }} aria-busy="true" aria-label="Loading conversation">
+      <div className="omni-chat-thread" aria-busy="true" aria-label="Loading conversation">
         <Skeleton height="3rem" width="60%" />
         <Skeleton height="3rem" width="45%" />
         <Skeleton height="3rem" width="70%" />
@@ -78,8 +78,10 @@ export function ConversationThread({ workspaceId, conversationId }: Conversation
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", gap: "var(--omni-space-4)" }}>
-      <MessageList messages={stream.messages} />
+    <div className="omni-chat-thread">
+      <div className="omni-chat-thread__scroll-region">
+        <MessageList messages={stream.messages} />
+      </div>
 
       {stream.streamError && (
         <Alert tone="error" title="Something went wrong">

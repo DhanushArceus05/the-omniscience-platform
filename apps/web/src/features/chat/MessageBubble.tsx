@@ -1,5 +1,6 @@
-import type { JSX } from "react";
-import { Badge, GlassCard, Spinner } from "@omniscience/ui";
+import { useState, type JSX } from "react";
+import { Badge, Button, GlassCard, Spinner } from "@omniscience/ui";
+import { MarkdownMessage } from "./MarkdownMessage";
 import type { ChatMessage } from "./useMessageStream";
 
 function formatTime(iso: string): string {
@@ -11,13 +12,18 @@ function formatTime(iso: string): string {
 }
 
 /**
- * Renders one `ChatMessage`. Assistant content is deliberately plain
- * text with preserved whitespace (`white-space: pre-wrap`) — no
- * markdown rendering — per the current scope for Phase 6 Step 3.
+ * Renders one `ChatMessage`. Assistant content is rendered as real
+ * Markdown (`MarkdownMessage`) — headings, emphasis, lists, code
+ * blocks, tables, links, etc. — rather than shown as raw `**`/`#`/`-`
+ * syntax. User messages stay plain preformatted text
+ * (`white-space: pre-wrap`): a person's own typed input shouldn't be
+ * reinterpreted as Markdown they didn't necessarily intend as such.
  */
 export function MessageBubble({ message }: { message: ChatMessage }): JSX.Element {
   const isUser = message.role === "user";
   const isEmptyStreamingPlaceholder = message.isStreaming && message.content.length === 0;
+  const [copied, setCopied] = useState(false);
+  const canCopy = !isUser && !message.isStreaming && message.content.length > 0;
 
   return (
     <div
@@ -61,15 +67,42 @@ export function MessageBubble({ message }: { message: ChatMessage }): JSX.Elemen
 
         {isEmptyStreamingPlaceholder ? (
           <Spinner size="sm" label="Assistant is responding" />
+        ) : isUser ? (
+          <p style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{message.content}</p>
         ) : (
-          <p style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-            {message.content}
+          <>
+            <MarkdownMessage content={message.content} />
             {message.isStreaming && (
               <span aria-hidden="true" className="omni-chat-cursor">
                 ▍
               </span>
             )}
-          </p>
+          </>
+        )}
+
+        {canCopy && (
+          <div className="omni-chat-bubble__actions">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              aria-label={copied ? "Copied message" : "Copy message"}
+              onClick={() => {
+                void navigator.clipboard.writeText(message.content).then(
+                  () => {
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 1500);
+                  },
+                  () => {
+                    // No destructive fallback — see the identical reasoning
+                    // on the fenced-code-block copy button in MarkdownMessage.
+                  },
+                );
+              }}
+            >
+              {copied ? "✓ Copied" : "⧉ Copy"}
+            </Button>
+          </div>
         )}
       </GlassCard>
     </div>

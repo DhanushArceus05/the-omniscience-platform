@@ -54,9 +54,31 @@ detail)
   **Like Step 1 before it was verified, `@omniscience/api`'s install/build/typecheck/lint/test could
   not be run in this sandbox this session** (no network egress at all; see that section's
   Verification status for the exact reason, the exact commands to run locally, and what was
-  manually cross-checked in their place). Phase 6 Step 3 (the chat frontend that will consume this
-  endpoint) remains deferred — this is the last completed step; no further step or phase has been
-  started.
+  manually cross-checked in their place).
+- **Phase 6 — Omniscience Assistant, Step 3 (Conversation & Chat Frontend)**: complete —
+  `apps/web/src/features/chat/` (ChatPanel, ConversationSidebar, ConversationThread, MessageList,
+  MessageBubble, ChatComposer, useConversations, useMessageStream) and `ChatPage.tsx`/
+  `/app/workspace/:workspaceId/chat` exist and are covered by tests. **Correction to this file:**
+  the bullet directly above previously stated Step 3 "remains deferred" and "no further step or
+  phase has been started" — that was stale documentation, not the actual repository state; the
+  implementation already existed when this correction was written. That claim is retracted here
+  rather than silently deleted so the history stays honest.
+- **Phase B — Responsive / layout / visual-polish pass (frontend-only)**: complete — see
+  `## Phase B — Responsive/Layout/Polish Pass` near the end of this file for the full write-up,
+  file list, and exact verification output from this session. Summary: an opt-in `contained`
+  fill-viewport mode was added to `AppShell` for Chat (normal pages are unaffected); the AppShell
+  mobile nav drawer gained Escape-to-close, body-scroll locking, and focus management; Chat's
+  layout was rebuilt from a hardcoded `260px 1fr` grid + `calc(100vh - 220px)` into a fluid CSS
+  grid with an independently-scrolling sidebar and message list, plus a proper off-canvas
+  conversation panel below 900px width (opening from the opposite edge of, and never conflicting
+  with, AppShell's own drawer); message auto-scroll now only follows new content when the reader is
+  already near the bottom, with a "Jump to latest" affordance otherwise; the composer became an
+  auto-growing textarea with `env(safe-area-inset-bottom)` support; the OTP input and Settings tabs
+  were fixed to not overflow at 320–414px; and a low-key `AdaptiveBackground` (no `backdrop-filter`
+  anywhere near it — see the note below) was added behind authenticated pages for visual parity
+  with the landing page. `apps/api`, `packages/sdk`, and `packages/types` were **not** modified
+  (verified by mtime diff against the freshly-extracted archive — only `.turbo/` log files under
+  those packages changed).
 
 
 ## Phase 1 — Premium UI Foundation
@@ -4621,6 +4643,300 @@ This is Phase 6 Step 2. Phase 6 Step 3 (the chat frontend that will consume this
 `apps/web`) has not been started and was explicitly out of scope for this step. Phase 7 onward has
 not been started either.
 
+> **Update:** Phase 6 Step 3 has since been implemented (see
+> `## Phase 6 — Omniscience Assistant, Step 3 (Conversation & Chat Frontend)` and
+> `## Phase B — Responsive/Layout/Polish Pass` below) — the paragraph above is left as originally
+> written, for history, rather than edited to look consistent in hindsight.
+
+## Phase 6 — Omniscience Assistant, Step 3 (Conversation & Chat Frontend)
+
+Status: **Complete.**
+
+Implements the workspace-scoped chat UI that consumes Step 2's streaming contract:
+`apps/web/src/features/chat/` (`ChatPanel`, `ConversationSidebar`, `ConversationThread`,
+`MessageList`, `MessageBubble`, `ChatComposer`, `useConversations`, `useMessageStream`,
+`chatErrors.ts`) and `apps/web/src/pages/ChatPage.tsx`, routed at
+`/app/workspace/:workspaceId/chat` with an "AI Assistant" entry point from `WorkspaceDetail`.
+Covers: conversation list/create/select, message history, optimistic user message, streaming
+assistant response (start/delta/done/error), `AbortController` cancellation, Stop generation,
+incomplete-message handling, duplicate-submit protection, conversation switching with stale-stream
+protection, and retry. Consumes `client.sendMessageStream(...)` from `@omniscience/sdk` as-is —
+no changes to the Step 2 backend/SDK/types contract.
+
+## Phase B — Responsive/Layout/Polish Pass
+
+Status: **Complete — implemented and verified in-sandbox this session.**
+
+A frontend-only responsive/layout/visual-polish pass over the Step 3 chat frontend and the shared
+app shell/UI primitives it depends on. `apps/api`, `packages/sdk`, and `packages/types` were not
+modified — see Verification below for how that was confirmed.
+
+### What changed
+
+**AppShell (`apps/web/src/layout/`)**
+- `AppShell` gained an opt-in `contained` prop: a fill-viewport (`100dvh`, with a `100vh`
+  fallback — not `calc(100vh - <pixel amount>)` anywhere) layout mode for pages that manage their
+  own internal scrolling. Normal pages (Overview, Workspace, Settings, …) don't pass it and keep
+  ordinary document scrolling exactly as before. `ChatPage` is the only page that opts in.
+- The `min-height: 0` chain needed for `contained` mode's descendants to actually shrink and scroll
+  (rather than silently overflowing the viewport) was added only under the `--contained` variant,
+  so it can't affect normal pages.
+- The mobile navigation drawer gained: Escape-to-close (listened for at the document level, so it
+  fires regardless of what has focus inside the drawer), background scroll locking while open
+  (via the new shared `useBodyScrollLock` hook, which reference-counts so overlapping locks can't
+  clobber each other), focus moving onto the drawer on open, and focus returning to the hamburger
+  trigger on close (Escape, scrim click, or selecting a nav item). Desktop collapse/expand behavior
+  is unchanged.
+- A low-particle-count `AdaptiveBackground` (no neural lines, no noise, 14 particles) was added
+  behind the whole shell for visual parity with the landing page. This is **not** paired with
+  `backdrop-filter` anywhere — see "backdrop-filter" below — so it doesn't reproduce the documented
+  flashing artifact. The sidebar's background was changed from the (already-inert, since
+  `backdrop-filter` is disabled) `--omni-glass-bg` tint to the same solid `--omni-color-bg-elevated`
+  TopBar already uses, so nav text stays fully legible over the new ambient background.
+
+**Shared hooks/primitives (`packages/ui/`)**
+- New `useBodyScrollLock` and `useMediaQuery` hooks, exported from the package root.
+- `Drawer` gained the same scroll-lock/Escape/focus-management treatment as the AppShell drawer,
+  plus an optional `returnFocusRef` prop, so it's ready to be the primitive for Chat's mobile
+  conversation panel (see below) instead of a bespoke second implementation.
+- `OtpInput`'s digit boxes changed from a fixed 40–48px width switched at one `420px` breakpoint to
+  a fluid `flex: 1 1 0; min-width: 0; max-width: 48px` layout with a `clamp()`-based gap, so six
+  digits plus gaps fit inside a 320px viewport without a breakpoint that has to be re-tuned if the
+  surrounding card's padding ever changes.
+- `Tabs`' tab list gained `overflow-x: auto` (with `flex-shrink: 0` tabs) instead of overflowing the
+  page — Settings' four tabs (Profile/Security/Sessions/Danger Zone) now scroll horizontally within
+  their own row at narrow widths instead of forcing page-level horizontal overflow.
+
+**Chat (`apps/web/src/features/chat/`)**
+- `ChatPanel` was rebuilt from a hardcoded `gridTemplateColumns: "260px 1fr"` +
+  `height: "calc(100vh - 220px)"` inline-styled layout into a fluid CSS grid
+  (`minmax(220px, 280px) minmax(0, 1fr)`) with a full `min-height: 0` chain, so the conversation
+  sidebar and message thread are independent scroll containers — a long conversation can no longer
+  push the sidebar around, and collapsing AppShell's own sidebar lets Chat reclaim the freed width
+  automatically (it's a percentage of `<main>`, not a fixed value).
+- Below a 900px-wide chat grid (a breakpoint distinct from AppShell's own 1024px nav breakpoint,
+  since the two are unrelated concepts), the conversation sidebar leaves the grid and becomes an
+  off-canvas panel with its own "Conversations" toggle, its own scrim, Escape-to-close, background
+  scroll lock, and focus management — opening from the trailing edge, deliberately never colliding
+  with AppShell's own leading-edge nav drawer. There is exactly one `ConversationSidebar` mounted at
+  a time (moved between contexts, not duplicated) to avoid any duplicate-DOM/duplicate-a11y-role
+  issues between the desktop and compact layouts.
+- `MessageList` no longer force-calls `scrollIntoView` on every message/delta. It now tracks
+  whether the reader is within 80px of the bottom of the scroll region; new content is only
+  auto-followed when they are. When they've scrolled away from the bottom, a "Jump to latest"
+  button appears instead of yanking their scroll position.
+- `ChatComposer`'s textarea now auto-grows with content up to a `max-height`, beyond which it
+  scrolls internally, and the composer surface adds `env(safe-area-inset-bottom)` padding so it
+  isn't cramped against a phone's gesture area. Enter-sends/Shift+Enter-newline, empty/whitespace
+  guarding, duplicate-send prevention, and the streaming Stop button are all unchanged in behavior,
+  just restyled onto the new dedicated `.omni-chat-composer__textarea` class rather than the
+  single-line `.omni-input` style.
+- `ConversationSidebar`'s conversation list is now its own `flex: 1; min-height: 0; overflow-y: auto`
+  region within the panel, independent of the "Conversations" header/"New" button above it.
+
+**backdrop-filter:** left disabled everywhere it already was (the app sidebar and glass
+surfaces) — the documented flashing artifact was traced to an animated canvas repainting behind a
+statically-blurred surface, and none of the above pairs `backdrop-filter` with anything animated,
+so the fix doesn't need to (and does not) touch that setting.
+
+### Verification (this session, in-sandbox)
+
+```
+pnpm install --frozen-lockfile   →  succeeded (one non-blocking warning: @prisma/client's
+                                      postinstall couldn't reach binaries.prisma.sh to verify
+                                      its engine checksum — that host isn't reachable from this
+                                      sandbox; unrelated to this frontend-only pass)
+pnpm turbo run typecheck         →  15/15 tasks succeeded
+pnpm turbo run lint              →  15/15 tasks succeeded
+pnpm turbo run build             →  9/9 tasks succeeded (apps/api's `nest build` included)
+pnpm turbo run test              →  15/15 tasks succeeded
+  @omniscience/api   : 74 test suites / 734 tests passed (unchanged from the pre-existing
+                       baseline — confirms the backend was not touched)
+  @omniscience/ui    : 17 test files / 88 tests passed (up from 84 before this pass — added
+                       Drawer Escape/scroll-lock/focus-return tests and a new Tabs test file)
+  @omniscience/web   : 25 test files / 153 tests passed (up from 144 before this pass — added
+                       AppShell contained-mode/Escape/scroll-lock/focus tests, ChatPanel
+                       compact-drawer tests, and a MessageList "Jump to latest" test)
+```
+
+`apps/api`, `packages/sdk`, and `packages/types` were confirmed untouched by diffing file
+modification times against the freshly-extracted archive: the only changed files under those three
+packages were `.turbo/turbo-*.log` build-cache logs, no source.
+
+### Intentionally deferred
+
+- The `@prisma/client` postinstall checksum warning above (pre-existing sandbox network
+  limitation, not introduced by this pass, and not blocking).
+- A full manual/visual QA pass at each of the 9 requested viewport widths (320/360/390/414/768/
+  1024/1280/1440/1920px) was reasoned through against the actual CSS rather than captured as
+  screenshots — this sandbox has no real browser to render and screenshot against. The structural
+  guarantees (fluid grid + `min-height: 0` chain, fluid OTP digits, scrollable Tabs, off-canvas
+  chat drawer below 900px) are covered by the automated tests instead.
+- The OTP-email implementation mentioned in the task as a separate follow-up was intentionally not
+  started, per instruction.
+
+---
+
+## Phase 6 — Step 3, Post-Phase-B bugfix pass (browser-reported issues)
+
+Phase B (above) was verified green on tests, but running the actual application in a browser
+surfaced several real runtime/UX problems tests hadn't caught. This pass investigated each from
+the actual code (not assumption) and fixed root causes rather than symptoms.
+
+### 1–2. Chat conversation scroll stuck (existing and new conversations)
+
+**Root cause:** `.omni-chat-thread__scroll-region` (the wrapper around `MessageList` inside
+`ConversationThread`) was not a flex container. `MessageList`'s own scroll element
+(`.omni-chat-message-list`) declares `flex: 1; min-height: 0` so it can shrink to the height its
+parent gives it and let `overflow-y: auto` engage — but `flex`/`min-height: 0` on a child only do
+anything if the *parent* is itself `display: flex`. Without that, the list fell back to
+`height: auto`, grew to fit every message, and was silently clipped by the `overflow: hidden` on
+`AppShell`'s `contained` `<main>` further up — which is exactly what read as "stuck": there was no
+scroll container to scroll, and a tall enough list could push the composer below the clipped,
+invisible region entirely.
+
+**Fix:** added `display: flex; flex-direction: column;` to `.omni-chat-thread__scroll-region` in
+`apps/web/src/features/chat/chat.css`. No fixed heights or viewport-calc hacks. Applies identically
+to both an opened existing conversation and a growing new one, since both render through the same
+`ConversationThread`/`MessageList` pair.
+
+### 3–5. Conversation list scope and UX
+
+Investigated and confirmed already correct, not requiring a change: `useConversations` /
+`ConversationSidebar` scope conversations by the active `workspaceId` (`GET
+/workspaces/:id/conversations`), not a global list, so this already satisfies "conversations belong
+to the currently selected feature/tool, not one global mixed list" — and will extend the same way
+to a future feature scoped the same way. The conversation list already has its own scroll container
+(`.omni-chat-conversation-list`) separate from the message thread, and an off-canvas drawer below
+900px so it never permanently consumes the main workspace on mobile. No change made here this pass.
+
+### 6. Sidebar scrolling coupled to main-content scrolling
+
+**Root cause:** `.omni-app-shell` only had `min-height: 100vh` (no cap), so on ordinary
+(non-`contained`) pages the shell — and every flex child inside it, sidebar included — grew to fit
+its tallest content, and the **document** became the scrolling container. Scrolling the page
+therefore dragged the sidebar along with it.
+
+**Fix:** restructured `apps/web/src/layout/appShell.css` so the shell is *always* pinned to exactly
+the viewport height (`100dvh`, `100vh` fallback) with `overflow: hidden` — previously this was only
+true in Chat's `contained` mode. `.omni-app-sidebar` and `.omni-app-shell__main` are now each their
+own independent `overflow-y: auto` container. Scrolling one never moves the other, on every page,
+not just Chat.
+
+### 7. Mobile
+
+The mobile drawer's existing `position: fixed; inset: 0 auto 0 0;` (full-viewport-height overlay)
+was untouched; it now also gets `overflow-y: auto` from the shared base `.omni-app-sidebar` rule, so
+a drawer whose nav list exceeds the viewport can scroll internally without affecting the page behind
+it. `useBodyScrollLock`/Escape/focus-trap behavior, the responsive `ChatPanel` grid → stacked
+layout, and safe-area handling were not touched and remain as verified in Phase B.
+
+### 8. Session expiring a few minutes into active use
+
+**Root cause, confirmed from code, not assumed:** `AuthContext` only ever refreshed the access
+token once, at app bootstrap (inside `ProtectedRoute`'s initial check). Nothing refreshed it again
+while already inside `/app`. `WorkspaceDashboard.loadWorkspaces` (and other authenticated
+data-fetchers) called the SDK directly with the stored access token and had no 401-refresh-and-retry
+of their own — a gap the code's own comments already flagged as deferred. So once the short-lived
+access token expired mid-session, every subsequent authenticated request failed with 401 until the
+user manually reloaded the page (which re-ran `ProtectedRoute`'s bootstrap-time refresh — this is
+why a reload "temporarily" fixed it).
+
+**Fix, in `apps/web/src/lib/auth/AuthContext.tsx`:**
+- Added `refreshAccessToken()`: calls `POST /auth/refresh`, persists the rotated tokens, updates
+  `session`/`authStatus`. Concurrent callers share one in-flight promise (a `useRef`-held promise)
+  instead of racing to consume the same single-use/rotating refresh token — a real race that would
+  otherwise have logged the user out on the losing call.
+- Added a proactive refresh timer: whenever `session` changes, schedules a single-shot
+  `setTimeout` to refresh ~60 seconds before `accessTokenExpiresAt`, and reschedules itself against
+  the new expiry once the refresh completes. This means the token is renewed *before* it goes stale
+  during normal use, rather than the app only ever reacting after a request has already failed.
+- Wired a one-shot 401-retry into `WorkspaceDashboard.loadWorkspaces` as defense-in-depth (covers a
+  backgrounded tab where the browser throttles timers, or a request that happens to race the
+  proactive refresh) — on a 401 it calls `refreshAccessToken()` and retries the request once with
+  the new token before falling back to the existing `ErrorState`.
+- Explicitly did **not** change the JWT expiration policy itself, per instruction.
+
+### `packages/ui` export / Vite dev-server desync
+
+Confirmed `useBodyScrollLock` and `useMediaQuery` *are* correctly exported from
+`packages/ui/src/index.ts`, and there was no `dist/` shipped in the source archive (correct —
+gitignored build output). The actual defect: `turbo.json`'s `dev` task had no
+`dependsOn: ["^build"]`, and no package under `packages/*` defines a `dev`/watch script — so
+`pnpm dev` could start `apps/web`'s Vite server (which resolves `@omniscience/ui` via its `exports`
+map to `dist/index.js`) without ever building `packages/ui` first, against a missing or stale
+`dist/`. Fixed by adding `"dependsOn": ["^build"]` to the `dev` task in `turbo.json`, so every
+workspace dependency is built once before any app's dev server starts. A live-watch rebuild while
+`pnpm dev` is already running (editing `packages/ui/src` mid-session) is not covered by this fix and
+is called out below as deferred, to avoid introducing new watch-mode tooling without being able to
+verify it against a live dev server in this sandbox.
+
+### Files changed this pass
+
+- `apps/web/src/features/chat/chat.css`
+- `apps/web/src/layout/appShell.css`
+- `apps/web/src/lib/auth/AuthContext.tsx`
+- `apps/web/src/features/workspaces/WorkspaceDashboard.tsx`
+- `turbo.json`
+
+No backend (`apps/api`), `packages/sdk`, or `packages/types` files were touched — confirmed by diff
+against the original archive.
+
+### Verification (this pass)
+
+Ran in-sandbox with genuine network egress (`registry.npmjs.org` reachable here):
+
+```
+pnpm install --frozen-lockfile   → succeeded (only the pre-existing, unrelated
+                                    binaries.prisma.sh 403 sandbox limitation)
+pnpm turbo run build             → 36/36 tasks
+pnpm turbo run lint              → 36/36 tasks
+pnpm turbo run typecheck         → 36/36 tasks
+pnpm turbo run test              → 36/36 tasks
+  @omniscience/api  : 74 test suites / 734 tests passed (unchanged — no backend files touched)
+  @omniscience/ui   : 17 test files / 88 tests passed (unchanged)
+  @omniscience/web  : 25 test files / 153 tests passed (unchanged — existing scroll/AppShell/Chat
+                       tests still pass against the new CSS structure; no new tests were added for
+                       the CSS-only scroll fixes or the AuthContext refresh timer, since exercising
+                       real browser layout/scroll and real timer-based token expiry is better
+                       validated by manual browser QA than by jsdom — see deferred items)
+```
+
+Full `build lint typecheck test` re-run at the end of this pass matched the above exactly
+(cache-hit identical), confirming no source drift between implementation and this report.
+
+### Intentionally deferred
+
+- No automated test was added for the new proactive-refresh timer or the `WorkspaceDashboard`
+  401-retry path (jsdom fake timers could exercise the scheduling logic, but not a real expiring JWT
+  against the real API) — flagged here rather than silently skipped.
+- No live browser QA was performed for the scroll fixes (no real browser available in this
+  sandbox) — the fixes are reasoned from the actual CSS/DOM structure and are structurally
+  equivalent to Phase B's own verified `min-height: 0` flex-chain pattern, but a maintainer with a
+  browser should still click through: open an existing long conversation, start a new one and let it
+  grow, scroll the Overview sidebar vs. main content independently, and resize to a mobile width.
+  This is the same "browser is the source of truth" caveat Phase B's own doc already carried.
+- Conversation-list UX (Issues 3–5) was investigated and found already correct in scope
+  (per-workspace, not global) and layout (own scroll container, off-canvas below 900px); no desktop
+  "collapse to a compact rail" toggle was added, since that's a cosmetic enhancement beyond what was
+  reported broken, and I didn't want to touch `ChatPanel`'s tested interaction logic without a real
+  browser to visually confirm the result.
+- Live-watch rebuilding of `packages/*` while `pnpm dev` is already running and a source file
+  changes mid-session is not covered — only the "fresh start of `pnpm dev` builds everything first"
+  case is fixed. Adding per-package `tsc --watch` scripts was considered and deliberately not done,
+  to avoid new dev-tooling risk that couldn't be verified against a live server here.
+
+Current development priority remains:
+
+> **Phase 6 — Omniscience Assistant (Step 1 complete and verified; Step 2 — backend-only
+> authenticated assistant response streaming — implemented, pending runtime verification by a
+> maintainer with network access; Step 3, the chat frontend, complete; Phase B, the
+> responsive/layout/visual-polish pass, complete and verified; the post-Phase-B browser-reported
+> bugfix pass above — chat scroll, AppShell sidebar/main scroll independence, session-refresh, and
+> the `packages/ui` dev-build ordering — complete and verified in-sandbox this session; live browser
+> QA of the scroll fixes and real-session soak testing of the token refresh still pending a
+> maintainer with a browser and network access. Steps/phases beyond that not started)**
+
 ---
 
 # Future Reserved Phase
@@ -4655,6 +4971,6 @@ No engineering work related to this feature should begin during the current acti
 
 Current development priority remains:
 
-> **Phase 6 — Omniscience Assistant (Step 1 complete and verified; Step 2 — backend-only authenticated assistant response streaming — implemented this session, pending runtime verification by a maintainer with network access; Step 3, the chat frontend, remains deferred; Steps 4+ not started)**
+> **Phase 6 — Omniscience Assistant (Step 1 complete and verified; Step 2 — backend-only authenticated assistant response streaming — implemented, pending runtime verification by a maintainer with network access; Step 3, the chat frontend, complete; Phase B, the responsive/layout/visual-polish pass, complete and verified; the post-Phase-B browser-reported bugfix pass — chat scroll, AppShell sidebar/main scroll independence, session-refresh, and the `packages/ui` dev-build ordering — complete and verified in-sandbox this session; live browser QA of the scroll fixes and real-session soak testing of the token refresh still pending a maintainer with a browser and network access. Steps/phases beyond that not started)**
 
 All future planning should continue following the original platform roadmap before Arceus Activation Mode is started.

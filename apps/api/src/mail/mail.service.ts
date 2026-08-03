@@ -14,7 +14,7 @@ export interface SendMailInput {
 /**
  * Generic transactional-mail sender.
  *
- * Production: SMTP is mandatory — `packages/config`'s environment
+ * Production: SMTP is mandatory â€” `packages/config`'s environment
  * validation already fails startup if any `SMTP_*` variable is unset in
  * production, so `this.transporter` is guaranteed to be set here. The
  * `!this.transporter` branch below is defense-in-depth only: if it is
@@ -25,10 +25,10 @@ export interface SendMailInput {
  * through the shared structured logger at `warn` level instead of being
  * sent, so it's impossible to miss and a developer can read the real OTP
  * without a working SMTP server. This fallback is intentionally disabled
- * outside development/test — see the Phase 2 Step 3 blocker fix in
+ * outside development/test â€” see the Phase 2 Step 3 blocker fix in
  * `claude/CURRENT_PHASE.md`.
  *
- * No OTP-specific templates live here — this service only knows how to
+ * No OTP-specific templates live here â€” this service only knows how to
  * send an already-composed message. Step 3 builds the OTP email content
  * on top of this.
  */
@@ -42,18 +42,38 @@ export class MailService {
     @Inject(LOGGER) private readonly logger: Logger,
   ) {
     this.configured = isSmtpConfigured(env);
+
+    // Temporary diagnostic logging:
+    // Verify that the API process is actually receiving the expected
+    // SMTP configuration without ever logging the SMTP password itself.
+    this.logger.info(
+      {
+        smtpHost: env.SMTP_HOST ?? null,
+        smtpPort: env.SMTP_PORT ?? null,
+        smtpSecure: env.SMTP_SECURE,
+        smtpUser: env.SMTP_USER ?? null,
+        smtpPasswordConfigured: Boolean(env.SMTP_PASSWORD),
+        smtpPasswordLength: env.SMTP_PASSWORD?.length ?? 0,
+        smtpFrom: env.SMTP_FROM ?? null,
+      },
+      "smtp configuration loaded",
+    );
+
     this.transporter = this.configured
       ? nodemailer.createTransport({
           host: env.SMTP_HOST,
           port: env.SMTP_PORT,
           secure: env.SMTP_SECURE,
-          auth: { user: env.SMTP_USER, pass: env.SMTP_PASSWORD },
+          auth: {
+            user: env.SMTP_USER,
+            pass: env.SMTP_PASSWORD,
+          },
         })
       : null;
 
     if (!this.configured) {
       this.logger.warn(
-        "SMTP is not configured (SMTP_HOST unset) — emails will be logged to the console instead of sent",
+        "SMTP is not configured (SMTP_HOST unset) â€” emails will be logged to the console instead of sent",
       );
     }
   }
@@ -68,15 +88,21 @@ export class MailService {
           { to: input.to, subject: input.subject },
           "refusing to send: SMTP is not configured in production",
         );
+
         throw new Error(
           "MailService: SMTP is not configured. Emails cannot be sent in production.",
         );
       }
 
       this.logger.warn(
-        { to: input.to, subject: input.subject, body: input.text },
-        "SMTP not configured — logging email instead of sending (development/test fallback)",
+        {
+          to: input.to,
+          subject: input.subject,
+          body: input.text,
+        },
+        "SMTP not configured â€” logging email instead of sending (development/test fallback)",
       );
+
       return;
     }
 
@@ -87,7 +113,14 @@ export class MailService {
       text: input.text,
       html: input.html,
     });
-    this.logger.info({ to: input.to, subject: input.subject }, "email sent");
+
+    this.logger.info(
+      {
+        to: input.to,
+        subject: input.subject,
+      },
+      "email sent",
+    );
   }
 
   isConfigured(): boolean {

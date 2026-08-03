@@ -1,4 +1,4 @@
-import type { JSX } from "react";
+import { forwardRef } from "react";
 import { NavLink } from "react-router-dom";
 
 export interface SidebarNavItem {
@@ -26,11 +26,16 @@ const NAV_LIST_STYLE = {
   gap: "var(--omni-space-1)",
 };
 
-export function Sidebar({ items, open, onNavigate }: SidebarProps): JSX.Element {
+export const Sidebar = forwardRef<HTMLElement, SidebarProps>(function Sidebar(
+  { items, open, onNavigate },
+  ref,
+) {
   return (
     <nav
+      ref={ref}
       id={SIDEBAR_NAV_ID}
       aria-label="Primary"
+      tabIndex={-1}
       className={`omni-app-sidebar${open ? " omni-app-sidebar--open" : ""}`}
     >
       <div style={{ padding: "0 var(--omni-space-2)", marginBottom: "var(--omni-space-4)" }}>
@@ -57,4 +62,4 @@ export function Sidebar({ items, open, onNavigate }: SidebarProps): JSX.Element 
       </ul>
     </nav>
   );
-}
+});

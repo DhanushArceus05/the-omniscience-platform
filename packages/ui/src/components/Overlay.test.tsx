@@ -1,3 +1,4 @@
+import { useRef, useState } from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Modal } from "./Modal";
@@ -92,5 +93,53 @@ describe("Drawer", () => {
     );
     expect(screen.getByText("Notifications")).toBeTruthy();
     expect(screen.getByText("panel content")).toBeTruthy();
+  });
+
+  it("closes on Escape at the document level, regardless of what has focus", () => {
+    const onClose = vi.fn();
+    render(
+      <Drawer open onClose={onClose} title="Notifications">
+        <p>panel content</p>
+      </Drawer>,
+    );
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("locks and restores body scroll across open/close", () => {
+    const originalOverflow = document.body.style.overflow;
+    const { rerender } = render(
+      <Drawer open onClose={() => {}} title="Notifications">
+        panel
+      </Drawer>,
+    );
+    expect(document.body.style.overflow).toBe("hidden");
+
+    rerender(
+      <Drawer open={false} onClose={() => {}} title="Notifications">
+        panel
+      </Drawer>,
+    );
+    expect(document.body.style.overflow).toBe(originalOverflow);
+  });
+
+  it("returns focus to `returnFocusRef` when it closes", () => {
+    function Harness() {
+      const buttonRef = useRef<HTMLButtonElement>(null);
+      const [open, setOpen] = useState(true);
+      return (
+        <div>
+          <button ref={buttonRef} type="button" onClick={() => setOpen(true)}>
+            Open
+          </button>
+          <Drawer open={open} onClose={() => setOpen(false)} title="Notifications" returnFocusRef={buttonRef}>
+            panel
+          </Drawer>
+        </div>
+      );
+    }
+    render(<Harness />);
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Open" }));
   });
 });

@@ -1,15 +1,53 @@
+/*
+ * The shell is always pinned to exactly the viewport height (`100dvh`,
+ * with a `100vh` fallback) rather than only having a `min-height` — this
+ * is what makes "the sidebar never scrolls with the page" possible: with
+ * only a `min-height`, the shell (and every flex child inside it,
+ * sidebar included) grows to fit its tallest content and the *document*
+ * becomes the scrolling container, dragging the sidebar along with
+ * whatever the user scrolls. Pinning the shell's own height and giving
+ * it `overflow: hidden` instead pushes scrolling down into two
+ * independent containers — `.omni-app-sidebar` and
+ * `.omni-app-shell__main` — each with its own `overflow-y: auto`. This
+ * applies to every page, not just Chat's `contained` mode; `contained`
+ * only changes what `<main>` does with the space it's given (a nested
+ * independently-scrolling grid instead of one flat scrolling column),
+ * not whether the shell itself is height-pinned.
+ *
+ * No `calc(100vh - <magic number>)` anywhere in this file or in Chat's
+ * own CSS — there is no fixed pixel amount to subtract for chrome that
+ * varies by breakpoint and content; every ancestor in the flex chain
+ * below instead uses `min-height: 0` so `flex: 1` can actually shrink a
+ * scrolling descendant instead of overflowing the viewport.
+ */
 .omni-app-shell {
   display: flex;
-  min-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
 }
 
 .omni-app-sidebar {
   width: 240px;
   flex-shrink: 0;
   padding: var(--omni-space-4);
-  background: var(--omni-glass-bg);
+  /* Its own independent scroll container — see the `.omni-app-shell`
+     comment above. `overflow-x: hidden` (not `overflow: hidden`) is
+     deliberate: the desktop collapse transition below still animates
+     `width` down to 0 without a horizontal scrollbar flashing in, while
+     `overflow-y: auto` lets a nav list taller than the viewport scroll
+     on its own instead of being clipped. */
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* Solid, not the glass tint this was originally paired with —
+     backdrop-filter stays disabled (see the diagnostic note below), and
+     without it a translucent tint over an animated background reads as
+     a moving panel behind the nav text. A solid elevated surface (same
+     token TopBar already uses) keeps navigation fully legible while
+     still letting the ambient background show through the *content*
+     area next to it. */
+  background: var(--omni-color-bg-elevated);
   border-right: 1px solid var(--omni-color-border);
-  overflow: hidden;
   transition:
     width var(--omni-duration-base) var(--omni-ease-emphasized),
     padding var(--omni-duration-base) var(--omni-ease-emphasized),
@@ -47,6 +85,7 @@
 .omni-app-shell__body {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
@@ -90,9 +129,38 @@
   flex-shrink: 0;
 }
 
+/*
+ * Ordinary (non-`contained`) pages: `<main>` is now the scrolling
+ * container instead of the document — `min-height: 0` lets it actually
+ * shrink to the space `.omni-app-shell__body`'s flex column gives it
+ * (rather than growing to its content's full height, which is what
+ * previously forced the whole `.omni-app-shell` — sidebar included — to
+ * grow, making the document itself the thing that scrolled), and
+ * `overflow-y: auto` is what makes it independently scrollable.
+ */
 .omni-app-shell__main {
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   padding: var(--omni-space-6);
+}
+
+/*
+ * Contained pages (Chat) own their own internal scrolling entirely —
+ * `<main>` becomes a zero-padding flex column that fills exactly the
+ * remaining height, so a single child (the chat shell) can size itself
+ * to 100% and split that space between independently-scrolling panes.
+ * `overflow: hidden` (not `auto`) is deliberate here: this page's own
+ * nested containers (the chat sidebar, the message list) do the actual
+ * scrolling, so `<main>` itself must never scroll or a long message
+ * list could produce two competing scrollbars.
+ */
+.omni-app-shell__main--contained {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
 }
 
 .omni-app-shell__scrim {
@@ -196,6 +264,10 @@
 
   .omni-app-shell__main {
     padding: var(--omni-space-4);
+  }
+
+  .omni-app-shell__main--contained {
+    padding: 0;
   }
 
   .omni-app-topbar__breadcrumbs {

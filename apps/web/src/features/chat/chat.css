@@ -41,9 +41,500 @@
   cursor: pointer;
   border: none;
   background: transparent;
+  padding: var(--omni-space-3);
+  border-radius: var(--omni-radius-md);
+  color: var(--omni-color-text-secondary);
+  font-size: var(--omni-text-sm);
+  transition:
+    background-color var(--omni-duration-fast) var(--omni-ease-standard),
+    color var(--omni-duration-fast) var(--omni-ease-standard);
+}
+
+.omni-chat-conversation-list-item:hover {
+  background: var(--omni-color-surface-hover);
+  color: var(--omni-color-text-primary);
 }
 
 .omni-chat-conversation-list-item[aria-current="true"] {
+  background: var(--omni-color-accent-muted);
+  color: var(--omni-color-accent);
+  font-weight: var(--omni-font-weight-medium);
+  outline: none;
+}
+
+.omni-chat-conversation-list-item[aria-current="true"]:focus-visible,
+.omni-chat-conversation-list-item:focus-visible {
   outline: 2px solid var(--omni-color-accent, currentColor);
   outline-offset: 2px;
+}
+
+/* ---------- Conversation panel (inside the sidebar/drawer surface) ---------- */
+
+.omni-chat-conversation-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--omni-space-4);
+  height: 100%;
+  min-height: 0;
+}
+
+.omni-chat-conversation-panel__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.omni-chat-conversation-panel__title {
+  margin: 0;
+  font-size: var(--omni-text-md);
+  font-weight: var(--omni-font-weight-semibold);
+}
+
+.omni-chat-conversation-panel__loading {
+  display: flex;
+  justify-content: center;
+  padding: var(--omni-space-6);
+}
+
+/* The scrolling region itself — `flex: 1` + `min-height: 0` is what
+   lets this shrink below its content's height inside the panel's
+   column, which is what makes `overflow-y: auto` actually take effect
+   instead of the panel just growing taller than its container. */
+.omni-chat-conversation-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--omni-space-1);
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* ---------- Chat shell layout ---------- */
+
+/*
+ * Fluid two-column grid, not a hardcoded `260px 1fr`: the sidebar column
+ * is allowed to breathe between a sensible minimum and maximum, and
+ * `1fr` reclaims whatever width AppShell's own sidebar collapse frees
+ * up. `min-height: 0` on every level of this chain (shell → sidebar /
+ * main → their own inner scroll regions) is what lets the sidebar's and
+ * the message list's `overflow-y: auto` actually take effect instead of
+ * silently being ignored because a flex/grid ancestor never shrank
+ * below its content's height.
+ */
+.omni-chat-shell {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: var(--omni-space-6);
+  height: 100%;
+  min-height: 0;
+}
+
+.omni-chat-shell__toolbar {
+  display: none;
+}
+
+.omni-chat-shell__conversations-toggle {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--omni-space-2);
+  cursor: pointer;
+  padding: var(--omni-space-2) var(--omni-space-3);
+  border-radius: var(--omni-radius-md);
+  border: 1px solid var(--omni-color-border);
+  background: var(--omni-color-surface);
+  color: var(--omni-color-text-primary);
+  font-size: var(--omni-text-sm);
+}
+
+.omni-chat-shell__conversations-toggle:hover {
+  background: var(--omni-color-surface-hover);
+}
+
+.omni-chat-shell__sidebar {
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: var(--omni-space-4);
+  border-radius: var(--omni-radius-lg);
+  background: var(--omni-color-bg-elevated);
+  border: 1px solid var(--omni-color-border);
+}
+
+.omni-chat-shell__sidebar-close {
+  display: none;
+}
+
+.omni-chat-shell__main {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.omni-chat-shell__scrim {
+  display: none;
+}
+
+/* Compact layout: the sidebar leaves the grid and becomes an off-canvas
+   panel with its own trigger, scrim, and slide-in surface — a separate
+   concept from, and positioned on the opposite edge from, AppShell's
+   own mobile navigation drawer (see appShell.css), so the two can never
+   visually collide even if both were somehow open at once. */
+@media (max-width: 900px) {
+  .omni-chat-shell {
+    display: flex;
+    flex-direction: column;
+    position: relative;
+  }
+
+  .omni-chat-shell__toolbar {
+    display: flex;
+    flex-shrink: 0;
+    padding-bottom: var(--omni-space-3);
+  }
+
+  .omni-chat-shell__scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    border: none;
+    background: rgba(4, 4, 10, 0.5);
+    z-index: var(--omni-z-drawer);
+  }
+
+  .omni-chat-shell__sidebar {
+    position: fixed;
+    inset: 0 0 0 auto;
+    width: min(85vw, 340px);
+    max-width: 340px;
+    transform: translateX(100%);
+    transition: transform var(--omni-duration-base) var(--omni-ease-emphasized);
+    border-radius: 0;
+    border: none;
+    border-left: 1px solid var(--omni-color-border);
+    box-shadow: var(--omni-shadow-lg);
+    z-index: calc(var(--omni-z-drawer) + 1);
+  }
+
+  .omni-chat-shell__sidebar--open {
+    transform: translateX(0);
+  }
+
+  .omni-chat-shell__sidebar-close {
+    all: unset;
+    display: inline-flex;
+    align-self: flex-end;
+    cursor: pointer;
+    padding: var(--omni-space-1) var(--omni-space-2);
+    margin-bottom: var(--omni-space-2);
+    font-size: var(--omni-text-lg);
+    color: var(--omni-color-text-muted);
+    border-radius: var(--omni-radius-sm);
+  }
+
+  .omni-chat-shell__sidebar-close:hover {
+    color: var(--omni-color-text-primary);
+    background: var(--omni-color-surface-hover);
+  }
+
+  .omni-chat-shell__main {
+    flex: 1;
+    min-height: 0;
+  }
+}
+
+/* ---------- Conversation thread ---------- */
+
+.omni-chat-thread {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  gap: var(--omni-space-3);
+}
+
+/*
+ * `display: flex; flex-direction: column` here is load-bearing, not
+ * decorative: `.omni-chat-message-list` (MessageList's own scroll
+ * container) declares `flex: 1; min-height: 0` so it can shrink to fit
+ * whatever height this wrapper gives it and let `overflow-y: auto`
+ * actually take over — but `flex`/`min-height: 0` on a child only do
+ * anything if the *parent* is itself a flex container. Without this,
+ * the child fell back to its default `height: auto` (grow to fit every
+ * message), so `overflow-y: auto` never had anything to overflow *of* —
+ * the list just kept growing past the viewport until it was silently
+ * clipped by an `overflow: hidden` ancestor further up (AppShell's
+ * `contained` `<main>`), which is exactly what read as the conversation
+ * being "stuck": scrolling did nothing because there was no scroll
+ * container to scroll, and a tall enough list could push the composer
+ * below the clipped, invisible region entirely.
+ */
+.omni-chat-thread__scroll-region {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.omni-chat-jump-to-latest {
+  all: unset;
+  position: absolute;
+  bottom: var(--omni-space-4);
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--omni-space-2);
+  cursor: pointer;
+  padding: var(--omni-space-2) var(--omni-space-4);
+  border-radius: var(--omni-radius-full);
+  background: var(--omni-color-accent);
+  color: var(--omni-color-bg);
+  font-size: var(--omni-text-xs);
+  font-weight: var(--omni-font-weight-medium);
+  box-shadow: var(--omni-shadow-md);
+}
+
+.omni-chat-jump-to-latest:hover {
+  filter: brightness(1.08);
+}
+
+/* ---------- Composer ---------- */
+
+.omni-chat-composer {
+  display: flex;
+  gap: var(--omni-space-3);
+  align-items: flex-end;
+  flex-shrink: 0;
+  padding: var(--omni-space-3);
+  padding-bottom: calc(var(--omni-space-3) + env(safe-area-inset-bottom, 0px));
+  border-radius: var(--omni-radius-lg);
+  background: var(--omni-color-bg-elevated);
+  border: 1px solid var(--omni-color-border);
+}
+
+.omni-chat-composer__textarea {
+  flex: 1;
+  min-height: 2.75rem;
+  max-height: 12rem;
+  resize: none;
+  overflow-y: auto;
+  line-height: 1.5;
+  padding: var(--omni-space-3);
+}
+
+/*
+ * Assistant message Markdown typography (Phase 6 Step 3 quality pass).
+ * `.omni-markdown` scopes every rule below to `MarkdownMessage`'s
+ * output only — user bubbles (plain `<p>`, no Markdown) are untouched.
+ * Sizes/spacing intentionally stay close to the surrounding chat UI's
+ * own `--omni-text-sm`/`--omni-space-*` scale rather than introducing
+ * a separate typographic system just for message bodies.
+ */
+.omni-markdown {
+  font-size: var(--omni-text-sm);
+  line-height: var(--omni-line-height-relaxed);
+  color: var(--omni-color-text-primary);
+  word-break: break-word;
+}
+
+.omni-markdown > *:first-child {
+  margin-top: 0;
+}
+
+.omni-markdown > *:last-child {
+  margin-bottom: 0;
+}
+
+.omni-markdown p {
+  margin: 0 0 var(--omni-space-3);
+}
+
+.omni-markdown h1,
+.omni-markdown h2,
+.omni-markdown h3,
+.omni-markdown h4,
+.omni-markdown h5,
+.omni-markdown h6 {
+  margin: var(--omni-space-5) 0 var(--omni-space-2);
+  font-weight: var(--omni-font-weight-semibold);
+  line-height: var(--omni-line-height-tight);
+  color: var(--omni-color-text-primary);
+}
+
+.omni-markdown h1 {
+  font-size: var(--omni-text-xl);
+}
+
+.omni-markdown h2 {
+  font-size: var(--omni-text-lg);
+}
+
+.omni-markdown h3,
+.omni-markdown h4,
+.omni-markdown h5,
+.omni-markdown h6 {
+  font-size: var(--omni-text-md);
+}
+
+.omni-markdown strong {
+  font-weight: var(--omni-font-weight-semibold);
+}
+
+.omni-markdown em {
+  font-style: italic;
+}
+
+.omni-markdown ul,
+.omni-markdown ol {
+  margin: 0 0 var(--omni-space-3);
+  padding-left: var(--omni-space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--omni-space-1);
+}
+
+.omni-markdown li > ul,
+.omni-markdown li > ol {
+  margin: var(--omni-space-1) 0 0;
+}
+
+.omni-markdown li::marker {
+  color: var(--omni-color-text-secondary);
+}
+
+.omni-markdown blockquote {
+  margin: 0 0 var(--omni-space-3);
+  padding: var(--omni-space-2) var(--omni-space-4);
+  border-left: 3px solid var(--omni-color-accent);
+  color: var(--omni-color-text-secondary);
+  background: var(--omni-glass-bg);
+  border-radius: 0 var(--omni-radius-sm) var(--omni-radius-sm) 0;
+}
+
+.omni-markdown blockquote > *:last-child {
+  margin-bottom: 0;
+}
+
+.omni-markdown hr {
+  margin: var(--omni-space-5) 0;
+  border: none;
+  border-top: 1px solid var(--omni-color-border);
+}
+
+.omni-markdown a {
+  color: var(--omni-color-accent-2);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.omni-markdown a:hover {
+  color: var(--omni-color-accent);
+}
+
+.omni-markdown-inline-code {
+  font-family: var(--omni-font-mono);
+  font-size: 0.9em;
+  padding: 0.15em 0.4em;
+  border-radius: var(--omni-radius-sm);
+  background: var(--omni-glass-bg-strong);
+  border: 1px solid var(--omni-color-border);
+  word-break: break-word;
+}
+
+.omni-markdown-code {
+  margin: 0 0 var(--omni-space-3);
+  border-radius: var(--omni-radius-md);
+  border: 1px solid var(--omni-color-border);
+  background: var(--omni-color-bg-elevated);
+  overflow: hidden;
+}
+
+.omni-markdown-code__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--omni-space-2);
+  padding: var(--omni-space-1) var(--omni-space-3);
+  border-bottom: 1px solid var(--omni-color-border);
+  background: var(--omni-glass-bg);
+}
+
+.omni-markdown-code__lang {
+  font-family: var(--omni-font-mono);
+  font-size: var(--omni-text-xs);
+  color: var(--omni-color-text-muted);
+  text-transform: lowercase;
+}
+
+.omni-markdown-code__copy {
+  font-size: var(--omni-text-xs);
+  padding: var(--omni-space-1) var(--omni-space-2);
+  min-height: 0;
+}
+
+.omni-markdown-code__pre {
+  margin: 0;
+  padding: var(--omni-space-3);
+  overflow-x: auto;
+}
+
+.omni-markdown-code__pre code {
+  font-family: var(--omni-font-mono);
+  font-size: 0.85em;
+  line-height: var(--omni-line-height-normal);
+  white-space: pre;
+  color: var(--omni-color-text-primary);
+}
+
+.omni-markdown-table-wrap {
+  margin: 0 0 var(--omni-space-3);
+  overflow-x: auto;
+}
+
+.omni-markdown table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: var(--omni-text-sm);
+}
+
+.omni-markdown th,
+.omni-markdown td {
+  padding: var(--omni-space-2) var(--omni-space-3);
+  border: 1px solid var(--omni-color-border);
+  text-align: left;
+}
+
+.omni-markdown th {
+  font-weight: var(--omni-font-weight-semibold);
+  background: var(--omni-glass-bg);
+}
+
+/*
+ * Whole-message "Copy" action (Phase 6 Step 3 quality pass). Hidden
+ * until hover/focus on a device with a real pointer (`(hover: hover)`)
+ * so it doesn't visually compete with message content at rest — but
+ * always shown on touch devices, where there is no hover state to
+ * reveal it on, so it would otherwise be permanently unreachable.
+ */
+.omni-chat-bubble__actions {
+  margin-top: var(--omni-space-2);
+}
+
+@media (hover: hover) {
+  .omni-chat-bubble__actions {
+    opacity: 0;
+    transition: opacity var(--omni-duration-fast) var(--omni-ease-standard);
+  }
+
+  .omni-glass-card:hover .omni-chat-bubble__actions,
+  .omni-chat-bubble__actions:focus-within {
+    opacity: 1;
+  }
 }

@@ -23,6 +23,10 @@ export type { RippleSurfaceProps } from "./motion/RippleSurface";
 export { RouteTransition } from "./motion/RouteTransition";
 export type { RouteTransitionProps } from "./motion/RouteTransition";
 
+// Shared hooks
+export { useBodyScrollLock } from "./hooks/useBodyScrollLock";
+export { useMediaQuery } from "./hooks/useMediaQuery";
+
 // Adaptive background
 export { AdaptiveBackground } from "./background/AdaptiveBackground";
 export type { AdaptiveBackgroundProps } from "./background/AdaptiveBackground";

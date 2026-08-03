@@ -57,6 +57,7 @@ export function ChatPage(): JSX.Element {
       avatarUrl={user?.avatarUrl}
       userEmail={user?.email}
       onSignOut={() => void logout()}
+      contained
     >
       <ChatPanel workspaceId={workspaceId} />
     </AppShell>

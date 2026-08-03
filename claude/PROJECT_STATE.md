@@ -797,6 +797,20 @@ This document is considered the authoritative long-term vision for the feature.
   exact commands a maintainer with network access must run before this step is marked complete.
   Phase 6 Step 3 (the chat frontend that will actually consume this endpoint) remains deferred —
   not started.
+- Phase 6, Step 3 (Conversation & Chat Frontend): ✅ Complete. **Correction:** the bullet above
+  said this "remains deferred — not started"; that was stale — the implementation
+  (`apps/web/src/features/chat/`, `ChatPage.tsx`, routed at `/app/workspace/:workspaceId/chat`)
+  already existed. See `claude/CURRENT_PHASE.md`'s "Phase 6 — Omniscience Assistant, Step 3"
+  section for the summary.
+- Phase B (Responsive/layout/visual-polish pass over the Step 3 chat frontend and shared
+  AppShell/UI primitives): ✅ Complete, verified in-sandbox this session —
+  `pnpm install --frozen-lockfile` / `typecheck` / `lint` / `build` / `test` all green
+  (`@omniscience/api` 734/734 tests unchanged, confirming the backend wasn't touched;
+  `@omniscience/ui` 88/88; `@omniscience/web` 153/153). `apps/api`, `packages/sdk`, and
+  `packages/types` were not modified. See `claude/CURRENT_PHASE.md`'s "Phase B —
+  Responsive/Layout/Polish Pass" section for the full file-by-file summary, exact verification
+  output, and intentionally-deferred items (a real-browser visual QA pass at each requested
+  viewport width, and the OTP-email follow-up task, both out of scope for this pass).
 - Arceus Activation Mode: 🔒 Locked Future Phase (Not Started)
 
 No implementation work for Arceus Activation Mode should begin until the planned platform roadmap has reached its intended completion.

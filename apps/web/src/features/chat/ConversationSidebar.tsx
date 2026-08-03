@@ -25,6 +25,13 @@ export interface ConversationSidebarProps {
  * creating, and selecting are all scoped to this one workspace — there
  * is deliberately no cross-workspace or global chat entry point (see
  * `ChatPage`'s doc comment).
+ *
+ * The conversation list below is its own independent scroll container
+ * (`flex: 1; min-height: 0; overflow-y: auto` — see chat.css's
+ * `.omni-chat-conversation-list`) so a long list of conversations can
+ * never push this panel's header/"New" button out of view, and adding
+ * messages to the active conversation (rendered entirely elsewhere, in
+ * `ConversationThread`) can never move this sidebar.
  */
 export function ConversationSidebar({
   workspaceId,
@@ -47,9 +54,9 @@ export function ConversationSidebar({
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "var(--omni-space-4)", height: "100%" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h2 style={{ margin: 0, fontSize: "var(--omni-text-md)" }}>Conversations</h2>
+    <div className="omni-chat-conversation-panel">
+      <div className="omni-chat-conversation-panel__header">
+        <h2 className="omni-chat-conversation-panel__title">Conversations</h2>
         <Button size="sm" onClick={() => void handleCreate()} loading={isCreating}>
           New
         </Button>
@@ -62,7 +69,7 @@ export function ConversationSidebar({
       )}
 
       {state.phase === "loading" && (
-        <div style={{ display: "flex", justifyContent: "center", padding: "var(--omni-space-6)" }}>
+        <div className="omni-chat-conversation-panel__loading">
           <Spinner size="md" label="Loading conversations" />
         </div>
       )}
@@ -92,17 +99,14 @@ export function ConversationSidebar({
       )}
 
       {state.phase === "ready" && state.conversations.length > 0 && (
-        <div
-          style={{ display: "flex", flexDirection: "column", gap: "var(--omni-space-2)", overflowY: "auto" }}
-          aria-label="Conversation list"
-        >
+        <div className="omni-chat-conversation-list" aria-label="Conversation list">
           {state.conversations.map((conversation) => {
             const isActive = conversation.id === activeConversationId;
             return (
               <button
                 key={conversation.id}
                 type="button"
-                className="omni-card omni-chat-conversation-list-item"
+                className="omni-chat-conversation-list-item"
                 aria-current={isActive}
                 onClick={() => onSelect(conversation.id)}
               >

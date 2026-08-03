@@ -29,6 +29,7 @@ import type {
 import type { Logger } from "pino";
 import { ENV, LOGGER } from "../config/config.constants";
 import { MailService } from "../mail/mail.service";
+import { renderOtpEmailHtml } from "../mail/otp-email-template";
 import { PrismaService } from "../prisma/prisma.service";
 import { AvatarStorageService } from "../avatar/avatar-storage.service";
 import { AccessTokenService } from "./access-token.service";
@@ -559,10 +560,17 @@ export class AuthService {
 
   private async sendOtpEmail(email: string, otp: string): Promise<void> {
     const minutes = Math.round(this.env.OTP_TTL_SECONDS / 60);
+    const expiry = `${minutes} minute${minutes === 1 ? "" : "s"}`;
     await this.mail.sendMail({
       to: email,
       subject: "Your Omniscience Platform verification code",
-      text: `Your verification code is ${otp}. It expires in ${minutes} minute${minutes === 1 ? "" : "s"}. If you didn't request this, you can safely ignore this email.`,
+      text: `Your verification code is ${otp}. It expires in ${expiry}. If you didn't request this, you can safely ignore this email.`,
+      html: renderOtpEmailHtml({
+        heading: "Verify your email",
+        bodyText: `Enter this code to finish setting up your account. It expires in ${expiry}.`,
+        code: otp,
+        footerNote: "If you didn't request this, you can safely ignore this email.",
+      }),
     });
   }
 
@@ -600,10 +608,17 @@ export class AuthService {
 
   private async sendPasswordResetOtpEmail(email: string, otp: string): Promise<void> {
     const minutes = Math.round(this.env.OTP_TTL_SECONDS / 60);
+    const expiry = `${minutes} minute${minutes === 1 ? "" : "s"}`;
     await this.mail.sendMail({
       to: email,
       subject: "Your Omniscience Platform password reset code",
-      text: `Your password reset code is ${otp}. It expires in ${minutes} minute${minutes === 1 ? "" : "s"}. If you didn't request this, you can safely ignore this email — your password has not been changed.`,
+      text: `Your password reset code is ${otp}. It expires in ${expiry}. If you didn't request this, you can safely ignore this email — your password has not been changed.`,
+      html: renderOtpEmailHtml({
+        heading: "Reset your password",
+        bodyText: `Enter this code to reset your password. It expires in ${expiry}.`,
+        code: otp,
+        footerNote: "If you didn't request this, you can safely ignore this email — your password has not been changed.",
+      }),
     });
   }
 

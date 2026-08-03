@@ -1,4 +1,4 @@
-import type { JSX } from "react";
+import type { JSX, RefObject } from "react";
 import { Breadcrumbs, type BreadcrumbItem } from "./Breadcrumbs";
 import { ThemeToggle } from "./ThemeToggle";
 import { NotificationButton } from "./NotificationButton";
@@ -17,6 +17,8 @@ export interface TopBarProps {
   /** The signed-in user's email, shown in the user menu's identity header. */
   userEmail?: string | null;
   onSignOut: () => void;
+  /** So the mobile drawer can return focus here when it closes. */
+  menuButtonRef?: RefObject<HTMLButtonElement>;
 }
 
 export function TopBar({
@@ -27,10 +29,12 @@ export function TopBar({
   avatarUrl,
   userEmail,
   onSignOut,
+  menuButtonRef,
 }: TopBarProps): JSX.Element {
   return (
     <header className="omni-app-topbar">
       <button
+        ref={menuButtonRef}
         type="button"
         className="omni-app-topbar__menu-button"
         aria-label={sidebarOpen ? "Collapse navigation" : "Expand navigation"}

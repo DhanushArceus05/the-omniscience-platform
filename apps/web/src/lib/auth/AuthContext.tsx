@@ -138,6 +138,20 @@ export interface AuthContextValue {
    * or logout in any way. A no-op if there's no active session.
    */
   updateUser: (patch: Partial<AuthenticatedUser>) => void;
+  /**
+   * Rotates the current session's tokens via `POST /auth/refresh`, persists
+   * the result, and resolves the new access token — or resolves `null` and
+   * clears the session (flipping `authStatus` to `"unauthenticated"`) if the
+   * refresh token itself is no longer valid. Concurrent callers within the
+   * same tab share a single in-flight refresh request rather than each
+   * racing to consume the same single-use refresh token (only one would
+   * ever succeed — see the in-flight-promise guard in `AuthProvider`).
+   * `AuthProvider` already calls this proactively, shortly before the
+   * access token's own expiry, so components generally don't need to call
+   * it themselves — it's exposed mainly as a manual fallback for a
+   * data-fetching hook that wants to retry once after an unexpected 401.
+   */
+  refreshAccessToken: () => Promise<string | null>;
   /** Best-effort server-side revocation, then always clears the local session. */
   logout: () => Promise<void>;
 }
@@ -277,6 +291,89 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
     setAuthStatus("authenticated");
   }, []);
 
+  // Deduplicates concurrent refresh attempts (e.g. the proactive timer
+  // below firing at roughly the same moment a data-fetching hook hits a
+  // 401 and retries manually): the refresh token is single-use/rotating
+  // (Step 4/7), so two independent `POST /auth/refresh` calls racing for
+  // the same stored refresh token would let only one succeed and the
+  // other spuriously log the user out. Every caller within this tab
+  // during a given refresh instead shares the one in-flight promise.
+  const refreshInFlightRef = useRef<Promise<string | null> | null>(null);
+
+  const refreshAccessToken = useCallback((): Promise<string | null> => {
+    if (refreshInFlightRef.current) return refreshInFlightRef.current;
+    if (!client) return Promise.resolve(null);
+
+    const current = readStoredSession();
+    if (!current) return Promise.resolve(null);
+
+    const attempt = (async (): Promise<string | null> => {
+      try {
+        const refreshed = await client.refresh({ refreshToken: current.refreshToken });
+        const now = Date.now();
+        const rotated: StoredSession = {
+          accessToken: refreshed.accessToken,
+          accessTokenExpiresAt: new Date(
+            now + refreshed.accessTokenExpiresInSeconds * 1000,
+          ).toISOString(),
+          refreshToken: refreshed.refreshToken,
+          refreshTokenExpiresAt: new Date(
+            now + refreshed.refreshTokenExpiresInSeconds * 1000,
+          ).toISOString(),
+          user: current.user,
+        };
+        writeStoredSession(rotated);
+        setSessionState(rotated);
+        setAuthStatus("authenticated");
+        return rotated.accessToken;
+      } catch {
+        // The refresh token itself is invalid/expired/already used — the
+        // session genuinely cannot be salvaged. Clear it so
+        // `ProtectedRoute` redirects to `/login` instead of the app being
+        // left silently unable to load any authenticated data.
+        writeStoredSession(null);
+        setSessionState(null);
+        setAuthStatus("unauthenticated");
+        return null;
+      } finally {
+        refreshInFlightRef.current = null;
+      }
+    })();
+
+    refreshInFlightRef.current = attempt;
+    return attempt;
+  }, [client]);
+
+  // Proactive refresh: schedules a single-shot timer to refresh the access
+  // token shortly *before* it expires, rather than only ever reacting to a
+  // 401 after the fact. This is what fixes "workspace list / conversation
+  // list suddenly says session expired a few minutes after login" — an
+  // in-page data fetch (e.g. `WorkspaceDashboard.loadWorkspaces`) never had
+  // any 401-refresh-and-retry of its own (a documented gap — see that
+  // component's docstring), so once the short-lived access token expired
+  // mid-session, every subsequent authenticated request failed with 401
+  // until the person manually reloaded the page (which re-runs
+  // `ProtectedRoute`'s own bootstrap-time refresh). Refreshing ahead of
+  // expiry means the token in `session` is (almost) never actually expired
+  // while the app is open, so this class of failure shouldn't occur at all
+  // in normal use. Re-runs (and reschedules against the new expiry) every
+  // time `session`/`authStatus` change, so this is self-perpetuating for
+  // as long as the user stays signed in.
+  useEffect(() => {
+    if (authStatus !== "authenticated" || !session) return;
+
+    const REFRESH_MARGIN_MS = 60_000;
+    const MIN_DELAY_MS = 1_000;
+    const expiresAt = new Date(session.accessTokenExpiresAt).getTime();
+    const delay = Math.max(expiresAt - Date.now() - REFRESH_MARGIN_MS, MIN_DELAY_MS);
+
+    const timerId = window.setTimeout(() => {
+      void refreshAccessToken();
+    }, delay);
+
+    return () => window.clearTimeout(timerId);
+  }, [authStatus, session, refreshAccessToken]);
+
   const updateUser = useCallback((patch: Partial<AuthenticatedUser>) => {
     setSessionState((previous) => {
       if (!previous) return previous;
@@ -312,9 +409,10 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
       isAuthenticated: authStatus === "authenticated",
       setSession,
       updateUser,
+      refreshAccessToken,
       logout,
     }),
-    [client, session, authStatus, setSession, updateUser, logout],
+    [client, session, authStatus, setSession, updateUser, refreshAccessToken, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -60,6 +60,27 @@ describe("AppShell", () => {
     expect(screen.getByText("page content")).toBeTruthy();
   });
 
+  it("does not apply contained mode by default", () => {
+    stubViewport(true);
+    const { container } = renderShell();
+    expect(container.querySelector(".omni-app-shell--contained")).toBeNull();
+  });
+
+  it("applies the contained/fill-viewport classes when `contained` is set", () => {
+    stubViewport(true);
+    const { container } = render(
+      <ThemeProvider>
+        <MemoryRouter>
+          <AppShell navItems={navItems} breadcrumbs={breadcrumbs} userName="Person Name" onSignOut={() => {}} contained>
+            <p>page content</p>
+          </AppShell>
+        </MemoryRouter>
+      </ThemeProvider>,
+    );
+    expect(container.querySelector(".omni-app-shell--contained")).toBeTruthy();
+    expect(container.querySelector(".omni-app-shell__main--contained")).toBeTruthy();
+  });
+
   describe("mobile/tablet (<=1024px)", () => {
     it("starts with the drawer closed and opens/closes it via the hamburger button", () => {
       stubViewport(false);
@@ -96,6 +117,44 @@ describe("AppShell", () => {
       fireEvent.click(screen.getByRole("link", { name: "Settings" }));
       expect(screen.queryByLabelText("Close navigation")).toBeNull();
       expect(screen.getByLabelText("Expand navigation")).toBeTruthy();
+    });
+
+    it("closes on Escape, regardless of which element inside the drawer has focus", () => {
+      stubViewport(false);
+      renderShell();
+      fireEvent.click(screen.getByLabelText("Expand navigation"));
+      expect(screen.getByLabelText("Close navigation")).toBeTruthy();
+
+      // Focus is somewhere else entirely (document.body) — a listener
+      // scoped only to the drawer's own onKeyDown would miss this.
+      (document.body as HTMLElement).focus?.();
+      fireEvent.keyDown(document, { key: "Escape" });
+
+      expect(screen.queryByLabelText("Close navigation")).toBeNull();
+      expect(screen.getByLabelText("Expand navigation")).toBeTruthy();
+    });
+
+    it("locks body scroll while open and restores it on close", () => {
+      stubViewport(false);
+      renderShell();
+      const originalOverflow = document.body.style.overflow;
+
+      fireEvent.click(screen.getByLabelText("Expand navigation"));
+      expect(document.body.style.overflow).toBe("hidden");
+
+      fireEvent.click(screen.getByLabelText("Close navigation"));
+      expect(document.body.style.overflow).toBe(originalOverflow);
+    });
+
+    it("returns focus to the hamburger trigger when the drawer closes", () => {
+      stubViewport(false);
+      renderShell();
+      const trigger = screen.getByLabelText("Expand navigation");
+      fireEvent.click(trigger);
+
+      fireEvent.keyDown(document, { key: "Escape" });
+
+      expect(document.activeElement).toBe(screen.getByLabelText("Expand navigation"));
     });
   });
 

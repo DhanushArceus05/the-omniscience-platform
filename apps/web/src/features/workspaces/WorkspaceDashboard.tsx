@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent, type JSX } from "react";
 import { Link } from "react-router-dom";
 import { createWorkspaceRequestSchema } from "@omniscience/schemas";
+import { ApiClientError } from "@omniscience/sdk";
 import type { Workspace } from "@omniscience/types";
 import { Alert, Button, EmptyState, ErrorState, Input, Modal, Spinner } from "@omniscience/ui";
 import { useAuth } from "../../lib/auth/AuthContext";
@@ -29,13 +30,18 @@ const UNCONFIGURED_MESSAGE = "Workspaces are unavailable right now — the API i
  * Deliberately NOT included here (all explicitly deferred to later
  * steps — see `claude/CURRENT_PHASE.md`):
  * - No update/delete UI — the backend doesn't expose those endpoints yet.
- * - No automatic 401-refresh-and-retry: a stale/expired access token
- *   surfaces as the same recoverable `ErrorState` any other failure
- *   would, with a "Try again" action. Centralized in-page refresh
- *   remains a documented future step, not something bolted on here.
+ *
+ * `loadWorkspaces` does retry once on a 401: `AuthContext` already
+ * refreshes the access token proactively before it expires, but a
+ * background tab (where browsers throttle timers) or a request that
+ * happened to race the refresh can still occasionally see a 401 against
+ * a token that's since gone stale — see `AuthContext.refreshAccessToken`'s
+ * docstring. Any other failure (network, a genuinely-invalid refresh
+ * token, a real backend error) still surfaces as the same recoverable
+ * `ErrorState` with a "Try again" action as before.
  */
 export function WorkspaceDashboard(): JSX.Element {
-  const { client, accessToken } = useAuth();
+  const { client, accessToken, refreshAccessToken } = useAuth();
   const [state, setState] = useState<LoadState>({ phase: "loading" });
   const [modalOpen, setModalOpen] = useState(false);
   const [name, setName] = useState("");
@@ -58,9 +64,25 @@ export function WorkspaceDashboard(): JSX.Element {
       const result = await client.listWorkspaces(accessToken);
       setState({ phase: "ready", workspaces: result.workspaces });
     } catch (error) {
+      if (error instanceof ApiClientError && error.status === 401) {
+        const refreshedToken = await refreshAccessToken();
+        if (refreshedToken) {
+          try {
+            const result = await client.listWorkspaces(refreshedToken);
+            setState({ phase: "ready", workspaces: result.workspaces });
+            return;
+          } catch (retryError) {
+            setState({ phase: "error", message: getWorkspaceErrorMessage(retryError) });
+            return;
+          }
+        }
+        // refreshAccessToken() already cleared the session on failure —
+        // ProtectedRoute picks up authStatus flipping to "unauthenticated"
+        // and redirects to /login on its own.
+      }
       setState({ phase: "error", message: getWorkspaceErrorMessage(error) });
     }
-  }, [client, accessToken]);
+  }, [client, accessToken, refreshAccessToken]);
 
   useEffect(() => {
     void loadWorkspaces();
