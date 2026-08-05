@@ -669,6 +669,66 @@ describe("OmniscienceClient conversation/message methods (Phase 6 Step 1)", () =
     ).rejects.toMatchObject({ code: "CONVERSATION_NOT_FOUND", status: 404 });
   });
 
+  it("renameConversation() sends a Bearer header, PATCHes the title, and URL-encodes both ids", async () => {
+    const renamed = { ...conversation, title: "My renamed conversation" };
+    const fetchImpl = mockJsonFetch(200, { success: true, data: renamed });
+    const client = makeClient(fetchImpl);
+
+    const result = await client.renameConversation(
+      "access-token",
+      "workspace 1/x",
+      "conversation 1/x",
+      "My renamed conversation",
+    );
+
+    expect(result).toEqual(renamed);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://localhost:4000/workspaces/workspace%201%2Fx/conversations/conversation%201%2Fx",
+      expect.objectContaining({
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer access-token" },
+        body: JSON.stringify({ title: "My renamed conversation" }),
+      }),
+    );
+  });
+
+  it("renameConversation() surfaces CONVERSATION_NOT_FOUND identically for a missing or foreign id", async () => {
+    const fetchImpl = mockJsonFetch(404, {
+      success: false,
+      error: { code: "CONVERSATION_NOT_FOUND", message: "Conversation not found." },
+    });
+    const client = makeClient(fetchImpl);
+
+    await expect(
+      client.renameConversation("access-token", "workspace_1", "anything", "New title"),
+    ).rejects.toMatchObject({ code: "CONVERSATION_NOT_FOUND", status: 404 });
+  });
+
+  it("deleteConversation() sends a Bearer header, DELETEs, and URL-encodes both ids", async () => {
+    const fetchImpl = mockJsonFetch(200, { success: true, data: { deleted: true } });
+    const client = makeClient(fetchImpl);
+
+    const result = await client.deleteConversation("access-token", "workspace 1/x", "conversation 1/x");
+
+    expect(result).toEqual({ deleted: true });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://localhost:4000/workspaces/workspace%201%2Fx/conversations/conversation%201%2Fx",
+      expect.objectContaining({ method: "DELETE", headers: { Authorization: "Bearer access-token" } }),
+    );
+  });
+
+  it("deleteConversation() surfaces CONVERSATION_NOT_FOUND identically for a missing or foreign id", async () => {
+    const fetchImpl = mockJsonFetch(404, {
+      success: false,
+      error: { code: "CONVERSATION_NOT_FOUND", message: "Conversation not found." },
+    });
+    const client = makeClient(fetchImpl);
+
+    await expect(
+      client.deleteConversation("access-token", "workspace_1", "anything"),
+    ).rejects.toMatchObject({ code: "CONVERSATION_NOT_FOUND", status: 404 });
+  });
+
   it("listMessages() sends a Bearer header and no query string when called with no query", async () => {
     const fetchImpl = mockJsonFetch(200, {
       success: true,

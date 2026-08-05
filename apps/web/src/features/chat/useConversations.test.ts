@@ -106,4 +106,105 @@ describe("useConversations", () => {
     expect(result.current.createError).toBe("You're sending messages too quickly. Please wait a moment and try again.");
     expect(result.current.state.phase === "ready" && result.current.state.conversations).toHaveLength(1);
   });
+
+  it("renameConversation() updates the title optimistically, then reconciles with the server response", async () => {
+    const existing = conversation({ id: "conversation_1", title: "Old title" });
+    const renamed = { ...existing, title: "New title" };
+    const listConversations = vi.fn().mockResolvedValue({ conversations: [existing], nextCursor: null });
+    const renameConversationMock = vi.fn().mockResolvedValue(renamed);
+    const client = {
+      listConversations,
+      renameConversation: renameConversationMock,
+    } as unknown as OmniscienceClient;
+
+    const { result } = renderHook(() => useConversations(client, ACCESS_TOKEN, WORKSPACE_ID));
+    await waitFor(() => expect(result.current.state.phase).toBe("ready"));
+
+    let succeeded = false;
+    await act(async () => {
+      succeeded = await result.current.renameConversation("conversation_1", "New title");
+    });
+
+    expect(succeeded).toBe(true);
+    expect(renameConversationMock).toHaveBeenCalledWith(ACCESS_TOKEN, WORKSPACE_ID, "conversation_1", "New title");
+    expect(
+      result.current.state.phase === "ready" && result.current.state.conversations[0]?.title,
+    ).toBe("New title");
+    expect(result.current.actionError).toBeNull();
+  });
+
+  it("renameConversation() rolls back to the previous title on failure", async () => {
+    const existing = conversation({ id: "conversation_1", title: "Old title" });
+    const listConversations = vi.fn().mockResolvedValue({ conversations: [existing], nextCursor: null });
+    const renameConversationMock = vi
+      .fn()
+      .mockRejectedValue(new ApiClientError({ code: "CONVERSATION_NOT_FOUND", message: "gone", status: 404 }));
+    const client = {
+      listConversations,
+      renameConversation: renameConversationMock,
+    } as unknown as OmniscienceClient;
+
+    const { result } = renderHook(() => useConversations(client, ACCESS_TOKEN, WORKSPACE_ID));
+    await waitFor(() => expect(result.current.state.phase).toBe("ready"));
+
+    let succeeded = true;
+    await act(async () => {
+      succeeded = await result.current.renameConversation("conversation_1", "New title");
+    });
+
+    expect(succeeded).toBe(false);
+    expect(
+      result.current.state.phase === "ready" && result.current.state.conversations[0]?.title,
+    ).toBe("Old title");
+    expect(result.current.actionError).toBe("That conversation could not be found.");
+  });
+
+  it("deleteConversation() removes the conversation optimistically", async () => {
+    const existing = conversation({ id: "conversation_1" });
+    const listConversations = vi.fn().mockResolvedValue({ conversations: [existing], nextCursor: null });
+    const deleteConversationMock = vi.fn().mockResolvedValue({ deleted: true });
+    const client = {
+      listConversations,
+      deleteConversation: deleteConversationMock,
+    } as unknown as OmniscienceClient;
+
+    const { result } = renderHook(() => useConversations(client, ACCESS_TOKEN, WORKSPACE_ID));
+    await waitFor(() => expect(result.current.state.phase).toBe("ready"));
+
+    let succeeded = false;
+    await act(async () => {
+      succeeded = await result.current.deleteConversation("conversation_1");
+    });
+
+    expect(succeeded).toBe(true);
+    expect(deleteConversationMock).toHaveBeenCalledWith(ACCESS_TOKEN, WORKSPACE_ID, "conversation_1");
+    expect(result.current.state.phase === "ready" && result.current.state.conversations).toHaveLength(0);
+  });
+
+  it("deleteConversation() reinserts the conversation at its original position on failure", async () => {
+    const first = conversation({ id: "conversation_1" });
+    const second = conversation({ id: "conversation_2" });
+    const listConversations = vi.fn().mockResolvedValue({ conversations: [first, second], nextCursor: null });
+    const deleteConversationMock = vi
+      .fn()
+      .mockRejectedValue(new ApiClientError({ code: "CONVERSATION_NOT_FOUND", message: "gone", status: 404 }));
+    const client = {
+      listConversations,
+      deleteConversation: deleteConversationMock,
+    } as unknown as OmniscienceClient;
+
+    const { result } = renderHook(() => useConversations(client, ACCESS_TOKEN, WORKSPACE_ID));
+    await waitFor(() => expect(result.current.state.phase).toBe("ready"));
+
+    let succeeded = true;
+    await act(async () => {
+      succeeded = await result.current.deleteConversation("conversation_1");
+    });
+
+    expect(succeeded).toBe(false);
+    expect(
+      result.current.state.phase === "ready" && result.current.state.conversations.map((c) => c.id),
+    ).toEqual(["conversation_1", "conversation_2"]);
+    expect(result.current.actionError).toBe("That conversation could not be found.");
+  });
 });

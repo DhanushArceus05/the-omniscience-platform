@@ -648,6 +648,34 @@ before this step is considered verified. Phase 6 Step 3 (the chat frontend that 
 consume this endpoint, in `apps/web`) has not been started and was explicitly out of scope for this
 step — `apps/web` was not touched.
 
+**Since the Step 2 entry above was written, Phase 6 Step 3 (Conversation & Chat Frontend), Phase B
+(the responsive/layout/visual-polish pass), and the post-Phase-B bugfix pass have all also been
+completed and verified — this file's Step 2 paragraph was not rewritten to stay a faithful
+historical record; see `claude/CURRENT_PHASE.md`'s Phase 6 sections for their full write-ups.**
+
+**Phase 6 — Omniscience Assistant, Step 4 (Conversation Management): complete and verified.** Adds
+conversation rename and delete, full stack — `PATCH`/`DELETE /workspaces/:workspaceId/conversations/:conversationId`
+(`ConversationsController`/`Service`/`Repository`, ownership-checked via the same
+`getOwnedConversationOrThrow()` every other conversation-scoped method already uses; delete
+cascades to the conversation's messages in application code, not a Mongo transaction — this
+deployment's MongoDB is a standalone instance, not a replica set, so multi-document transactions
+aren't available regardless), matching schemas/types (`renameConversationRequestSchema`,
+`RenameConversationResponse`, `DeleteConversationResponse`), SDK methods, and a
+`ConversationSidebar` rename/delete UX (per-row `⋮` menu, inline-edit title, confirm-to-delete
+modal) backed by `useConversations`'s optimistic-update-with-rollback rename/delete methods.
+Unlike Steps 1–3, no original multi-step plan for the rest of Phase 6 is preserved anywhere in
+this repository (no git history ships with the delivered source snapshot); Step 4, and the
+Step 5/Step 6 plan it's part of, are a reconstructed plan approved in the session that implemented
+this step — see `claude/PHASE_PLAN.md` for the full reconstructed scope and live status, and
+`claude/CURRENT_PHASE.md`'s "Phase 6 — Omniscience Assistant, Step 4" section for the full
+implementation write-up, including two real bugs (a rollback-timing race and an accessible-name
+test collision) that were found and fixed during this step's own verification before it was marked
+complete. `pnpm build`/`lint`/`typecheck`/`test` were all run for real in this session and passed
+(API 75 suites/759 tests, web 26 suites/169 tests, SDK 59 tests, schemas 123 tests) — the one
+exception is the real-Mongo half of `conversations.repository.spec.ts`, which still skips here for
+lack of a local MongoDB, the same pre-existing sandbox limitation already noted for Steps 1–3. Step
+5 (Message-Level UX) and Step 6 (Phase Close-Out) remain pending — not started.
+
 ## Repository Rule
 
 After Phase 0, always continue from the latest working repository. Never create an unrelated

@@ -5,13 +5,16 @@ import { ObjectId } from "mongodb";
  * Minimal in-memory stand-in for the slice of the native MongoDB
  * driver's `Collection<T>` API `ConversationsRepository` actually
  * uses: `insertOne`, `findOne`, `find().sort().limit().toArray()`,
- * `updateOne`, `createIndex`. Not a general-purpose Mongo query engine
- * — it supports exactly the filter/sort shapes this repository issues
- * (equality matches, `$or` of two keyset-cursor branches, `$lt`/`$gt`
- * comparisons on `createdAt`/`_id`, two-key ascending/descending
- * sorts) — the same "reproduce the logic this codebase actually
- * needs, not the whole product" reasoning `InMemoryRedisClient`
- * (`fake-redis.service.ts`) already documents for its own scope.
+ * `updateOne`, `findOneAndUpdate`, `deleteOne`, `deleteMany`,
+ * `createIndex` (the last four added in Phase 6 Step 4, for
+ * `renameConversation()`/`deleteConversation()`). Not a
+ * general-purpose Mongo query engine — it supports exactly the
+ * filter/sort shapes this repository issues (equality matches, `$or`
+ * of two keyset-cursor branches, `$lt`/`$gt` comparisons on
+ * `createdAt`/`_id`, two-key ascending/descending sorts) — the same
+ * "reproduce the logic this codebase actually needs, not the whole
+ * product" reasoning `InMemoryRedisClient` (`fake-redis.service.ts`)
+ * already documents for its own scope.
  *
  * Real keyset-pagination *correctness* against a real MongoDB
  * instance — index usage, real BSON comparison semantics — is proven
@@ -135,6 +138,41 @@ class InMemoryCollection<T extends Doc> {
     if (!doc) return { matchedCount: 0 };
     Object.assign(doc, update.$set);
     return { matchedCount: 1 };
+  }
+
+  /**
+   * Real driver signature: `findOneAndUpdate(filter, update, { returnDocument })`.
+   * Only `returnDocument: "after"` is supported — the only variant
+   * `ConversationsRepository.renameConversation()` uses — returning
+   * the updated document, or `null` if nothing matched (matching the
+   * real driver's `ModifyResult`-less, direct-document return shape
+   * used by this codebase's `mongodb` driver version).
+   */
+  async findOneAndUpdate(
+    filter: Filter,
+    update: { $set: Record<string, unknown> },
+    _options: { returnDocument: "after" },
+  ): Promise<T | null> {
+    const doc = this.docs.find((d) => matches(d, filter));
+    if (!doc) return null;
+    Object.assign(doc, update.$set);
+    return doc;
+  }
+
+  async deleteOne(filter: Filter): Promise<{ deletedCount: number }> {
+    const index = this.docs.findIndex((d) => matches(d, filter));
+    if (index === -1) return { deletedCount: 0 };
+    this.docs.splice(index, 1);
+    return { deletedCount: 1 };
+  }
+
+  async deleteMany(filter: Filter): Promise<{ deletedCount: number }> {
+    const before = this.docs.length;
+    const remaining = this.docs.filter((d) => !matches(d, filter));
+    const deletedCount = before - remaining.length;
+    this.docs.length = 0;
+    this.docs.push(...remaining);
+    return { deletedCount };
   }
 
   async createIndex(): Promise<string> {

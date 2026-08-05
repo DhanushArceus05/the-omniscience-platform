@@ -110,8 +110,33 @@ export const sendMessageRequestSchema = z
   })
   .strict();
 
+/**
+ * Trimmed, 1–200 character conversation title (Phase 6 Step 4 —
+ * Conversation Management). Same field-level-schema convention as
+ * `workspaceNameSchema`/`displayNameSchema` — one place to change the
+ * policy later. Empty after trimming is rejected, exactly like
+ * `workspaceNameSchema`.
+ */
+export const conversationTitleSchema = z
+  .string()
+  .trim()
+  .min(1, "Conversation title is required")
+  .max(200, "Conversation title must be at most 200 characters");
+
+/**
+ * `PATCH /workspaces/:workspaceId/conversations/:conversationId` body
+ * (Phase 6 Step 4). `.strict()`, same convention as every other
+ * request schema in this module.
+ */
+export const renameConversationRequestSchema = z
+  .object({
+    title: conversationTitleSchema,
+  })
+  .strict();
+
 export type CreateConversationRequestSchema = z.infer<typeof createConversationRequestSchema>;
 export type ConversationIdParamSchema = z.infer<typeof conversationIdParamSchema>;
 export type ListConversationsQuerySchema = z.infer<typeof listConversationsQuerySchema>;
 export type ListMessagesQuerySchema = z.infer<typeof listMessagesQuerySchema>;
 export type SendMessageRequestSchema = z.infer<typeof sendMessageRequestSchema>;
+export type RenameConversationRequestSchema = z.infer<typeof renameConversationRequestSchema>;

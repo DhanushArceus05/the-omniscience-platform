@@ -15,6 +15,8 @@ describe("ConversationsService", () => {
     touchConversation: jest.fn(),
     createMessage: jest.fn(),
     listMessages: jest.fn(),
+    renameConversation: jest.fn(),
+    deleteConversation: jest.fn(),
   };
   const workspaces = { getById: jest.fn() };
   const omniCore = { execute: jest.fn(), executeStream: jest.fn() };
@@ -112,6 +114,86 @@ describe("ConversationsService", () => {
         response: { code: "CONVERSATION_NOT_FOUND" },
       });
       expect(workspaces.getById).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("renameConversation", () => {
+    it("resolves ownership first, then renames via the repository", async () => {
+      repository.getConversation.mockResolvedValue(conversation);
+      const renamed = { ...conversation, title: "My renamed conversation" };
+      repository.renameConversation.mockResolvedValue(renamed);
+
+      const result = await service.renameConversation(
+        "user_1",
+        "workspace_1",
+        conversation.id,
+        "My renamed conversation",
+      );
+
+      expect(repository.getConversation).toHaveBeenCalledWith("user_1", "workspace_1", conversation.id);
+      expect(repository.renameConversation).toHaveBeenCalledWith(
+        "user_1",
+        "workspace_1",
+        conversation.id,
+        "My renamed conversation",
+      );
+      expect(result).toEqual(renamed);
+    });
+
+    it("throws CONVERSATION_NOT_FOUND without ever calling the repository's rename, for a conversation the caller doesn't own", async () => {
+      repository.getConversation.mockResolvedValue(null);
+
+      await expect(
+        service.renameConversation("user_2", "workspace_1", conversation.id, "Hijacked title"),
+      ).rejects.toMatchObject({
+        response: { code: "CONVERSATION_NOT_FOUND" },
+      });
+      expect(repository.renameConversation).not.toHaveBeenCalled();
+    });
+
+    it("throws CONVERSATION_NOT_FOUND if the repository's rename itself returns null (defensive fallback, e.g. a concurrent delete)", async () => {
+      repository.getConversation.mockResolvedValue(conversation);
+      repository.renameConversation.mockResolvedValue(null);
+
+      await expect(
+        service.renameConversation("user_1", "workspace_1", conversation.id, "New title"),
+      ).rejects.toMatchObject({
+        response: { code: "CONVERSATION_NOT_FOUND" },
+      });
+    });
+  });
+
+  describe("deleteConversation", () => {
+    it("resolves ownership first, then deletes via the repository", async () => {
+      repository.getConversation.mockResolvedValue(conversation);
+      repository.deleteConversation.mockResolvedValue(true);
+
+      await service.deleteConversation("user_1", "workspace_1", conversation.id);
+
+      expect(repository.getConversation).toHaveBeenCalledWith("user_1", "workspace_1", conversation.id);
+      expect(repository.deleteConversation).toHaveBeenCalledWith("user_1", "workspace_1", conversation.id);
+    });
+
+    it("throws CONVERSATION_NOT_FOUND without ever calling the repository's delete, for a conversation the caller doesn't own", async () => {
+      repository.getConversation.mockResolvedValue(null);
+
+      await expect(
+        service.deleteConversation("user_2", "workspace_1", conversation.id),
+      ).rejects.toMatchObject({
+        response: { code: "CONVERSATION_NOT_FOUND" },
+      });
+      expect(repository.deleteConversation).not.toHaveBeenCalled();
+    });
+
+    it("throws CONVERSATION_NOT_FOUND if the repository's delete itself returns false (defensive fallback, e.g. a concurrent delete)", async () => {
+      repository.getConversation.mockResolvedValue(conversation);
+      repository.deleteConversation.mockResolvedValue(false);
+
+      await expect(
+        service.deleteConversation("user_1", "workspace_1", conversation.id),
+      ).rejects.toMatchObject({
+        response: { code: "CONVERSATION_NOT_FOUND" },
+      });
     });
   });
 

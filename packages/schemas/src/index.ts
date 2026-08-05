@@ -67,6 +67,8 @@ export {
   listConversationsQuerySchema,
   listMessagesQuerySchema,
   sendMessageRequestSchema,
+  conversationTitleSchema,
+  renameConversationRequestSchema,
   DEFAULT_CONVERSATION_LIST_LIMIT,
   MAX_CONVERSATION_LIST_LIMIT,
   DEFAULT_MESSAGE_LIST_LIMIT,
@@ -78,4 +80,5 @@ export type {
   ListConversationsQuerySchema,
   ListMessagesQuerySchema,
   SendMessageRequestSchema,
+  RenameConversationRequestSchema,
 } from "./conversations";

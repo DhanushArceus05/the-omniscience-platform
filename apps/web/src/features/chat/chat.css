@@ -36,7 +36,8 @@
 
 .omni-chat-conversation-list-item {
   display: block;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   text-align: left;
   cursor: pointer;
   border: none;
@@ -45,9 +46,17 @@
   border-radius: var(--omni-radius-md);
   color: var(--omni-color-text-secondary);
   font-size: var(--omni-text-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   transition:
     background-color var(--omni-duration-fast) var(--omni-ease-standard),
     color var(--omni-duration-fast) var(--omni-ease-standard);
+}
+
+.omni-chat-conversation-list-item:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 
 .omni-chat-conversation-list-item:hover {
@@ -66,6 +75,53 @@
 .omni-chat-conversation-list-item:focus-visible {
   outline: 2px solid var(--omni-color-accent, currentColor);
   outline-offset: 2px;
+}
+
+/* ---------- Conversation list row (Phase 6 Step 4 — rename/delete) ---------- */
+
+/* Wraps the select button (or, mid-rename, the inline title input)
+   together with the per-row `⋮` options menu, so a long title truncates
+   via the button's own `text-overflow: ellipsis` instead of pushing the
+   menu trigger out of the row. */
+.omni-chat-conversation-list-row {
+  display: flex;
+  align-items: center;
+  gap: var(--omni-space-1);
+}
+
+.omni-chat-conversation-list-row__menu-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--omni-radius-md);
+  color: var(--omni-color-text-secondary);
+  cursor: pointer;
+  transition:
+    background-color var(--omni-duration-fast) var(--omni-ease-standard),
+    color var(--omni-duration-fast) var(--omni-ease-standard);
+}
+
+.omni-chat-conversation-list-row__menu-trigger:hover,
+.omni-chat-conversation-list-row__menu-trigger:focus-visible {
+  background: var(--omni-color-surface-hover);
+  color: var(--omni-color-text-primary);
+  outline: none;
+}
+
+/* The inline rename input replaces the select button in-place — same
+   flex sizing (`flex: 1; min-width: 0`) so committing/cancelling a
+   rename never shifts the row's width or the menu trigger's position. */
+.omni-chat-conversation-list-row__rename-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.omni-chat-conversation-list-row .omni-field {
+  flex: 1;
+  min-width: 0;
 }
 
 /* ---------- Conversation panel (inside the sidebar/drawer surface) ---------- */

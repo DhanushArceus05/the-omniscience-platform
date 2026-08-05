@@ -402,4 +402,134 @@ describe("ConversationsRepository (real MongoDB)", () => {
       repository.listConversations("user_1", "workspace_1", { limit: 20, cursor: "not-valid-base64url!" }),
     ).rejects.toThrow();
   });
+
+  it("renames a conversation, updating title and updatedAt (Phase 6 Step 4)", async () => {
+    if (!reachable) return;
+
+    const conversation = await repository.createConversation("user_1", "workspace_1");
+
+    const renamed = await repository.renameConversation(
+      "user_1",
+      "workspace_1",
+      conversation.id,
+      "My renamed conversation",
+    );
+
+    expect(renamed).not.toBeNull();
+    expect(renamed?.title).toBe("My renamed conversation");
+    expect(new Date(renamed?.updatedAt as string).getTime()).toBeGreaterThanOrEqual(
+      new Date(conversation.updatedAt).getTime(),
+    );
+
+    const reloaded = await repository.getConversation("user_1", "workspace_1", conversation.id);
+    expect(reloaded?.title).toBe("My renamed conversation");
+  });
+
+  it("returns null when renaming a conversation belonging to a different owner, without changing it", async () => {
+    if (!reachable) return;
+
+    const conversation = await repository.createConversation("user_1", "workspace_1");
+
+    const result = await repository.renameConversation(
+      "user_2",
+      "workspace_1",
+      conversation.id,
+      "Hijacked title",
+    );
+
+    expect(result).toBeNull();
+    const reloaded = await repository.getConversation("user_1", "workspace_1", conversation.id);
+    expect(reloaded?.title).toBeNull();
+  });
+
+  it("deletes a conversation and cascades to every message it owned (Phase 6 Step 4)", async () => {
+    if (!reachable) return;
+
+    const conversation = await repository.createConversation("user_1", "workspace_1");
+    await repository.createMessage({
+      conversationId: conversation.id,
+      workspaceId: "workspace_1",
+      ownerId: "user_1",
+      role: "user",
+      content: "Hello, OmniCore.",
+    });
+    await repository.createMessage({
+      conversationId: conversation.id,
+      workspaceId: "workspace_1",
+      ownerId: "user_1",
+      role: "assistant",
+      content: "Hello! How can I help?",
+    });
+
+    const deleted = await repository.deleteConversation("user_1", "workspace_1", conversation.id);
+
+    expect(deleted).toBe(true);
+    expect(await repository.getConversation("user_1", "workspace_1", conversation.id)).toBeNull();
+    const { messages } = await repository.listMessages("user_1", "workspace_1", conversation.id, {
+      limit: 20,
+    });
+    expect(messages).toHaveLength(0);
+  });
+
+  it("does not delete a conversation belonging to a different owner, and leaves its messages intact", async () => {
+    if (!reachable) return;
+
+    const conversation = await repository.createConversation("user_1", "workspace_1");
+    await repository.createMessage({
+      conversationId: conversation.id,
+      workspaceId: "workspace_1",
+      ownerId: "user_1",
+      role: "user",
+      content: "Still here",
+    });
+
+    const deleted = await repository.deleteConversation("user_2", "workspace_1", conversation.id);
+
+    expect(deleted).toBe(false);
+    expect(await repository.getConversation("user_1", "workspace_1", conversation.id)).not.toBeNull();
+    const { messages } = await repository.listMessages("user_1", "workspace_1", conversation.id, {
+      limit: 20,
+    });
+    expect(messages).toHaveLength(1);
+  });
+
+  it("does not leak a delete across conversations — deleting one conversation's messages never touches another's", async () => {
+    if (!reachable) return;
+
+    const conversationA = await repository.createConversation("user_1", "workspace_1");
+    const conversationB = await repository.createConversation("user_1", "workspace_1");
+    await repository.createMessage({
+      conversationId: conversationA.id,
+      workspaceId: "workspace_1",
+      ownerId: "user_1",
+      role: "user",
+      content: "In conversation A",
+    });
+    await repository.createMessage({
+      conversationId: conversationB.id,
+      workspaceId: "workspace_1",
+      ownerId: "user_1",
+      role: "user",
+      content: "In conversation B",
+    });
+
+    await repository.deleteConversation("user_1", "workspace_1", conversationA.id);
+
+    const { messages } = await repository.listMessages("user_1", "workspace_1", conversationB.id, {
+      limit: 20,
+    });
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.content).toBe("In conversation B");
+  });
+
+  it("returns false when deleting an already-gone conversation id", async () => {
+    if (!reachable) return;
+
+    const conversation = await repository.createConversation("user_1", "workspace_1");
+    const firstDelete = await repository.deleteConversation("user_1", "workspace_1", conversation.id);
+    expect(firstDelete).toBe(true);
+
+    const secondDelete = await repository.deleteConversation("user_1", "workspace_1", conversation.id);
+    expect(secondDelete).toBe(false);
+  });
 });

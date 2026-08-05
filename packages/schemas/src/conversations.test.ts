@@ -4,6 +4,7 @@ import {
   createConversationRequestSchema,
   listConversationsQuerySchema,
   listMessagesQuerySchema,
+  renameConversationRequestSchema,
   sendMessageRequestSchema,
 } from "./conversations";
 
@@ -113,5 +114,36 @@ describe("sendMessageRequestSchema", () => {
 
   it("rejects unknown fields", () => {
     expect(() => sendMessageRequestSchema.parse({ content: "Hello", role: "assistant" })).toThrow();
+  });
+});
+
+describe("renameConversationRequestSchema", () => {
+  it("accepts a valid payload, trimming the title", () => {
+    expect(renameConversationRequestSchema.parse({ title: "  My conversation  " })).toEqual({
+      title: "My conversation",
+    });
+  });
+
+  it("rejects a missing title field", () => {
+    expect(() => renameConversationRequestSchema.parse({})).toThrow();
+  });
+
+  it("rejects a title that is empty after trimming", () => {
+    expect(() => renameConversationRequestSchema.parse({ title: "   " })).toThrow();
+  });
+
+  it("rejects a title longer than 200 characters", () => {
+    expect(() => renameConversationRequestSchema.parse({ title: "a".repeat(201) })).toThrow();
+  });
+
+  it("accepts a title at exactly the 200-character limit", () => {
+    const title = "a".repeat(200);
+    expect(renameConversationRequestSchema.parse({ title })).toEqual({ title });
+  });
+
+  it("rejects unknown fields", () => {
+    expect(() =>
+      renameConversationRequestSchema.parse({ title: "My conversation", pinned: true }),
+    ).toThrow();
   });
 });

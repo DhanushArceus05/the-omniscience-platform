@@ -25,8 +25,9 @@ import { FakeRedisService } from "./helpers/fake-redis.service";
 
 /**
  * Exercises the real HTTP surface of Phase 6 Step 1 (Conversation &
- * Message Persistence Foundation) and Phase 6 Step 2 (backend-only
- * authenticated assistant response streaming), backed by a fresh
+ * Message Persistence Foundation), Phase 6 Step 2 (backend-only
+ * authenticated assistant response streaming), and Phase 6 Step 4
+ * (Conversation Management — rename/delete), backed by a fresh
  * `FakeMongoService` (`apps/api/test/helpers/fake-mongo.service.ts`)
  * so no live MongoDB instance is required, and — for the "real
  * OmniCore integration" tests — a fake `ANTHROPIC_CLIENT`, same
@@ -42,7 +43,7 @@ import { FakeRedisService } from "./helpers/fake-redis.service";
  * `workspaces.e2e-spec.ts` — so per-route throttle counters and each
  * test's `FakeMongoService` instance never leak between tests.
  */
-describe("Conversations & Messages (e2e, Phase 6 Step 1 & Step 2)", () => {
+describe("Conversations & Messages (e2e, Phase 6 Step 1, Step 2 & Step 4)", () => {
   const password = "Sup3r$ecretPassw0rd!";
 
   interface FakeAnthropicClient {
@@ -405,6 +406,197 @@ describe("Conversations & Messages (e2e, Phase 6 Step 1 & Step 2)", () => {
 
       expect(response.body.error.code).toBe("CONVERSATION_NOT_FOUND");
 
+      await app.close();
+    });
+  });
+
+  describe("PATCH /workspaces/:workspaceId/conversations/:conversationId — Phase 6 Step 4 (rename)", () => {
+    it("renames the caller's own conversation and persists the new title", async () => {
+      const { app, mail } = await buildApp({});
+      const accessToken = await registerVerifyAndLogin(app, mail, "rename@example.com", password, "Renamer");
+      const workspaceId = await createWorkspace(app, accessToken);
+      const created = await request(app.getHttpServer())
+        .post(`/workspaces/${workspaceId}/conversations`)
+        .set("Authorization", `Bearer ${accessToken}`)
+        .send({})
+        .expect(201);
+
+      const renameResponse = await request(app.getHttpServer())
+        .patch(`/workspaces/${workspaceId}/conversations/${created.body.data.id}`)
+        .set("Authorization", `Bearer ${accessToken}`)
+        .send({ title: "  My renamed conversation  " })
+        .expect(200);
+
+      expect(renameResponse.body).toEqual({
+        success: true,
+        data: {
+          id: created.body.data.id,
+          workspaceId,
+          title: "My renamed conversation",
+          createdAt: created.body.data.createdAt,
+          updatedAt: expect.any(String),
+        },
+      });
+
+      const reloaded = await request(app.getHttpServer())
+        .get(`/workspaces/${workspaceId}/conversations/${created.body.data.id}`)
+        .set("Authorization", `Bearer ${accessToken}`)
+        .expect(200);
+      expect(reloaded.body.data.title).toBe("My renamed conversation");
+
+      await app.close();
+    });
+
+    it("returns CONVERSATION_NOT_FOUND for another owner's conversation, without renaming it", async () => {
+      const { app, mail } = await buildApp({});
+      const ownerToken = await registerVerifyAndLogin(app, mail, "renameowner@example.com", password, "Owner");
+      const workspaceId = await createWorkspace(app, ownerToken);
+      const created = await request(app.getHttpServer())
+        .post(`/workspaces/${workspaceId}/conversations`)
+        .set("Authorization", `Bearer ${ownerToken}`)
+        .send({})
+        .expect(201);
+      const otherToken = await registerVerifyAndLogin(app, mail, "renameother@example.com", password, "Other");
+
+      const response = await request(app.getHttpServer())
+        .patch(`/workspaces/${workspaceId}/conversations/${created.body.data.id}`)
+        .set("Authorization", `Bearer ${otherToken}`)
+        .send({ title: "Hijacked title" })
+        .expect(404);
+      expect(response.body.error.code).toBe("CONVERSATION_NOT_FOUND");
+
+      const reloaded = await request(app.getHttpServer())
+        .get(`/workspaces/${workspaceId}/conversations/${created.body.data.id}`)
+        .set("Authorization", `Bearer ${ownerToken}`)
+        .expect(200);
+      expect(reloaded.body.data.title).toBeNull();
+
+      await app.close();
+    });
+
+    it("rejects an empty title with a validation error", async () => {
+      const { app, mail } = await buildApp({});
+      const accessToken = await registerVerifyAndLogin(app, mail, "renameempty@example.com", password, "Renamer");
+      const workspaceId = await createWorkspace(app, accessToken);
+      const created = await request(app.getHttpServer())
+        .post(`/workspaces/${workspaceId}/conversations`)
+        .set("Authorization", `Bearer ${accessToken}`)
+        .send({})
+        .expect(201);
+
+      const response = await request(app.getHttpServer())
+        .patch(`/workspaces/${workspaceId}/conversations/${created.body.data.id}`)
+        .set("Authorization", `Bearer ${accessToken}`)
+        .send({ title: "   " })
+        .expect(400);
+      expect(response.body.error.code).toBe("VALIDATION_ERROR");
+
+      await app.close();
+    });
+
+    it("rejects an unauthenticated request", async () => {
+      const { app } = await buildApp({});
+      await request(app.getHttpServer())
+        .patch("/workspaces/any-workspace/conversations/665f1c2b9a4e8f0012345678")
+        .send({ title: "New title" })
+        .expect(401);
+      await app.close();
+    });
+  });
+
+  describe("DELETE /workspaces/:workspaceId/conversations/:conversationId — Phase 6 Step 4 (delete)", () => {
+    it("deletes the caller's own conversation, cascading to its messages", async () => {
+      const fakeClient = makeFakeAnthropicClient();
+      fakeClient.messages.create.mockResolvedValue(successfulAnthropicResponse("Hello!"));
+
+      const { app, mail } = await buildApp({ anthropicApiKey: "test-key", anthropicClient: fakeClient });
+      const accessToken = await registerVerifyAndLogin(app, mail, "delete@example.com", password, "Deleter");
+      const workspaceId = await createWorkspace(app, accessToken);
+      const created = await request(app.getHttpServer())
+        .post(`/workspaces/${workspaceId}/conversations`)
+        .set("Authorization", `Bearer ${accessToken}`)
+        .send({})
+        .expect(201);
+      await request(app.getHttpServer())
+        .post(`/workspaces/${workspaceId}/conversations/${created.body.data.id}/messages`)
+        .set("Authorization", `Bearer ${accessToken}`)
+        .send({ content: "Hello, OmniCore." })
+        .expect(201);
+
+      const deleteResponse = await request(app.getHttpServer())
+        .delete(`/workspaces/${workspaceId}/conversations/${created.body.data.id}`)
+        .set("Authorization", `Bearer ${accessToken}`)
+        .expect(200);
+      expect(deleteResponse.body).toEqual({ success: true, data: { deleted: true } });
+
+      await request(app.getHttpServer())
+        .get(`/workspaces/${workspaceId}/conversations/${created.body.data.id}`)
+        .set("Authorization", `Bearer ${accessToken}`)
+        .expect(404);
+
+      const listResponse = await request(app.getHttpServer())
+        .get(`/workspaces/${workspaceId}/conversations`)
+        .set("Authorization", `Bearer ${accessToken}`)
+        .expect(200);
+      expect(listResponse.body.data.conversations).toHaveLength(0);
+
+      await app.close();
+    });
+
+    it("returns CONVERSATION_NOT_FOUND for another owner's conversation, without deleting it", async () => {
+      const { app, mail } = await buildApp({});
+      const ownerToken = await registerVerifyAndLogin(app, mail, "deleteowner@example.com", password, "Owner");
+      const workspaceId = await createWorkspace(app, ownerToken);
+      const created = await request(app.getHttpServer())
+        .post(`/workspaces/${workspaceId}/conversations`)
+        .set("Authorization", `Bearer ${ownerToken}`)
+        .send({})
+        .expect(201);
+      const otherToken = await registerVerifyAndLogin(app, mail, "deleteother@example.com", password, "Other");
+
+      const response = await request(app.getHttpServer())
+        .delete(`/workspaces/${workspaceId}/conversations/${created.body.data.id}`)
+        .set("Authorization", `Bearer ${otherToken}`)
+        .expect(404);
+      expect(response.body.error.code).toBe("CONVERSATION_NOT_FOUND");
+
+      await request(app.getHttpServer())
+        .get(`/workspaces/${workspaceId}/conversations/${created.body.data.id}`)
+        .set("Authorization", `Bearer ${ownerToken}`)
+        .expect(200);
+
+      await app.close();
+    });
+
+    it("returns CONVERSATION_NOT_FOUND for an already-deleted conversation", async () => {
+      const { app, mail } = await buildApp({});
+      const accessToken = await registerVerifyAndLogin(app, mail, "deletetwice@example.com", password, "Deleter");
+      const workspaceId = await createWorkspace(app, accessToken);
+      const created = await request(app.getHttpServer())
+        .post(`/workspaces/${workspaceId}/conversations`)
+        .set("Authorization", `Bearer ${accessToken}`)
+        .send({})
+        .expect(201);
+
+      await request(app.getHttpServer())
+        .delete(`/workspaces/${workspaceId}/conversations/${created.body.data.id}`)
+        .set("Authorization", `Bearer ${accessToken}`)
+        .expect(200);
+
+      const response = await request(app.getHttpServer())
+        .delete(`/workspaces/${workspaceId}/conversations/${created.body.data.id}`)
+        .set("Authorization", `Bearer ${accessToken}`)
+        .expect(404);
+      expect(response.body.error.code).toBe("CONVERSATION_NOT_FOUND");
+
+      await app.close();
+    });
+
+    it("rejects an unauthenticated request", async () => {
+      const { app } = await buildApp({});
+      await request(app.getHttpServer())
+        .delete("/workspaces/any-workspace/conversations/665f1c2b9a4e8f0012345678")
+        .expect(401);
       await app.close();
     });
   });

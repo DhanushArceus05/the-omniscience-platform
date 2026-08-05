@@ -1,11 +1,19 @@
 import { HttpException, HttpStatus } from "@nestjs/common";
 
 /**
- * Domain error codes for the Conversations module (Phase 6 Step 1 —
- * Conversation & Message Persistence Foundation).
+ * Domain error codes for the Conversations module.
  *
- * `CONVERSATION_NOT_FOUND` is the only code this module introduces —
- * every other failure mode a caller of these endpoints can hit is
+ * `CONVERSATION_NOT_FOUND` (Phase 6 Step 1) is thrown identically
+ * whether a conversation id doesn't exist at all, belongs to a
+ * different owner, or belongs to a different workspace than the one
+ * named in the URL — the same no-enumeration convention
+ * `WorkspacesService.getById()` already established for
+ * `WORKSPACE_NOT_FOUND`. Phase 6 Step 4 (Conversation Management)
+ * reuses this exact code for rename/delete — no new "not found" code
+ * is introduced, since the same no-enumeration reasoning applies
+ * identically to those two new operations.
+ *
+ * Every other failure mode a caller of these endpoints can hit is
  * already a typed error owned by another module and is left to
  * propagate unchanged:
  *   - `WORKSPACE_NOT_FOUND` (`WorkspacesService`, Phase 3) — the
@@ -16,12 +24,6 @@ import { HttpException, HttpStatus } from "@nestjs/common";
  *     (`apps/api/src/omnicore/omnicore.errors.ts`, Phase 5) — a
  *     failure raised by `OmniCoreService.execute()` itself
  *     (`AMBIGUOUS_INTENT`, `TOOL_TIMEOUT`, etc.).
- *
- * `CONVERSATION_NOT_FOUND` is thrown identically whether a
- * conversation id doesn't exist at all, belongs to a different owner,
- * or belongs to a different workspace than the one named in the URL
- * — the same no-enumeration convention `WorkspacesService.getById()`
- * already established for `WORKSPACE_NOT_FOUND`.
  */
 export type ConversationsDomainErrorCode = "CONVERSATION_NOT_FOUND";
 

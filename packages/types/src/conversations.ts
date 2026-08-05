@@ -1,10 +1,11 @@
 /**
- * Request/response contracts for the Phase 6 Step 1 conversation and
- * message endpoints — conversation create/list/get, message
- * send/list — all scoped to a workspace the caller owns. There is no
- * update/delete/rename/auto-title endpoint yet (deliberately out of
- * this step's scope, per the approved Step 1 roadmap): `title` is
- * always `null` in this step's responses.
+ * Request/response contracts for the conversation and message
+ * endpoints — conversation create/list/get/rename/delete (rename and
+ * delete added in Phase 6 Step 4 — Conversation Management), message
+ * send/list. There is still no auto-title-generation endpoint
+ * (deliberately out of scope — see `claude/CURRENT_PHASE.md`'s Phase 6
+ * Step 4 section): `title` remains `null` until a caller explicitly
+ * renames a conversation.
  *
  * Mirrors `workspaces.ts`'s exact shape: a plain resource type, a
  * `Create*Response`/`Get*Response` alias where the response is just
@@ -37,6 +38,27 @@ export interface ListConversationsResponse {
 }
 
 export type GetConversationResponse = Conversation;
+
+/**
+ * `PATCH /workspaces/:workspaceId/conversations/:conversationId` body
+ * (Phase 6 Step 4 — Conversation Management).
+ */
+export interface RenameConversationRequest {
+  title: string;
+}
+
+export type RenameConversationResponse = Conversation;
+
+/**
+ * `DELETE /workspaces/:workspaceId/conversations/:conversationId`
+ * response (Phase 6 Step 4). Same `{ <verb>: true }` shape convention
+ * `DeleteAccountResponse`/`RevokeSessionResponse` already established
+ * — irreversible, and cascades to every message the deleted
+ * conversation owned (see `ConversationsRepository.deleteConversation()`).
+ */
+export interface DeleteConversationResponse {
+  deleted: true;
+}
 
 /**
  * The trimmed, non-secret slice of `OmniCoreExecuteResponse` persisted

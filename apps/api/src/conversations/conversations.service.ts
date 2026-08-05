@@ -38,9 +38,11 @@ import { ConversationsRepository } from "./conversations.repository";
  * a separate workspace-ownership pre-check on a conversation-scoped
  * operation would leak which part of the ownership chain failed.
  *
- * There is no update/delete/rename/auto-title here — explicitly out
- * of Step 1's approved scope (see `claude/CURRENT_PHASE.md`'s Phase 6
- * Step 1 section for the full list of what's deferred).
+ * There is no auto-title generation here — still explicitly out of
+ * scope (see `claude/CURRENT_PHASE.md`'s Phase 6 Step 1 section for
+ * the full list of what was originally deferred). Manual rename and
+ * delete were added in Phase 6 Step 4 — see `renameConversation()`/
+ * `deleteConversation()` below.
  */
 @Injectable()
 export class ConversationsService {
@@ -95,6 +97,50 @@ export class ConversationsService {
     conversationId: string,
   ): Promise<GetConversationResponse> {
     return this.getOwnedConversationOrThrow(ownerId, workspaceId, conversationId);
+  }
+
+  /**
+   * Renames the caller's own conversation (Phase 6 Step 4). Same
+   * ownership resolution as every other conversation-scoped method
+   * here — `getOwnedConversationOrThrow()` first, so a caller renaming
+   * a conversation they don't own gets the identical
+   * `CONVERSATION_NOT_FOUND` as one that doesn't exist at all. The
+   * repository call is expected to succeed once ownership has already
+   * been proven; its `null` case is a defensive fallback (e.g. a
+   * concurrent delete landing between the two calls), surfaced as the
+   * same shared error rather than a distinct code, since from the
+   * caller's perspective the outcome is identical either way — the
+   * conversation isn't there for them anymore.
+   */
+  async renameConversation(
+    ownerId: string,
+    workspaceId: string,
+    conversationId: string,
+    title: string,
+  ): Promise<Conversation> {
+    await this.getOwnedConversationOrThrow(ownerId, workspaceId, conversationId);
+    const renamed = await this.repository.renameConversation(ownerId, workspaceId, conversationId, title);
+    if (!renamed) {
+      throw conversationsDomainError("CONVERSATION_NOT_FOUND", "Conversation not found.");
+    }
+    return renamed;
+  }
+
+  /**
+   * Deletes the caller's own conversation, cascading to every message
+   * scoped to it (Phase 6 Step 4). Same ownership resolution as
+   * `renameConversation()` above. The repository's own `deleteOne`
+   * filter (`_id`+`ownerId`+`workspaceId`) is a second, independent
+   * ownership check beyond `getOwnedConversationOrThrow()` — the same
+   * defense-in-depth every write in this repository already applies —
+   * so this method never depends on the earlier check alone.
+   */
+  async deleteConversation(ownerId: string, workspaceId: string, conversationId: string): Promise<void> {
+    await this.getOwnedConversationOrThrow(ownerId, workspaceId, conversationId);
+    const deleted = await this.repository.deleteConversation(ownerId, workspaceId, conversationId);
+    if (!deleted) {
+      throw conversationsDomainError("CONVERSATION_NOT_FOUND", "Conversation not found.");
+    }
   }
 
   async listMessages(

@@ -12,6 +12,8 @@ describe("ConversationsController", () => {
     listMessages: jest.fn(),
     sendMessage: jest.fn(),
     sendMessageStream: jest.fn(),
+    renameConversation: jest.fn(),
+    deleteConversation: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -92,6 +94,57 @@ describe("ConversationsController", () => {
     );
     expect(result.success).toBe(true);
     expect(result.data.id).toBe("665f1c2b9a4e8f0012345678");
+  });
+
+  it("rename() delegates to ConversationsService with the caller's own id, workspace id, conversation id, and the new title", async () => {
+    conversationsService.renameConversation.mockResolvedValue({
+      id: "665f1c2b9a4e8f0012345678",
+      workspaceId: "workspace_1",
+      title: "My renamed conversation",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const result = await controller.rename(
+      { sub: "user_1", email: "user@example.com" },
+      "workspace_1",
+      "665f1c2b9a4e8f0012345678",
+      { title: "My renamed conversation" },
+    );
+
+    expect(conversationsService.renameConversation).toHaveBeenCalledWith(
+      "user_1",
+      "workspace_1",
+      "665f1c2b9a4e8f0012345678",
+      "My renamed conversation",
+    );
+    expect(result).toEqual({
+      success: true,
+      data: {
+        id: "665f1c2b9a4e8f0012345678",
+        workspaceId: "workspace_1",
+        title: "My renamed conversation",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+    });
+  });
+
+  it("remove() delegates to ConversationsService with the caller's own id, workspace id, and conversation id, and returns { deleted: true }", async () => {
+    conversationsService.deleteConversation.mockResolvedValue(undefined);
+
+    const result = await controller.remove(
+      { sub: "user_1", email: "user@example.com" },
+      "workspace_1",
+      "665f1c2b9a4e8f0012345678",
+    );
+
+    expect(conversationsService.deleteConversation).toHaveBeenCalledWith(
+      "user_1",
+      "workspace_1",
+      "665f1c2b9a4e8f0012345678",
+    );
+    expect(result).toEqual({ success: true, data: { deleted: true } });
   });
 
   it("listMessages() delegates to ConversationsService with the caller's own id, workspace id, conversation id, and the parsed query", async () => {

@@ -96,6 +96,18 @@ export function ChatPanel({ workspaceId }: ChatPanelProps): JSX.Element {
     setPanelOpen(false);
   }
 
+  /**
+   * Phase 6 Step 4 — called after any conversation is genuinely
+   * deleted, not only the active one (see `ConversationSidebar`'s doc
+   * comment on `onDeleted`). Only clears `activeConversationId` when
+   * the deleted conversation was the one open — deleting a conversation
+   * elsewhere in the list must not disturb whatever's currently
+   * showing in `ConversationThread`.
+   */
+  function handleDeleted(conversationId: string): void {
+    setActiveConversationId((current) => (current === conversationId ? null : current));
+  }
+
   const overlayActive = isCompact && panelOpen;
 
   return (
@@ -149,6 +161,7 @@ export function ChatPanel({ workspaceId }: ChatPanelProps): JSX.Element {
           activeConversationId={activeConversationId}
           onSelect={handleSelect}
           onCreated={handleCreated}
+          onDeleted={handleDeleted}
         />
       </div>
 

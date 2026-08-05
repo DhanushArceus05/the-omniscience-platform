@@ -79,6 +79,17 @@ detail)
   with the landing page. `apps/api`, `packages/sdk`, and `packages/types` were **not** modified
   (verified by mtime diff against the freshly-extracted archive — only `.turbo/` log files under
   those packages changed).
+- **Post-Phase-B bugfix pass (browser-reported issues)**: complete and verified in-sandbox — see
+  `## Phase 6 — Step 3, Post-Phase-B bugfix pass (browser-reported issues)` near the end of this
+  file. Chat scroll, AppShell sidebar/main scroll independence, session-refresh, and the
+  `packages/ui` dev-build ordering were fixed; live browser QA of the scroll fixes and real-session
+  soak testing of the token refresh remain pending a maintainer with a browser and network access.
+- **Phase 6 — Omniscience Assistant, Step 4 (Conversation Management)**: complete and verified —
+  see `## Phase 6 — Omniscience Assistant, Step 4 (Conversation Management)` near the end of this
+  file. Conversation rename and delete, full stack (backend routes, schemas/types, SDK, and a
+  sidebar rename/delete UX with optimistic update and rollback). This is a reconstructed step, not
+  from an original preserved plan — see that section and `claude/PHASE_PLAN.md` for the full
+  reasoning and the current Step 5/6 status.
 
 
 ## Phase 1 — Premium UI Foundation
@@ -4939,7 +4950,96 @@ Current development priority remains:
 
 ---
 
-# Future Reserved Phase
+## Phase 6 — Omniscience Assistant, Step 4 (Conversation Management)
+
+**Context:** Steps 1–3, Phase B, and the post-Phase-B bugfix pass above left Phase 6's core
+conversation/chat experience working end to end, but with no way to rename or delete a
+conversation once created — `ConversationsController` only ever exposed `POST`/`GET` routes.
+Unlike Steps 1–3 (each approved from an upfront numbered plan for that step), no original
+multi-step plan for the remainder of Phase 6 is preserved anywhere in this repository — no git
+history ships with the delivered source snapshot, and no doc file recorded one. Steps 4–6 are
+therefore a **reconstructed plan**, proposed and approved in the session that implemented this
+step, not a recovered original plan; see `claude/PHASE_PLAN.md` for the full reconstructed
+Step 4–6 scope and current status, kept as the live continuity tracker for the rest of this
+phase.
+
+**Scope implemented:** conversation rename and delete, full stack.
+
+- **Backend** (`apps/api/src/conversations/`): `ConversationsRepository.renameConversation()`
+  (`findOneAndUpdate`, same three-way `_id`/`ownerId`/`workspaceId` ownership filter every other
+  method here uses) and `.deleteConversation()` (deletes the conversation, then cascades to every
+  message scoped to it — application-level cascade, not a Mongo transaction: this deployment's
+  MongoDB is a standalone instance, not a replica set, so multi-document transactions aren't
+  available here regardless — see the Step 5 note in `claude/PHASE_PLAN.md` for why that's fine).
+  `ConversationsService.renameConversation()`/`.deleteConversation()`, both routed through the
+  existing `getOwnedConversationOrThrow()` first, same as every other conversation-scoped method.
+  `ConversationsController`: new `PATCH`/`DELETE :conversationId` routes, `JwtAuthGuard`-protected,
+  20/10min throttle (matching `WorkspacesController`'s own create-route limit — ordinary writes,
+  no vendor cost). No new domain error code — `CONVERSATION_NOT_FOUND` is reused for rename/delete
+  exactly as it already is for every other "not yours or doesn't exist" case in this module.
+- **Schemas/types**: `conversationTitleSchema`/`renameConversationRequestSchema`
+  (`packages/schemas`), `RenameConversationRequest`/`RenameConversationResponse`/
+  `DeleteConversationResponse` (`packages/types` — `DeleteConversationResponse` is `{ deleted:
+  true }`, the same shape `DeleteAccountResponse`/`RevokeSessionResponse` already established).
+- **SDK** (`packages/sdk/src/client.ts`): `renameConversation()`/`deleteConversation()`.
+- **Frontend**: `ConversationSidebar.tsx` gained a per-row `⋮` menu (`Dropdown`, the same
+  component `UserMenu` already uses) with Rename/Delete — rename replaces the row's label with an
+  inline `Input` (Enter/blur commits, Escape cancels); delete opens a confirm `Modal` (the same
+  component `WorkspaceDashboard`'s create flow already uses), since deletion is irreversible and
+  cascades to every message. `useConversations.ts` gained `renameConversation()`/
+  `deleteConversation()`, both updating local state optimistically and rolling back to the exact
+  pre-call state on failure. `ChatPanel.tsx` gained `handleDeleted()`, clearing
+  `activeConversationId` only when the deleted conversation was the one currently open.
+
+**Two real bugs were found and fixed during this step's own verification pass, before it was
+marked complete** (both are already fixed in the code — recorded here for the historical record,
+not as open issues):
+
+1. **Rollback race in `useConversations.ts`.** The first draft captured the pre-call
+   title/list-index by mutating a variable *inside* a `setState` functional updater and reading it
+   back on the very next line — but React does not guarantee that updater runs before that next
+   line executes, so a failed rename/delete's rollback could silently do nothing (confirmed by a
+   failing test: a failed delete left the list one item short instead of restoring it). Fixed by
+   reading the pre-call value synchronously from the hook's own `state` (added to the relevant
+   `useCallback`'s dependency array) instead of depending on `setState` updater timing.
+2. **Accessible-name collision.** The new "⋮" menu's `aria-label` initially embedded the full
+   formatted conversation label, which for an untitled conversation is the same
+   `"Conversation — <date>"` fallback text several pre-existing `ChatPanel.test.tsx` tests already
+   matched the *select* button with via an unanchored `/Conversation —/` regex — making that query
+   ambiguous once a second matching element existed. Fixed by using the conversation's real title
+   only when one is actually set, and a generic "Options for this conversation" otherwise, which
+   never reproduces that substring.
+
+**Also fixed as a required (not optional) part of this step:** `apps/api/test/helpers/fake-mongo.service.ts`
+— the in-memory Mongo stand-in every API e2e test runs through — only implemented
+`insertOne`/`findOne`/`find`/`updateOne`/`createIndex`. It had no `findOneAndUpdate`, `deleteOne`,
+or `deleteMany`, which the new repository methods need; every e2e test in the whole suite would
+have broken, not just the new ones, without adding them.
+
+**Verification:** `pnpm build`, `pnpm lint`, `pnpm typecheck` all green across all 9 packages.
+`pnpm test`: API 75 suites / 759 tests passed; web 26 suites / 169 tests passed; SDK 59 tests
+passed; schemas 123 tests passed. The real-Mongo half of `conversations.repository.spec.ts` still
+skips in this sandbox (no local MongoDB/Docker available here) — the same pre-existing,
+environment-only limitation already noted for Steps 1–3, not something this step introduced or
+could resolve here; it runs in CI or against a maintainer's local `docker compose up -d mongo`.
+
+**What was deliberately not touched:** `sendMessage`/`sendMessageStream`, the `Message` type, any
+streaming code, and no Prisma/schema migration (Mongo is schemaless — this added new fields being
+written, not a shape change).
+
+Current development priority remains:
+
+> **Phase 6 — Omniscience Assistant (Steps 1–3, Phase B, and the post-Phase-B bugfix pass complete
+> and verified as described above; Step 4 — Conversation Management — complete and verified this
+> session, see immediately above; Step 5 — Message-Level UX — and Step 6 — Phase Close-Out — are
+> both a reconstructed, approved plan not yet implemented, see `claude/PHASE_PLAN.md` for current
+> status; live browser QA of the Phase B scroll fixes and real-session soak testing of the token
+> refresh from the post-Phase-B bugfix pass remain pending a maintainer with a browser and network
+> access, tracked for Step 6 close-out)**
+
+---
+
+
 
 ## Arceus Activation Mode
 
@@ -4971,6 +5071,6 @@ No engineering work related to this feature should begin during the current acti
 
 Current development priority remains:
 
-> **Phase 6 — Omniscience Assistant (Step 1 complete and verified; Step 2 — backend-only authenticated assistant response streaming — implemented, pending runtime verification by a maintainer with network access; Step 3, the chat frontend, complete; Phase B, the responsive/layout/visual-polish pass, complete and verified; the post-Phase-B browser-reported bugfix pass — chat scroll, AppShell sidebar/main scroll independence, session-refresh, and the `packages/ui` dev-build ordering — complete and verified in-sandbox this session; live browser QA of the scroll fixes and real-session soak testing of the token refresh still pending a maintainer with a browser and network access. Steps/phases beyond that not started)**
+> **Phase 6 — Omniscience Assistant (Steps 1–3, Phase B, and the post-Phase-B bugfix pass complete and verified; Step 4 — Conversation Management — complete and verified; Step 5 — Message-Level UX — and Step 6 — Phase Close-Out — are a reconstructed, approved plan not yet implemented, see `claude/PHASE_PLAN.md` for current status; live browser QA of the Phase B scroll fixes and real-session soak testing of the token refresh remain pending a maintainer with a browser and network access, tracked for Step 6 close-out)**
 
 All future planning should continue following the original platform roadmap before Arceus Activation Mode is started.

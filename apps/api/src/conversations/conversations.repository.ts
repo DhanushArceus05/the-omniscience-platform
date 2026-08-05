@@ -207,6 +207,67 @@ export class ConversationsRepository implements OnModuleInit {
     );
   }
 
+  /**
+   * Renames the caller's own conversation (Phase 6 Step 4). Filtered
+   * by `_id`/`ownerId`/`workspaceId` — the same three-way ownership
+   * filter `getConversation` uses — as defense-in-depth even though
+   * `ConversationsService.renameConversation()` already resolves
+   * ownership via `getOwnedConversationOrThrow()` first. Returns the
+   * updated `Conversation`, or `null` if no matching document exists
+   * (ownership check already means this shouldn't happen in practice,
+   * but the return type stays honest about it rather than assuming).
+   */
+  async renameConversation(
+    ownerId: string,
+    workspaceId: string,
+    conversationId: string,
+    title: string,
+  ): Promise<Conversation | null> {
+    const result = await this.conversationsCollection.findOneAndUpdate(
+      { _id: new ObjectId(conversationId), ownerId, workspaceId },
+      { $set: { title, updatedAt: new Date() } },
+      { returnDocument: "after" },
+    );
+    return result ? toConversation(result) : null;
+  }
+
+  /**
+   * Deletes the caller's own conversation and every message scoped to
+   * it (Phase 6 Step 4) — cascading in application code, not a Mongo
+   * transaction: this deployment's standalone (non-replica-set)
+   * MongoDB instance doesn't support multi-document transactions (see
+   * `claude/PHASE_PLAN.md`'s Step 5 note for the full reasoning), and
+   * a two-collection delete like this one doesn't need one — an
+   * interrupted deletion here just leaves orphaned message documents
+   * scoped to a conversation id nothing can ever read again (every
+   * message read in this repository is scoped by `conversationId`
+   * *and* ownership, and the conversation itself is what
+   * `getConversation`/`listConversations` use to prove ownership), not
+   * a user-visible inconsistency. The conversation is deleted first,
+   * matching the precedent Phase 2 Step 8's account-deletion flow set
+   * (delete the thing granting access, then clean up what it scoped) —
+   * ordered so a failure between the two calls can never leave the
+   * conversation itself still visible with unreachable messages
+   * appearing to be missing.
+   *
+   * Returns whether a conversation was actually found and deleted —
+   * `ConversationsService` uses this to distinguish "you don't own
+   * this" from "already gone", though today both are treated
+   * identically by the caller (see the service's own doc comment).
+   */
+  async deleteConversation(ownerId: string, workspaceId: string, conversationId: string): Promise<boolean> {
+    const result = await this.conversationsCollection.deleteOne({
+      _id: new ObjectId(conversationId),
+      ownerId,
+      workspaceId,
+    });
+    if (result.deletedCount === 0) {
+      return false;
+    }
+    await this.messagesCollection.deleteMany({ conversationId, ownerId, workspaceId });
+    return true;
+  }
+
   async createMessage(input: CreateMessageInput): Promise<Message> {
     const doc: MessageDocument = {
       _id: new ObjectId(),

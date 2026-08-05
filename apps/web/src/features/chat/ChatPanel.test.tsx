@@ -191,6 +191,27 @@ describe("ChatPanel", () => {
     await waitFor(() => expect(firstStreamAborted).toBe(true));
   });
 
+  it("deleting the currently-open conversation clears the active selection", async () => {
+    seedSession();
+    const getMe = vi.fn().mockResolvedValue(USER);
+    const listConversations = vi.fn().mockResolvedValue({ conversations: [conversation()], nextCursor: null });
+    const listMessages = vi.fn().mockResolvedValue({ messages: [], nextCursor: null });
+    const deleteConversation = vi.fn().mockResolvedValue({ deleted: true });
+    mockClient({ getMe, listConversations, listMessages, deleteConversation });
+    renderPanel();
+
+    await waitFor(() => expect(screen.getByLabelText("Conversation list")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /Conversation —/ }));
+    await waitFor(() => expect(screen.getByText("No messages yet")).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("button", { name: /^Options for/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(deleteConversation).toHaveBeenCalledWith("access-token", WORKSPACE_ID, "conversation_1"));
+    await waitFor(() => expect(screen.getByText("Select a conversation")).toBeTruthy());
+  });
+
   describe("compact layout (<=900px)", () => {
     it("shows no Conversations toggle on a normal/desktop width", async () => {
       stubCompactChat(false);

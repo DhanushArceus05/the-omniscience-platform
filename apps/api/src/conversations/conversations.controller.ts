@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query, Req, Res, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, Patch, Post, Query, Req, Res, UseGuards } from "@nestjs/common";
 import { Throttle } from "@nestjs/throttler";
 import type { Request, Response } from "express";
 import {
@@ -6,19 +6,23 @@ import {
   createConversationRequestSchema,
   listConversationsQuerySchema,
   listMessagesQuerySchema,
+  renameConversationRequestSchema,
   sendMessageRequestSchema,
   workspaceIdParamSchema,
   type ListConversationsQuerySchema,
   type ListMessagesQuerySchema,
+  type RenameConversationRequestSchema,
   type SendMessageRequestSchema,
 } from "@omniscience/schemas";
 import type {
   ApiSuccess,
   CreateConversationResponse,
+  DeleteConversationResponse,
   GetConversationResponse,
   ListConversationsResponse,
   ListMessagesResponse,
   MessageStreamEvent,
+  RenameConversationResponse,
   SendMessageResponse,
 } from "@omniscience/types";
 import type { AccessTokenPayload } from "../auth/access-token.service";
@@ -31,9 +35,9 @@ import { ConversationsService } from "./conversations.service";
  * Conversation & message endpoints (Phase 6 Step 1 — Conversation &
  * Message Persistence Foundation; extended in Phase 6 Step 2 with
  * `sendMessageStream`, backend-only authenticated assistant response
- * streaming). Create/list/get for conversations, list/send/stream-send
- * for messages — still no update, delete, or rename; still no chat UI
- * (that remains Phase 6 Step 3, deferred).
+ * streaming; extended in Phase 6 Step 4 with `rename`/`remove`,
+ * Conversation Management). Create/list/get/rename/delete for
+ * conversations, list/send/stream-send for messages.
  *
  * Every route sits behind `JwtAuthGuard` and pulls the caller's id
  * from `@CurrentUser()`, never from the request body, URL, or query —
@@ -42,24 +46,25 @@ import { ConversationsService } from "./conversations.service";
  * (via `ConversationsService` calling `WorkspacesService.getById()`),
  * giving `404 WORKSPACE_NOT_FOUND` for a workspace the caller doesn't
  * own. The conversation-scoped routes below
- * (`GET`/`POST .../conversations/:conversationId[...]`) do not check
- * workspace ownership separately — see `ConversationsService.getConversation()`'s
- * doc comment for why — and instead give the identical
- * `404 CONVERSATION_NOT_FOUND` whether the workspace, the conversation,
- * or both aren't the caller's. `sendMessageStream` preserves this
- * exactly: ownership is still fully resolved (still via
- * `getOwnedConversationOrThrow()`) before anything else can happen,
- * still with no separate workspace-existence check that could
- * reintroduce the information leak the doc comment above describes.
+ * (`GET`/`POST`/`PATCH`/`DELETE .../conversations/:conversationId[...]`)
+ * do not check workspace ownership separately — see
+ * `ConversationsService.getConversation()`'s doc comment for why —
+ * and instead give the identical `404 CONVERSATION_NOT_FOUND` whether
+ * the workspace, the conversation, or both aren't the caller's.
+ * `rename`/`remove` preserve this exactly, via the same
+ * `getOwnedConversationOrThrow()` path every other conversation-scoped
+ * method already uses.
  *
  * `GET` routes carry no `@Throttle()` override — authenticated reads
  * with no credential or vendor cost involved use the existing app-wide
  * default, same reasoning `WorkspacesController`'s `GET` routes
- * already document. `POST .../conversations` gets `WorkspacesController`'s
- * own `create`-route limit (20/10min) — a write action, no vendor
- * cost. `POST .../messages` and `POST .../messages/stream` both get
- * `OmniCoreController.execute()`'s tight limit (10/10min) verbatim,
- * since both make the exact same vendor-billed call.
+ * already document. `POST .../conversations`, `PATCH .../:conversationId`,
+ * and `DELETE .../:conversationId` all get `WorkspacesController`'s own
+ * `create`-route limit (20/10min) — ordinary write actions, no vendor
+ * cost involved in any of the three. `POST .../messages` and
+ * `POST .../messages/stream` both get `OmniCoreController.execute()`'s
+ * tight limit (10/10min) verbatim, since both make the exact same
+ * vendor-billed call.
  */
 @Controller("workspaces/:workspaceId/conversations")
 export class ConversationsController {
@@ -100,6 +105,46 @@ export class ConversationsController {
   ): Promise<ApiSuccess<GetConversationResponse>> {
     const data = await this.conversationsService.getConversation(user.sub, workspaceId, conversationId);
     return { success: true, data };
+  }
+
+  /** Phase 6 Step 4 — Conversation Management. */
+  @Patch(":conversationId")
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 20, ttl: 600_000 } })
+  async rename(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param("workspaceId", new ZodValidationPipe(workspaceIdParamSchema)) workspaceId: string,
+    @Param("conversationId", new ZodValidationPipe(conversationIdParamSchema)) conversationId: string,
+    @Body(new ZodValidationPipe(renameConversationRequestSchema)) body: RenameConversationRequestSchema,
+  ): Promise<ApiSuccess<RenameConversationResponse>> {
+    const data = await this.conversationsService.renameConversation(
+      user.sub,
+      workspaceId,
+      conversationId,
+      body.title,
+    );
+    return { success: true, data };
+  }
+
+  /**
+   * Phase 6 Step 4 — Conversation Management. Cascades to every
+   * message the conversation owned — see
+   * `ConversationsRepository.deleteConversation()`'s doc comment.
+   * Irreversible, same as `DELETE /users/me` — no "undo" or
+   * grace-period endpoint.
+   */
+  @Delete(":conversationId")
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 20, ttl: 600_000 } })
+  async remove(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param("workspaceId", new ZodValidationPipe(workspaceIdParamSchema)) workspaceId: string,
+    @Param("conversationId", new ZodValidationPipe(conversationIdParamSchema)) conversationId: string,
+  ): Promise<ApiSuccess<DeleteConversationResponse>> {
+    await this.conversationsService.deleteConversation(user.sub, workspaceId, conversationId);
+    return { success: true, data: { deleted: true } };
   }
 
   @Get(":conversationId/messages")

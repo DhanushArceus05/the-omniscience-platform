@@ -7,6 +7,7 @@ import type {
   DeleteAccountRequest,
   DeleteAccountResponse,
   DeleteAvatarResponse,
+  DeleteConversationResponse,
   ForgotPasswordRequest,
   ForgotPasswordResponse,
   GetConversationResponse,
@@ -29,6 +30,7 @@ import type {
   RefreshResponse,
   RegisterRequest,
   RegisterResponse,
+  RenameConversationResponse,
   ResendOtpRequest,
   ResendOtpResponse,
   ResetPasswordRequest,
@@ -290,6 +292,47 @@ export class OmniscienceClient {
     return this.request<GetConversationResponse>(
       `${this.apiBaseUrl}/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}`,
       { method: "GET", headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+  }
+
+  /**
+   * `PATCH /workspaces/:workspaceId/conversations/:conversationId` —
+   * Phase 6 Step 4 (Conversation Management). Same
+   * `CONVERSATION_NOT_FOUND` no-enumeration convention as
+   * `getConversation()` above.
+   */
+  async renameConversation(
+    accessToken: string,
+    workspaceId: string,
+    conversationId: string,
+    title: string,
+  ): Promise<RenameConversationResponse> {
+    return this.request<RenameConversationResponse>(
+      `${this.apiBaseUrl}/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ title }),
+      },
+    );
+  }
+
+  /**
+   * `DELETE /workspaces/:workspaceId/conversations/:conversationId` —
+   * Phase 6 Step 4 (Conversation Management). Irreversible — cascades
+   * to every message the conversation owned server-side (see
+   * `apps/api`'s `ConversationsRepository.deleteConversation()` doc
+   * comment). Same `CONVERSATION_NOT_FOUND` no-enumeration convention
+   * as `getConversation()` above.
+   */
+  async deleteConversation(
+    accessToken: string,
+    workspaceId: string,
+    conversationId: string,
+  ): Promise<DeleteConversationResponse> {
+    return this.request<DeleteConversationResponse>(
+      `${this.apiBaseUrl}/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}`,
+      { method: "DELETE", headers: { Authorization: `Bearer ${accessToken}` } },
     );
   }
 
