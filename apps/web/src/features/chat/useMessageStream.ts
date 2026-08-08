@@ -62,7 +62,8 @@ type Action =
   | { type: "stream_done"; assistantMessage: Message }
   | { type: "stream_error" }
   | { type: "stream_aborted" }
-  | { type: "send_failed"; tempId: string };
+  | { type: "send_failed"; tempId: string }
+  | { type: "remove_trailing"; ids: string[] };
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
@@ -149,6 +150,21 @@ function reducer(state: State, action: Action): State {
         pendingUserId: null,
       };
 
+    // Phase 6 Step 5 — Message-Level UX. Removes one or two
+    // successfully-deleted trailing messages by id, ahead of a
+    // regenerate/edit-and-resend's follow-up `sendMessage()` call.
+    // Deliberately not scoped to "the last N messages" positionally —
+    // it removes exactly the ids the caller already confirmed were
+    // deleted server-side (see `regenerateLastAssistantMessage()`/
+    // `editLastUserMessage()` below), so there's no risk of this
+    // silently removing the wrong message if state changed underneath
+    // it between the delete call and this dispatch.
+    case "remove_trailing":
+      return {
+        ...state,
+        messages: state.messages.filter((message) => !action.ids.includes(message.id)),
+      };
+
     default:
       return state;
   }
@@ -182,6 +198,27 @@ export interface UseMessageStreamResult {
   retry: () => void;
   /** Aborts the in-flight stream, if any. The partial assistant text remains visible, marked incomplete. */
   stopStreaming: () => void;
+  /**
+   * Phase 6 Step 5 — Message-Level UX. Deletes the current last
+   * assistant message (via the guarded backend primitive) and, only on
+   * success, resends the user message immediately preceding it through
+   * the unmodified `sendMessage()` path. A no-op while streaming, or if
+   * the last message isn't a finished (non-optimistic, non-streaming)
+   * assistant message. A failed delete never removes the local message
+   * and never triggers a resend — surfaced via `streamError` instead.
+   */
+  regenerateLastAssistantMessage: () => void;
+  /**
+   * Phase 6 Step 5 — Message-Level UX. Edits and resends the current
+   * last user message: deletes the trailing assistant reply first if
+   * one exists, then the user message itself, then resends
+   * `newContent` through the unmodified `sendMessage()` path. A no-op
+   * while streaming, if `newContent` is empty after trimming, or if
+   * there's no eligible (non-optimistic) last user message. A failed
+   * delete never removes the local message and never triggers a
+   * resend — surfaced via `streamError` instead.
+   */
+  editLastUserMessage: (newContent: string) => void;
 }
 
 /**
@@ -380,6 +417,125 @@ export function useMessageStream(options: UseMessageStreamOptions): UseMessageSt
     abortControllerRef.current?.abort();
   }, []);
 
+  // `state.messages` is a dependency of both callbacks below (not read
+  // from a ref) so each call always sees the message list as it stood
+  // at click time — same reasoning `useConversations.ts`'s
+  // `renameConversation()`/`deleteConversation()` already documents for
+  // reading pre-call state synchronously rather than out of a `setState`
+  // updater's side effect.
+
+  const regenerateLastAssistantMessage = useCallback(() => {
+    if (isStreamingRef.current) {
+      return;
+    }
+    if (!client || !accessToken || !conversationId) {
+      setStreamError("Chat is unavailable right now — please try again.");
+      return;
+    }
+
+    const messages = state.messages;
+    const lastMessage = messages[messages.length - 1];
+    if (!lastMessage || lastMessage.role !== "assistant" || lastMessage.isStreaming || lastMessage.isOptimistic) {
+      return;
+    }
+    const precedingUser = messages[messages.length - 2];
+    if (!precedingUser || precedingUser.role !== "user") {
+      // This app always alternates user/assistant, so this shouldn't
+      // happen in practice — guarded anyway rather than assumed.
+      return;
+    }
+
+    const assistantId = lastMessage.id;
+    const userContent = precedingUser.content;
+
+    setStreamError(null);
+    void (async () => {
+      try {
+        await client.deleteMessage(accessToken, workspaceId, conversationId, assistantId);
+      } catch (error) {
+        // Delete failed — the message stays exactly as it was, and
+        // nothing is resent. Same accepted-limitation reasoning as
+        // `editLastUserMessage()` below: this method never guesses at
+        // recovery, it just reports the failure.
+        setStreamError(getChatErrorMessage(error));
+        return;
+      }
+      dispatch({ type: "remove_trailing", ids: [assistantId] });
+      sendMessage(userContent);
+    })();
+  }, [client, accessToken, workspaceId, conversationId, state.messages, sendMessage]);
+
+  const editLastUserMessage = useCallback(
+    (newContent: string) => {
+      const trimmed = newContent.trim();
+      if (!trimmed) {
+        return;
+      }
+      if (isStreamingRef.current) {
+        return;
+      }
+      if (!client || !accessToken || !conversationId) {
+        setStreamError("Chat is unavailable right now — please try again.");
+        return;
+      }
+
+      const messages = state.messages;
+      const lastMessage = messages[messages.length - 1];
+      if (!lastMessage) {
+        return;
+      }
+
+      let userMessage: ChatMessage;
+      let trailingAssistant: ChatMessage | null = null;
+
+      if (lastMessage.role === "assistant") {
+        const precedingUser = messages[messages.length - 2];
+        if (!precedingUser || precedingUser.role !== "user") {
+          return;
+        }
+        trailingAssistant = lastMessage;
+        userMessage = precedingUser;
+      } else if (lastMessage.role === "user") {
+        userMessage = lastMessage;
+      } else {
+        return;
+      }
+
+      if (userMessage.isOptimistic) {
+        return;
+      }
+
+      const userMessageId = userMessage.id;
+      const trailingAssistantId = trailingAssistant?.id ?? null;
+
+      setStreamError(null);
+      void (async () => {
+        try {
+          // Delete-then-resend is intentionally not transactional (the
+          // standalone MongoDB deployment can't provide multi-document
+          // transactions, and a transaction couldn't span the external,
+          // non-transactional resend call below anyway — Phase 6 Step 5's
+          // accepted limitation, see `claude/PHASE_PLAN.md`). Each delete
+          // is only reflected locally after it genuinely succeeds — if
+          // the assistant delete succeeds but the user-message delete
+          // then fails, the assistant reply stays deleted and the user
+          // message stays exactly as it was; nothing is resent.
+          if (trailingAssistantId) {
+            await client.deleteMessage(accessToken, workspaceId, conversationId, trailingAssistantId);
+            dispatch({ type: "remove_trailing", ids: [trailingAssistantId] });
+          }
+          await client.deleteMessage(accessToken, workspaceId, conversationId, userMessageId);
+        } catch (error) {
+          setStreamError(getChatErrorMessage(error));
+          return;
+        }
+        dispatch({ type: "remove_trailing", ids: [userMessageId] });
+        sendMessage(trimmed);
+      })();
+    },
+    [client, accessToken, workspaceId, conversationId, state.messages, sendMessage],
+  );
+
   return {
     messages: state.messages,
     isStreaming,
@@ -389,5 +545,7 @@ export function useMessageStream(options: UseMessageStreamOptions): UseMessageSt
     sendMessage,
     retry,
     stopStreaming,
+    regenerateLastAssistantMessage,
+    editLastUserMessage,
   };
 }

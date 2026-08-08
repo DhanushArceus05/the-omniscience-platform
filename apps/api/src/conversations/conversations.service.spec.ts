@@ -17,6 +17,8 @@ describe("ConversationsService", () => {
     listMessages: jest.fn(),
     renameConversation: jest.fn(),
     deleteConversation: jest.fn(),
+    getLastMessage: jest.fn(),
+    deleteMessage: jest.fn(),
   };
   const workspaces = { getById: jest.fn() };
   const omniCore = { execute: jest.fn(), executeStream: jest.fn() };
@@ -717,6 +719,56 @@ describe("ConversationsService", () => {
         ([input]: [{ role: string }]) => input.role === "assistant",
       );
       expect(assistantPersistCalls).toHaveLength(1);
+    });
+  });
+
+  describe("deleteLastMessage", () => {
+    it("resolves ownership first, then delegates to the repository", async () => {
+      repository.getConversation.mockResolvedValue(conversation);
+      repository.deleteMessage.mockResolvedValue("deleted");
+
+      await service.deleteLastMessage("user_1", "workspace_1", conversation.id, "message_1");
+
+      expect(repository.getConversation).toHaveBeenCalledWith("user_1", "workspace_1", conversation.id);
+      expect(repository.deleteMessage).toHaveBeenCalledWith(
+        "user_1",
+        "workspace_1",
+        conversation.id,
+        "message_1",
+      );
+    });
+
+    it("throws CONVERSATION_NOT_FOUND without calling the repository's deleteMessage, for a conversation the caller doesn't own", async () => {
+      repository.getConversation.mockResolvedValue(null);
+
+      await expect(
+        service.deleteLastMessage("user_2", "workspace_1", conversation.id, "message_1"),
+      ).rejects.toMatchObject({
+        response: { code: "CONVERSATION_NOT_FOUND" },
+      });
+      expect(repository.deleteMessage).not.toHaveBeenCalled();
+    });
+
+    it("maps a \"not_found\" repository outcome to MESSAGE_NOT_FOUND", async () => {
+      repository.getConversation.mockResolvedValue(conversation);
+      repository.deleteMessage.mockResolvedValue("not_found");
+
+      await expect(
+        service.deleteLastMessage("user_1", "workspace_1", conversation.id, "message_1"),
+      ).rejects.toMatchObject({
+        response: { code: "MESSAGE_NOT_FOUND" },
+      });
+    });
+
+    it("maps a \"not_last\" repository outcome to MESSAGE_NOT_LAST", async () => {
+      repository.getConversation.mockResolvedValue(conversation);
+      repository.deleteMessage.mockResolvedValue("not_last");
+
+      await expect(
+        service.deleteLastMessage("user_1", "workspace_1", conversation.id, "message_1"),
+      ).rejects.toMatchObject({
+        response: { code: "MESSAGE_NOT_LAST" },
+      });
     });
   });
 });

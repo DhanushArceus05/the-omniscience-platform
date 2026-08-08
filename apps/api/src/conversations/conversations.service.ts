@@ -157,6 +157,40 @@ export class ConversationsService {
   }
 
   /**
+   * Deletes `messageId`, but only when it's genuinely the
+   * conversation's current last message (Phase 6 Step 5 — Message-
+   * Level UX). Same ownership resolution as every other conversation-
+   * scoped method here — `getOwnedConversationOrThrow()` first, so a
+   * caller acting on a conversation they don't own gets the identical
+   * `CONVERSATION_NOT_FOUND` as one that doesn't exist. This is the
+   * one guarded primitive the frontend's regenerate and edit-and-resend
+   * flows are both built on: it never accepts a "this is the last
+   * message" claim from the caller, and never exposes whether a
+   * message with this id exists at all for a *different* owner — a
+   * mismatched-owner id and a genuinely nonexistent id are both
+   * `MESSAGE_NOT_FOUND`, same no-enumeration reasoning as
+   * `CONVERSATION_NOT_FOUND` above.
+   */
+  async deleteLastMessage(
+    ownerId: string,
+    workspaceId: string,
+    conversationId: string,
+    messageId: string,
+  ): Promise<void> {
+    await this.getOwnedConversationOrThrow(ownerId, workspaceId, conversationId);
+    const result = await this.repository.deleteMessage(ownerId, workspaceId, conversationId, messageId);
+    if (result === "not_found") {
+      throw conversationsDomainError("MESSAGE_NOT_FOUND", "Message not found.");
+    }
+    if (result === "not_last") {
+      throw conversationsDomainError(
+        "MESSAGE_NOT_LAST",
+        "Only the conversation's current last message can be deleted.",
+      );
+    }
+  }
+
+  /**
    * Persists the user message, calls `OmniCoreService.execute()`, and
    * persists the assistant reply — in that order, per the approved
    * Step 1 decision. If OmniCore execution fails, the already-persisted

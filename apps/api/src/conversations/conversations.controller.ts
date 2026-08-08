@@ -6,6 +6,7 @@ import {
   createConversationRequestSchema,
   listConversationsQuerySchema,
   listMessagesQuerySchema,
+  messageIdParamSchema,
   renameConversationRequestSchema,
   sendMessageRequestSchema,
   workspaceIdParamSchema,
@@ -18,6 +19,7 @@ import type {
   ApiSuccess,
   CreateConversationResponse,
   DeleteConversationResponse,
+  DeleteMessageResponse,
   GetConversationResponse,
   ListConversationsResponse,
   ListMessagesResponse,
@@ -36,8 +38,10 @@ import { ConversationsService } from "./conversations.service";
  * Message Persistence Foundation; extended in Phase 6 Step 2 with
  * `sendMessageStream`, backend-only authenticated assistant response
  * streaming; extended in Phase 6 Step 4 with `rename`/`remove`,
- * Conversation Management). Create/list/get/rename/delete for
- * conversations, list/send/stream-send for messages.
+ * Conversation Management; extended in Phase 6 Step 5 with
+ * `deleteMessage`, the guarded last-message-only delete primitive
+ * regenerate/edit-and-resend are built on). Create/list/get/rename/
+ * delete for conversations, list/send/stream-send/delete for messages.
  *
  * Every route sits behind `JwtAuthGuard` and pulls the caller's id
  * from `@CurrentUser()`, never from the request body, URL, or query —
@@ -51,20 +55,20 @@ import { ConversationsService } from "./conversations.service";
  * `ConversationsService.getConversation()`'s doc comment for why —
  * and instead give the identical `404 CONVERSATION_NOT_FOUND` whether
  * the workspace, the conversation, or both aren't the caller's.
- * `rename`/`remove` preserve this exactly, via the same
- * `getOwnedConversationOrThrow()` path every other conversation-scoped
- * method already uses.
+ * `rename`/`remove`/`deleteMessage` preserve this exactly, via the
+ * same `getOwnedConversationOrThrow()` path every other conversation-
+ * scoped method already uses.
  *
  * `GET` routes carry no `@Throttle()` override — authenticated reads
  * with no credential or vendor cost involved use the existing app-wide
  * default, same reasoning `WorkspacesController`'s `GET` routes
  * already document. `POST .../conversations`, `PATCH .../:conversationId`,
- * and `DELETE .../:conversationId` all get `WorkspacesController`'s own
- * `create`-route limit (20/10min) — ordinary write actions, no vendor
- * cost involved in any of the three. `POST .../messages` and
- * `POST .../messages/stream` both get `OmniCoreController.execute()`'s
- * tight limit (10/10min) verbatim, since both make the exact same
- * vendor-billed call.
+ * `DELETE .../:conversationId`, and `DELETE .../messages/:messageId`
+ * all get `WorkspacesController`'s own `create`-route limit (20/10min)
+ * — ordinary write actions, no vendor cost involved in any of them.
+ * `POST .../messages` and `POST .../messages/stream` both get
+ * `OmniCoreController.execute()`'s tight limit (10/10min) verbatim,
+ * since both make the exact same vendor-billed call.
  */
 @Controller("workspaces/:workspaceId/conversations")
 export class ConversationsController {
@@ -163,6 +167,30 @@ export class ConversationsController {
       query,
     );
     return { success: true, data };
+  }
+
+  /**
+   * Phase 6 Step 5 — Message-Level UX. Deletes `messageId`, but only
+   * when it's genuinely the conversation's current last message — see
+   * `ConversationsRepository.deleteMessage()`'s doc comment. The
+   * frontend's regenerate and edit-and-resend flows are both built on
+   * this one guarded primitive; there is no general "delete any
+   * message" route. `409 MESSAGE_NOT_LAST` (not `404`) when the
+   * message exists and is the caller's but isn't the last one anymore
+   * — a real state conflict, not a not-found.
+   */
+  @Delete(":conversationId/messages/:messageId")
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 20, ttl: 600_000 } })
+  async removeMessage(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param("workspaceId", new ZodValidationPipe(workspaceIdParamSchema)) workspaceId: string,
+    @Param("conversationId", new ZodValidationPipe(conversationIdParamSchema)) conversationId: string,
+    @Param("messageId", new ZodValidationPipe(messageIdParamSchema)) messageId: string,
+  ): Promise<ApiSuccess<DeleteMessageResponse>> {
+    await this.conversationsService.deleteLastMessage(user.sub, workspaceId, conversationId, messageId);
+    return { success: true, data: { deleted: true } };
   }
 
   /**

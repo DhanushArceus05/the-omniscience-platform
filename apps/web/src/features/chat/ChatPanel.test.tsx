@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OmniscienceClient } from "@omniscience/sdk";
 import type { Conversation, Message, MessageStreamEvent } from "@omniscience/types";
@@ -63,7 +63,7 @@ function renderPanel() {
   return render(
     <MemoryRouter>
       <AuthProvider>
-        <ChatPanel workspaceId={WORKSPACE_ID} />
+        <ChatPanel workspaceId={WORKSPACE_ID} initialConversationId={null} />
       </AuthProvider>
     </MemoryRouter>,
   );
@@ -119,7 +119,7 @@ describe("ChatPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: /Conversation —/ }));
 
     await waitFor(() => expect(screen.getByText("Hello from conversation_1")).toBeTruthy());
-    expect(listMessages).toHaveBeenCalledWith("access-token", WORKSPACE_ID, "conversation_1");
+    expect(listMessages).toHaveBeenCalledWith("access-token", WORKSPACE_ID, "conversation_1", expect.anything());
   });
 
   it("creating a new conversation makes it active immediately", async () => {
@@ -136,9 +136,63 @@ describe("ChatPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
 
     await waitFor(() =>
-      expect(listMessages).toHaveBeenCalledWith("access-token", WORKSPACE_ID, "conversation_new"),
+      expect(listMessages).toHaveBeenCalledWith("access-token", WORKSPACE_ID, "conversation_new", expect.anything()),
     );
     expect(screen.getByText("No messages yet")).toBeTruthy();
+  });
+
+  it("restores the selected conversation from initialConversationId (Phase 6 Step 5 bugfix — surviving a page refresh)", async () => {
+    seedSession();
+    const getMe = vi.fn().mockResolvedValue(USER);
+    const listConversations = vi.fn().mockResolvedValue({ conversations: [conversation()], nextCursor: null });
+    const listMessages = vi.fn().mockResolvedValue({ messages: [userMessage("conversation_1")], nextCursor: null });
+    mockClient({ getMe, listConversations, listMessages });
+
+    render(
+      <MemoryRouter initialEntries={[`/app/workspace/${WORKSPACE_ID}/chat/conversation_1`]}>
+        <AuthProvider>
+          <ChatPanel workspaceId={WORKSPACE_ID} initialConversationId="conversation_1" />
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+
+    // The conversation's history loads immediately, without the user
+    // having to click it in the sidebar first.
+    await waitFor(() => expect(screen.getByText("Hello from conversation_1")).toBeTruthy());
+    expect(screen.queryByText("Select a conversation")).toBeNull();
+  });
+
+  it("selecting a conversation updates the URL so a later refresh can restore it", async () => {
+    seedSession();
+    const getMe = vi.fn().mockResolvedValue(USER);
+    const listConversations = vi.fn().mockResolvedValue({ conversations: [conversation()], nextCursor: null });
+    const listMessages = vi.fn().mockResolvedValue({ messages: [userMessage("conversation_1")], nextCursor: null });
+    mockClient({ getMe, listConversations, listMessages });
+
+    function LocationProbe() {
+      const location = useLocation();
+      return <div data-testid="location-probe">{location.pathname}</div>;
+    }
+
+    render(
+      <MemoryRouter initialEntries={[`/app/workspace/${WORKSPACE_ID}/chat`]}>
+        <AuthProvider>
+          <LocationProbe />
+          <ChatPanel workspaceId={WORKSPACE_ID} initialConversationId={null} />
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.getByLabelText("Conversation list")).toBeTruthy());
+    expect(screen.getByTestId("location-probe").textContent).toBe(`/app/workspace/${WORKSPACE_ID}/chat`);
+
+    fireEvent.click(screen.getByRole("button", { name: /Conversation —/ }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("location-probe").textContent).toBe(
+        `/app/workspace/${WORKSPACE_ID}/chat/conversation_1`,
+      ),
+    );
   });
 
   it("switching to another conversation aborts the previous conversation's in-flight stream", async () => {

@@ -7,7 +7,61 @@ import "./chat.css";
 /** How close to the bottom (in px) still counts as "already at the bottom" for auto-scroll purposes. */
 const NEAR_BOTTOM_THRESHOLD_PX = 80;
 
-export function MessageList({ messages }: { messages: ChatMessage[] }): JSX.Element {
+export interface MessageListProps {
+  messages: ChatMessage[];
+  /**
+   * Phase 6 Step 5 — Message-Level UX. Called with no arguments when
+   * the user regenerates the eligible assistant message — the actual
+   * delete-then-resend logic lives entirely in `useMessageStream`'s
+   * `regenerateLastAssistantMessage()`; this component only decides
+   * *which* message may show the action.
+   */
+  onRegenerate?: () => void;
+  /**
+   * Phase 6 Step 5 — Message-Level UX. Called with the edited draft
+   * when the user saves an edit to the eligible user message —
+   * forwards straight to `useMessageStream`'s `editLastUserMessage()`.
+   */
+  onEditSave?: (newContent: string) => void;
+}
+
+/**
+ * Computes which single message (if any) is eligible for "Regenerate"
+ * — Phase 6 Step 5. Only the conversation's true final message, and
+ * only when it's a finished (non-streaming, non-optimistic) assistant
+ * reply. Mirrors the exact guard `useMessageStream.regenerateLastAssistantMessage()`
+ * re-checks before acting — this is a display-only computation, never
+ * trusted as the actual authorization (the backend re-derives the true
+ * last message independently on every delete call).
+ */
+function regenerateEligibleMessageId(messages: ChatMessage[]): string | null {
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== "assistant" || last.isStreaming || last.isOptimistic) {
+    return null;
+  }
+  return last.id;
+}
+
+/**
+ * Computes which single message (if any) is eligible for "Edit" —
+ * Phase 6 Step 5. The conversation's most recent user-role message,
+ * whether or not a trailing assistant reply follows it — covers a
+ * conversation ending in an assistant reply, one ending directly in a
+ * user message (no reply yet), and a failed last turn where no
+ * assistant message was ever persisted. Never an optimistic (not yet
+ * server-confirmed) message.
+ */
+function editEligibleMessageId(messages: ChatMessage[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message?.role === "user") {
+      return message.isOptimistic ? null : message.id;
+    }
+  }
+  return null;
+}
+
+export function MessageList({ messages, onRegenerate, onEditSave }: MessageListProps): JSX.Element {
   const scrollRegionRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   // A ref (not just state) so the scroll-driven auto-scroll effect below
@@ -59,6 +113,9 @@ export function MessageList({ messages }: { messages: ChatMessage[] }): JSX.Elem
     );
   }
 
+  const regenerateId = regenerateEligibleMessageId(messages);
+  const editId = editEligibleMessageId(messages);
+
   return (
     <>
       <div
@@ -69,7 +126,14 @@ export function MessageList({ messages }: { messages: ChatMessage[] }): JSX.Elem
         onScroll={handleScroll}
       >
         {messages.map((message) => (
-          <MessageBubble key={message.id} message={message} />
+          <MessageBubble
+            key={message.id}
+            message={message}
+            canRegenerate={message.id === regenerateId}
+            canEdit={message.id === editId}
+            onRegenerate={onRegenerate}
+            onEditSave={onEditSave}
+          />
         ))}
         <div ref={bottomRef} aria-hidden="true" />
       </div>

@@ -1,5 +1,5 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { MessageBubble } from "./MessageBubble";
 import type { ChatMessage } from "./useMessageStream";
 
@@ -131,5 +131,123 @@ describe("MessageBubble", () => {
     );
     expect(screen.getByLabelText("Assistant is responding")).toBeTruthy();
     expect(screen.queryByText("Incomplete")).toBeNull();
+  });
+
+  it("shows Regenerate only for an assistant message with canRegenerate=true", () => {
+    const { rerender } = render(
+      <MessageBubble message={{ ...BASE, role: "assistant", content: "done" }} canRegenerate />,
+    );
+    expect(screen.getByRole("button", { name: "Regenerate response" })).toBeTruthy();
+
+    rerender(<MessageBubble message={{ ...BASE, role: "assistant", content: "done" }} canRegenerate={false} />);
+    expect(screen.queryByRole("button", { name: "Regenerate response" })).toBeNull();
+  });
+
+  it("never shows Regenerate for a user message, even if canRegenerate is somehow true", () => {
+    render(<MessageBubble message={{ ...BASE, role: "user" }} canRegenerate />);
+    expect(screen.queryByRole("button", { name: "Regenerate response" })).toBeNull();
+  });
+
+  it("calls onRegenerate when the Regenerate button is clicked", () => {
+    const onRegenerate = vi.fn();
+    render(
+      <MessageBubble
+        message={{ ...BASE, role: "assistant", content: "done" }}
+        canRegenerate
+        onRegenerate={onRegenerate}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Regenerate response" }));
+    expect(onRegenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows Edit only for a user message with canEdit=true", () => {
+    const { rerender } = render(<MessageBubble message={{ ...BASE, role: "user" }} canEdit />);
+    expect(screen.getByRole("button", { name: "Edit message" })).toBeTruthy();
+
+    rerender(<MessageBubble message={{ ...BASE, role: "user" }} canEdit={false} />);
+    expect(screen.queryByRole("button", { name: "Edit message" })).toBeNull();
+  });
+
+  it("never shows Edit for an assistant message, even if canEdit is somehow true", () => {
+    render(<MessageBubble message={{ ...BASE, role: "assistant", content: "hi" }} canEdit />);
+    expect(screen.queryByRole("button", { name: "Edit message" })).toBeNull();
+  });
+
+  it("clicking Edit switches to inline editing pre-filled with the current content", () => {
+    render(<MessageBubble message={{ ...BASE, role: "user", content: "original text" }} canEdit />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit message" }));
+
+    const input = screen.getByLabelText("Edit message content") as HTMLInputElement;
+    expect(input.value).toBe("original text");
+  });
+
+  it("Save commits the edited content via onEditSave", () => {
+    const onEditSave = vi.fn();
+    render(
+      <MessageBubble message={{ ...BASE, role: "user", content: "original" }} canEdit onEditSave={onEditSave} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Edit message" }));
+    const input = screen.getByLabelText("Edit message content");
+    fireEvent.change(input, { target: { value: "edited text" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onEditSave).toHaveBeenCalledWith("edited text");
+    expect(screen.queryByLabelText("Edit message content")).toBeNull();
+  });
+
+  it("Enter commits the edited content", () => {
+    const onEditSave = vi.fn();
+    render(
+      <MessageBubble message={{ ...BASE, role: "user", content: "original" }} canEdit onEditSave={onEditSave} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Edit message" }));
+    const input = screen.getByLabelText("Edit message content");
+    fireEvent.change(input, { target: { value: "edited via enter" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(onEditSave).toHaveBeenCalledWith("edited via enter");
+  });
+
+  it("Cancel restores the original text without calling onEditSave", () => {
+    const onEditSave = vi.fn();
+    render(
+      <MessageBubble message={{ ...BASE, role: "user", content: "original" }} canEdit onEditSave={onEditSave} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Edit message" }));
+    fireEvent.change(screen.getByLabelText("Edit message content"), { target: { value: "abandoned edit" } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(onEditSave).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("Edit message content")).toBeNull();
+    expect(screen.getByText("original")).toBeTruthy();
+  });
+
+  it("Escape cancels the edit without calling onEditSave", () => {
+    const onEditSave = vi.fn();
+    render(
+      <MessageBubble message={{ ...BASE, role: "user", content: "original" }} canEdit onEditSave={onEditSave} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Edit message" }));
+    const input = screen.getByLabelText("Edit message content");
+    fireEvent.change(input, { target: { value: "abandoned edit" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    expect(onEditSave).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("Edit message content")).toBeNull();
+    expect(screen.getByText("original")).toBeTruthy();
+  });
+
+  it("treats an empty edit as a cancel rather than calling onEditSave", () => {
+    const onEditSave = vi.fn();
+    render(
+      <MessageBubble message={{ ...BASE, role: "user", content: "original" }} canEdit onEditSave={onEditSave} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Edit message" }));
+    fireEvent.change(screen.getByLabelText("Edit message content"), { target: { value: "   " } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onEditSave).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("Edit message content")).toBeNull();
   });
 });

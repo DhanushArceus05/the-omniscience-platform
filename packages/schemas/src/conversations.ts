@@ -50,6 +50,19 @@ export const conversationIdParamSchema = z
   .regex(/^[0-9a-fA-F]{24}$/, "A valid conversation id is required");
 
 /**
+ * `:messageId` route param (Phase 6 Step 5 — Message-Level UX). Same
+ * shape and reasoning as `conversationIdParamSchema` immediately
+ * above — message ids are MongoDB `ObjectId`s too, so this checks the
+ * same fixed 24-character hex format, rejecting a syntactically
+ * invalid id as `400 VALIDATION_ERROR` before it ever reaches
+ * `ConversationsRepository`.
+ */
+export const messageIdParamSchema = z
+  .string()
+  .trim()
+  .regex(/^[0-9a-fA-F]{24}$/, "A valid message id is required");
+
+/**
  * Bounded list pagination — conversations. Same shape and reasoning
  * as `listWorkspacesQuerySchema`: `limit` defaults to
  * `DEFAULT_CONVERSATION_LIST_LIMIT` and is capped at
@@ -136,6 +149,7 @@ export const renameConversationRequestSchema = z
 
 export type CreateConversationRequestSchema = z.infer<typeof createConversationRequestSchema>;
 export type ConversationIdParamSchema = z.infer<typeof conversationIdParamSchema>;
+export type MessageIdParamSchema = z.infer<typeof messageIdParamSchema>;
 export type ListConversationsQuerySchema = z.infer<typeof listConversationsQuerySchema>;
 export type ListMessagesQuerySchema = z.infer<typeof listMessagesQuerySchema>;
 export type SendMessageRequestSchema = z.infer<typeof sendMessageRequestSchema>;

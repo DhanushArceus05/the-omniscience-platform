@@ -2,10 +2,15 @@
  * Request/response contracts for the conversation and message
  * endpoints — conversation create/list/get/rename/delete (rename and
  * delete added in Phase 6 Step 4 — Conversation Management), message
- * send/list. There is still no auto-title-generation endpoint
+ * send/list/delete (guarded last-message-only delete added in Phase 6
+ * Step 5 — Message-Level UX, backing regenerate/edit-and-resend on the
+ * frontend). There is still no auto-title-generation endpoint
  * (deliberately out of scope — see `claude/CURRENT_PHASE.md`'s Phase 6
  * Step 4 section): `title` remains `null` until a caller explicitly
- * renames a conversation.
+ * renames a conversation. There is likewise no `PATCH` for message
+ * content — Step 5 edits a message by deleting it (and, if it has one,
+ * its trailing assistant reply) and resending, never by mutating a
+ * message in place — see `ConversationsRepository.deleteMessage()`.
  *
  * Mirrors `workspaces.ts`'s exact shape: a plain resource type, a
  * `Create*Response`/`Get*Response` alias where the response is just
@@ -143,4 +148,18 @@ export interface SendMessageRequest {
 export interface SendMessageResponse {
   userMessage: Message;
   assistantMessage: Message;
+}
+
+/**
+ * `DELETE /workspaces/:workspaceId/conversations/:conversationId/messages/:messageId`
+ * response (Phase 6 Step 5 — Message-Level UX). Same `{ <verb>: true }`
+ * shape convention `DeleteConversationResponse`/`DeleteAccountResponse`/
+ * `RevokeSessionResponse` already established. This endpoint only ever
+ * succeeds when `messageId` is genuinely the conversation's current
+ * last message — see `ConversationsRepository.deleteMessage()`'s doc
+ * comment — so a successful response always means exactly one message
+ * was removed, never a bulk or conditional deletion.
+ */
+export interface DeleteMessageResponse {
+  deleted: true;
 }

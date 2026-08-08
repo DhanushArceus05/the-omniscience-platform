@@ -209,4 +209,49 @@ describe("ConversationThread", () => {
     resolveSecond({ messages: [userMessage({ content: "From conversation two" })], nextCursor: null });
     await waitFor(() => expect(screen.getByText("From conversation two")).toBeTruthy());
   });
+
+  it("loads the complete history by following nextCursor, not just the first page (Phase 6 Step 5 bugfix)", async () => {
+    seedSession();
+    const getMe = vi.fn().mockResolvedValue(USER);
+    const listMessages = vi
+      .fn()
+      .mockResolvedValueOnce({
+        messages: [userMessage({ id: "message_1", content: "Oldest message" })],
+        nextCursor: "cursor-1",
+      })
+      .mockResolvedValueOnce({
+        messages: [userMessage({ id: "message_2", content: "Middle message" })],
+        nextCursor: "cursor-2",
+      })
+      .mockResolvedValueOnce({
+        messages: [assistantMessage({ id: "message_3", content: "Newest reply — was previously never loaded" })],
+        nextCursor: null,
+      });
+    mockClient({ getMe, listMessages });
+    renderThread();
+
+    await waitFor(() =>
+      expect(screen.getByText("Newest reply — was previously never loaded")).toBeTruthy(),
+    );
+    expect(screen.getByText("Oldest message")).toBeTruthy();
+    expect(screen.getByText("Middle message")).toBeTruthy();
+
+    // Confirms each page actually asked for the next one via the cursor
+    // the previous page returned, rather than three independent calls
+    // for the same first page.
+    expect(listMessages).toHaveBeenCalledTimes(3);
+    expect(listMessages.mock.calls[1]?.[3]).toMatchObject({ cursor: "cursor-1" });
+    expect(listMessages.mock.calls[2]?.[3]).toMatchObject({ cursor: "cursor-2" });
+  });
+
+  it("stops pagination once nextCursor is null, without an extra trailing request", async () => {
+    seedSession();
+    const getMe = vi.fn().mockResolvedValue(USER);
+    const listMessages = vi.fn().mockResolvedValue({ messages: [userMessage()], nextCursor: null });
+    mockClient({ getMe, listMessages });
+    renderThread();
+
+    await waitFor(() => expect(screen.getByText("Hello")).toBeTruthy());
+    expect(listMessages).toHaveBeenCalledTimes(1);
+  });
 });

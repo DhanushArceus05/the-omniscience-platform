@@ -13,6 +13,15 @@ import { useAuth } from "../lib/auth/AuthContext";
  * a full-height chat layout doesn't have to compete with
  * `WorkspaceDetail`'s existing module-grid layout on the same page.
  *
+ * Also reachable with a conversation id, `/app/workspace/:workspaceId/chat/:conversationId`
+ * (Phase 6 Step 5 bugfix) — `ChatPanel` keeps this segment in sync with
+ * whichever conversation is selected (via `navigate(..., { replace: true })`,
+ * not a new history entry per message-send), so a hard browser refresh
+ * restores the conversation that was open instead of always falling back
+ * to "no conversation selected." `:conversationId` is read here and
+ * passed down as the *initial* selection only — `ChatPanel` owns the
+ * live value and updates the URL itself from then on.
+ *
  * Deliberately workspace-scoped only — there is no global `/app/chat`
  * route and no "Chat" entry in `APP_NAV_ITEMS`; the only way in is via
  * the "AI Assistant" entry point on that workspace's own
@@ -25,7 +34,7 @@ import { useAuth } from "../lib/auth/AuthContext";
  */
 export function ChatPage(): JSX.Element {
   const { user, logout } = useAuth();
-  const { workspaceId } = useParams<{ workspaceId: string }>();
+  const { workspaceId, conversationId } = useParams<{ workspaceId: string; conversationId?: string }>();
 
   if (!workspaceId) {
     // Unreachable through the route defined in App.tsx (`:workspaceId`
@@ -59,7 +68,7 @@ export function ChatPage(): JSX.Element {
       onSignOut={() => void logout()}
       contained
     >
-      <ChatPanel workspaceId={workspaceId} />
+      <ChatPanel workspaceId={workspaceId} initialConversationId={conversationId ?? null} />
     </AppShell>
   );
 }

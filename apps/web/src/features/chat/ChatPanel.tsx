@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type JSX } from "react";
+import { useNavigate } from "react-router-dom";
 import { EmptyState, useBodyScrollLock, useMediaQuery } from "@omniscience/ui";
 import { ConversationSidebar } from "./ConversationSidebar";
 import { ConversationThread } from "./ConversationThread";
@@ -6,6 +7,16 @@ import "./chat.css";
 
 export interface ChatPanelProps {
   workspaceId: string;
+  /**
+   * The conversation id from the URL at mount time (Phase 6 Step 5
+   * bugfix), or `null` if the route was opened without one. Used only
+   * to seed the initial selection — after that, this component owns
+   * the live value and keeps the URL in sync with it (see the
+   * `navigate` calls below), rather than re-reading this prop on every
+   * render, so `ChatPage`/`App.tsx`'s route params don't need to be
+   * this component's source of truth for the entire session.
+   */
+  initialConversationId: string | null;
 }
 
 /**
@@ -21,10 +32,14 @@ const COMPACT_CHAT_QUERY = "(max-width: 900px)";
 
 /**
  * The full chat experience for one workspace: a conversation
- * sidebar/switcher and the active conversation's thread. Owns exactly
- * one piece of state — which conversation is currently selected — plus
- * (compact layouts only) whether the conversation panel is open, and
- * leaves everything else (loading history, streaming, creating/listing
+ * sidebar/switcher and the active conversation's thread. Owns which
+ * conversation is currently selected — seeded from `initialConversationId`,
+ * then kept in sync with the URL's optional `:conversationId` segment via
+ * `navigate(..., { replace: true })` on every change (Phase 6 Step 5
+ * bugfix — a hard browser refresh previously always lost the selection,
+ * since it lived only in this component's React state) — plus (compact
+ * layouts only) whether the conversation panel is open, and leaves
+ * everything else (loading history, streaming, creating/listing
  * conversations) to the child components/hooks that already encapsulate
  * it.
  *
@@ -47,8 +62,9 @@ const COMPACT_CHAT_QUERY = "(max-width: 900px)";
  * never overlapping) AppShell's own mobile navigation drawer, which
  * opens from the opposite edge of the screen.
  */
-export function ChatPanel({ workspaceId }: ChatPanelProps): JSX.Element {
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+export function ChatPanel({ workspaceId, initialConversationId }: ChatPanelProps): JSX.Element {
+  const navigate = useNavigate();
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(initialConversationId);
   const [panelOpen, setPanelOpen] = useState(false);
   const isCompact = useMediaQuery(COMPACT_CHAT_QUERY);
   const toggleButtonRef = useRef<HTMLButtonElement>(null);
@@ -86,13 +102,31 @@ export function ChatPanel({ workspaceId }: ChatPanelProps): JSX.Element {
     }
   }, [isCompact, panelOpen]);
 
-  function handleSelect(conversationId: string): void {
+  /**
+   * Selects `conversationId` (or clears the selection back to the
+   * conversation-list view when `null`) and mirrors it into the URL —
+   * `replace: true` so switching conversations doesn't spam the
+   * back/forward history with one entry per switch, matching how a
+   * live-updating list selection is expected to behave (unlike an
+   * actual page navigation, which does want its own history entry).
+   */
+  function selectConversation(conversationId: string | null): void {
     setActiveConversationId(conversationId);
+    navigate(
+      conversationId
+        ? `/app/workspace/${encodeURIComponent(workspaceId)}/chat/${encodeURIComponent(conversationId)}`
+        : `/app/workspace/${encodeURIComponent(workspaceId)}/chat`,
+      { replace: true },
+    );
+  }
+
+  function handleSelect(conversationId: string): void {
+    selectConversation(conversationId);
     setPanelOpen(false);
   }
 
   function handleCreated(conversationId: string): void {
-    setActiveConversationId(conversationId);
+    selectConversation(conversationId);
     setPanelOpen(false);
   }
 
@@ -105,7 +139,9 @@ export function ChatPanel({ workspaceId }: ChatPanelProps): JSX.Element {
    * showing in `ConversationThread`.
    */
   function handleDeleted(conversationId: string): void {
-    setActiveConversationId((current) => (current === conversationId ? null : current));
+    if (activeConversationId === conversationId) {
+      selectConversation(null);
+    }
   }
 
   const overlayActive = isCompact && panelOpen;

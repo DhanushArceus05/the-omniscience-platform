@@ -80,6 +80,14 @@ export function App(): JSX.Element {
                 </ProtectedRoute>
               }
             />
+            <Route
+              path="/app/workspace/:workspaceId/chat/:conversationId"
+              element={
+                <ProtectedRoute>
+                  <ChatPage />
+                </ProtectedRoute>
+              }
+            />
             <Route path="*" element={<NotFoundPage />} />
           </Routes>
         </RouteTransition>

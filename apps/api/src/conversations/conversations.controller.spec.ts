@@ -14,6 +14,7 @@ describe("ConversationsController", () => {
     sendMessageStream: jest.fn(),
     renameConversation: jest.fn(),
     deleteConversation: jest.fn(),
+    deleteLastMessage: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -143,6 +144,25 @@ describe("ConversationsController", () => {
       "user_1",
       "workspace_1",
       "665f1c2b9a4e8f0012345678",
+    );
+    expect(result).toEqual({ success: true, data: { deleted: true } });
+  });
+
+  it("removeMessage() delegates to ConversationsService with the caller's own id, workspace id, conversation id, and message id, and returns { deleted: true }", async () => {
+    conversationsService.deleteLastMessage.mockResolvedValue(undefined);
+
+    const result = await controller.removeMessage(
+      { sub: "user_1", email: "user@example.com" },
+      "workspace_1",
+      "665f1c2b9a4e8f0012345678",
+      "665f1c2b9a4e8f0012345679",
+    );
+
+    expect(conversationsService.deleteLastMessage).toHaveBeenCalledWith(
+      "user_1",
+      "workspace_1",
+      "665f1c2b9a4e8f0012345678",
+      "665f1c2b9a4e8f0012345679",
     );
     expect(result).toEqual({ success: true, data: { deleted: true } });
   });

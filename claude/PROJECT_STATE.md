@@ -653,8 +653,14 @@ step — `apps/web` was not touched.
 completed and verified — this file's Step 2 paragraph was not rewritten to stay a faithful
 historical record; see `claude/CURRENT_PHASE.md`'s Phase 6 sections for their full write-ups.**
 
-**Phase 6 — Omniscience Assistant, Step 4 (Conversation Management): complete and verified.** Adds
-conversation rename and delete, full stack — `PATCH`/`DELETE /workspaces/:workspaceId/conversations/:conversationId`
+**Phase 6 — Omniscience Assistant, Step 4 (Conversation Management): COMPLETE.** Per this
+project's locked workflow (local verification → explicit user approval → git commit → git push →
+user confirmation of the push), all five have now happened: implementation, local verification
+(build/lint/typecheck/full test suite green on the user's own machine, including the real-Mongo
+repository spec passing 19/19 for real), manual browser QA, commit, and push, with the push
+explicitly confirmed by the user. This step is officially complete.
+
+Adds conversation rename and delete, full stack — `PATCH`/`DELETE /workspaces/:workspaceId/conversations/:conversationId`
 (`ConversationsController`/`Service`/`Repository`, ownership-checked via the same
 `getOwnedConversationOrThrow()` every other conversation-scoped method already uses; delete
 cascades to the conversation's messages in application code, not a Mongo transaction — this
@@ -669,12 +675,81 @@ Step 5/Step 6 plan it's part of, are a reconstructed plan approved in the sessio
 this step — see `claude/PHASE_PLAN.md` for the full reconstructed scope and live status, and
 `claude/CURRENT_PHASE.md`'s "Phase 6 — Omniscience Assistant, Step 4" section for the full
 implementation write-up, including two real bugs (a rollback-timing race and an accessible-name
-test collision) that were found and fixed during this step's own verification before it was marked
-complete. `pnpm build`/`lint`/`typecheck`/`test` were all run for real in this session and passed
-(API 75 suites/759 tests, web 26 suites/169 tests, SDK 59 tests, schemas 123 tests) — the one
-exception is the real-Mongo half of `conversations.repository.spec.ts`, which still skips here for
-lack of a local MongoDB, the same pre-existing sandbox limitation already noted for Steps 1–3. Step
-5 (Message-Level UX) and Step 6 (Phase Close-Out) remain pending — not started.
+test collision) that were found and fixed during this step's own in-sandbox verification.
+
+**Verification — in-sandbox:** `pnpm build`/`lint`/`typecheck`/`test` were all run for real and
+passed (API 75 suites/759 tests, web 26 suites/169 tests, SDK 59 tests, schemas 123 tests) — the
+one exception was the real-Mongo half of `conversations.repository.spec.ts`, which skipped for
+lack of a local MongoDB in that sandbox, the same pre-existing environment limitation already noted
+for Steps 1–3.
+
+**Verification — user's local machine (authoritative, supersedes the in-sandbox result above for
+anything the sandbox couldn't run):** the user independently reran the full suite locally and
+confirmed build, lint, and typecheck all pass, API 75 suites/759 tests passed, web 169 tests
+passed, SDK tests passed, schemas tests passed, and — critically — **the real-Mongo repository
+spec passed 19/19 for real**, the one suite the sandbox was never able to exercise. (An
+intermediate local run had hit 19/19 failures in that same suite, all-or-nothing across every test
+in the file including the 13 pre-existing Step 1/2 tests Step 4 never touched, which was
+root-caused as a local MongoDB/environment setup issue on the user's machine — not a Step 4 code
+defect — and resolved without any application code change.) The user also manually verified the
+actual UI behavior: conversation rename works and persists after refresh; conversation delete
+works; deleting the currently-open conversation correctly returns the UI to a fresh/no-active-
+conversation state. There are no known Step 4 implementation issues remaining.
+
+**Phase 6 — Omniscience Assistant, Step 5 (Message-Level UX): COMPLETE.** Re-investigation confirmed
+message-level copy was already fully implemented and tested in `MessageBubble.tsx` since before
+Step 4 — it was
+**not** reimplemented, and is flagged for Step 6 documentation reconciliation alongside the
+`MarkdownMessage.tsx` gap. The genuinely new work: a guarded last-message-only delete primitive
+(`DELETE .../messages/:messageId`, `MESSAGE_NOT_FOUND`/`MESSAGE_NOT_LAST`, re-deriving the true last
+message server-side on every call, never trusting the client), and two frontend flows built on it —
+`regenerateLastAssistantMessage()` (delete the last assistant reply, then resend the preceding
+user's content through the unmodified `sendMessage()`/`sendMessageStream()` path) and
+`editLastUserMessage()` (delete the trailing assistant reply if present, then the user message,
+then resend the edit) — both in `useMessageStream.ts`, with eligibility computed by
+`MessageList.tsx` and the Regenerate/inline-Edit UI added to `MessageBubble.tsx` (mirroring
+`ConversationSidebar`'s existing inline-rename pattern). See `claude/CURRENT_PHASE.md`'s "Phase 6 —
+Omniscience Assistant, Step 5" section for the full implementation write-up, including two real
+bugs (an accessible-name collision and a wrong test expectation, both already fixed) and one
+incorrect e2e test assumption (also fixed) found during this step's own verification, and the
+accepted, deliberately-unsolved delete-then-resend partial-failure limitation. `pnpm
+build`/`lint`/`typecheck`/`test` were all run for real this session and passed in full (schemas 129
+tests, SDK 62 tests, web 197 tests, every API suite including all four `conversations.*`
+spec/e2e files) — the real-Mongo half of the repository spec still skips in-sandbox, the same
+pre-existing environment-only limitation as every prior step. `ModelSelectorService`,
+`GeminiProvider`, `gemini-error-mapper.ts`, and provider priority/fallback behavior were confirmed
+untouched — the separately-investigated Gemini upstream-availability issue stayed out of scope.
+
+**Critical bugfix round (before any commit): the user's own real browser QA found 2 genuine
+implementation bugs** — new messages appearing to "disappear" after a refresh/navigate-away/
+reopen, and Edit/Regenerate not working on pre-existing (longer) conversations while working on
+freshly-created ones. Both traced to one shared root cause, a **pre-existing Step 3 gap** (not
+introduced by Step 5): `ConversationThread.loadHistory()` fetched `listMessages()` exactly once
+with no cursor, never following `nextCursor` — since the backend's `listMessages` is bounded and
+oldest-first (`DEFAULT_MESSAGE_LIST_LIMIT = 20`), any conversation past 20 messages only ever
+showed its oldest 20, and `MessageList`'s "is this the true last message" eligibility computed
+from that truncated list disagreed with the server's real last message, so the guarded delete
+correctly rejected with `409 MESSAGE_NOT_LAST`. Fixed by making `ConversationThread.tsx` follow
+`nextCursor` to load the complete history (capped by a defensive `MAX_HISTORY_PAGES = 10` circuit
+breaker), preserving chronological order with no duplicates. Separately, also fixed — since the
+user asked for it alongside Issue 1 — the "hard refresh returns to the conversation list" gap:
+`activeConversationId` previously lived only in React state; added an optional `:conversationId`
+route segment (`App.tsx`, `ChatPage.tsx`, `ChatPanel.tsx`) that stays in sync with the live
+selection via `navigate(..., { replace: true })`, so a refresh now restores the conversation that
+was open. Full re-verification after this round: `pnpm build`/`lint`/`typecheck` green; web 201
+tests passed (4 net-new); conversations backend/schemas/SDK suites re-run and remain green (none
+of this round touched backend/SDK/schemas code). See `claude/CURRENT_PHASE.md`'s Step 5 section for
+the full write-up.
+
+The user's own final local QA passed: full conversation history persists correctly; reload no
+longer loses newly-created messages; refresh restores the currently-open conversation; navigation
+between conversations no longer loses state; the latest user message can be edited; the latest
+assistant message can be regenerated; older messages intentionally cannot be edited/regenerated
+(matches the approved last-turn-only scope); copy still works correctly. No implementation issues
+remain. **Step 5 is officially COMPLETE.** Step 6 (Phase Close-Out) is now the **active/current
+step** — not yet started, awaiting explicit go-ahead before implementation begins (documentation
+reconciliation only, no new features — see `claude/PHASE_PLAN.md`'s Step 6 section for the approved
+scope).
 
 ## Repository Rule
 

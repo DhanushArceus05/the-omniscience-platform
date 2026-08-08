@@ -64,6 +64,7 @@ export type { OmniCoreExecuteRequestSchema } from "./omnicore";
 export {
   createConversationRequestSchema,
   conversationIdParamSchema,
+  messageIdParamSchema,
   listConversationsQuerySchema,
   listMessagesQuerySchema,
   sendMessageRequestSchema,
@@ -77,6 +78,7 @@ export {
 export type {
   CreateConversationRequestSchema,
   ConversationIdParamSchema,
+  MessageIdParamSchema,
   ListConversationsQuerySchema,
   ListMessagesQuerySchema,
   SendMessageRequestSchema,

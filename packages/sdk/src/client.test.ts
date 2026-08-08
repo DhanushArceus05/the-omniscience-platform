@@ -729,6 +729,48 @@ describe("OmniscienceClient conversation/message methods (Phase 6 Step 1)", () =
     ).rejects.toMatchObject({ code: "CONVERSATION_NOT_FOUND", status: 404 });
   });
 
+  it("deleteMessage() sends a Bearer header, DELETEs, and URL-encodes all three ids", async () => {
+    const fetchImpl = mockJsonFetch(200, { success: true, data: { deleted: true } });
+    const client = makeClient(fetchImpl);
+
+    const result = await client.deleteMessage(
+      "access-token",
+      "workspace 1/x",
+      "conversation 1/x",
+      "message 1/x",
+    );
+
+    expect(result).toEqual({ deleted: true });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://localhost:4000/workspaces/workspace%201%2Fx/conversations/conversation%201%2Fx/messages/message%201%2Fx",
+      expect.objectContaining({ method: "DELETE", headers: { Authorization: "Bearer access-token" } }),
+    );
+  });
+
+  it("deleteMessage() surfaces MESSAGE_NOT_FOUND identically for a missing or foreign id", async () => {
+    const fetchImpl = mockJsonFetch(404, {
+      success: false,
+      error: { code: "MESSAGE_NOT_FOUND", message: "Message not found." },
+    });
+    const client = makeClient(fetchImpl);
+
+    await expect(
+      client.deleteMessage("access-token", "workspace_1", "conversation_1", "anything"),
+    ).rejects.toMatchObject({ code: "MESSAGE_NOT_FOUND", status: 404 });
+  });
+
+  it("deleteMessage() surfaces MESSAGE_NOT_LAST as a distinct conflict code", async () => {
+    const fetchImpl = mockJsonFetch(409, {
+      success: false,
+      error: { code: "MESSAGE_NOT_LAST", message: "Only the conversation's current last message can be deleted." },
+    });
+    const client = makeClient(fetchImpl);
+
+    await expect(
+      client.deleteMessage("access-token", "workspace_1", "conversation_1", "not-last"),
+    ).rejects.toMatchObject({ code: "MESSAGE_NOT_LAST", status: 409 });
+  });
+
   it("listMessages() sends a Bearer header and no query string when called with no query", async () => {
     const fetchImpl = mockJsonFetch(200, {
       success: true,

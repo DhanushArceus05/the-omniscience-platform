@@ -532,4 +532,207 @@ describe("ConversationsRepository (real MongoDB)", () => {
     const secondDelete = await repository.deleteConversation("user_1", "workspace_1", conversation.id);
     expect(secondDelete).toBe(false);
   });
+
+  it("getLastMessage returns null for an empty conversation (Phase 6 Step 5)", async () => {
+    if (!reachable) return;
+
+    const conversation = await repository.createConversation("user_1", "workspace_1");
+    const last = await repository.getLastMessage("user_1", "workspace_1", conversation.id);
+    expect(last).toBeNull();
+  });
+
+  it("getLastMessage returns the only message in a single-message conversation", async () => {
+    if (!reachable) return;
+
+    const conversation = await repository.createConversation("user_1", "workspace_1");
+    const message = await repository.createMessage({
+      conversationId: conversation.id,
+      workspaceId: "workspace_1",
+      ownerId: "user_1",
+      role: "user",
+      content: "Only message",
+    });
+
+    const last = await repository.getLastMessage("user_1", "workspace_1", conversation.id);
+    expect(last?.id).toBe(message.id);
+  });
+
+  it("getLastMessage returns the true most recent message across many", async () => {
+    if (!reachable) return;
+
+    const conversation = await repository.createConversation("user_1", "workspace_1");
+    await repository.createMessage({
+      conversationId: conversation.id,
+      workspaceId: "workspace_1",
+      ownerId: "user_1",
+      role: "user",
+      content: "First",
+    });
+    await repository.createMessage({
+      conversationId: conversation.id,
+      workspaceId: "workspace_1",
+      ownerId: "user_1",
+      role: "assistant",
+      content: "Second",
+    });
+    const third = await repository.createMessage({
+      conversationId: conversation.id,
+      workspaceId: "workspace_1",
+      ownerId: "user_1",
+      role: "user",
+      content: "Third",
+    });
+
+    const last = await repository.getLastMessage("user_1", "workspace_1", conversation.id);
+    expect(last?.id).toBe(third.id);
+  });
+
+  it("deleteMessage deletes the true last message (Phase 6 Step 5)", async () => {
+    if (!reachable) return;
+
+    const conversation = await repository.createConversation("user_1", "workspace_1");
+    await repository.createMessage({
+      conversationId: conversation.id,
+      workspaceId: "workspace_1",
+      ownerId: "user_1",
+      role: "user",
+      content: "First",
+    });
+    const second = await repository.createMessage({
+      conversationId: conversation.id,
+      workspaceId: "workspace_1",
+      ownerId: "user_1",
+      role: "assistant",
+      content: "Second",
+    });
+
+    const outcome = await repository.deleteMessage("user_1", "workspace_1", conversation.id, second.id);
+
+    expect(outcome).toBe("deleted");
+    const { messages } = await repository.listMessages("user_1", "workspace_1", conversation.id, { limit: 20 });
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.content).toBe("First");
+  });
+
+  it("deleteMessage rejects a non-last message with \"not_last\"", async () => {
+    if (!reachable) return;
+
+    const conversation = await repository.createConversation("user_1", "workspace_1");
+    const first = await repository.createMessage({
+      conversationId: conversation.id,
+      workspaceId: "workspace_1",
+      ownerId: "user_1",
+      role: "user",
+      content: "First",
+    });
+    await repository.createMessage({
+      conversationId: conversation.id,
+      workspaceId: "workspace_1",
+      ownerId: "user_1",
+      role: "assistant",
+      content: "Second",
+    });
+
+    const outcome = await repository.deleteMessage("user_1", "workspace_1", conversation.id, first.id);
+
+    expect(outcome).toBe("not_last");
+    const { messages } = await repository.listMessages("user_1", "workspace_1", conversation.id, { limit: 20 });
+    expect(messages).toHaveLength(2);
+  });
+
+  it("deleteMessage rejects another owner's message with \"not_found\"", async () => {
+    if (!reachable) return;
+
+    const conversation = await repository.createConversation("user_1", "workspace_1");
+    const message = await repository.createMessage({
+      conversationId: conversation.id,
+      workspaceId: "workspace_1",
+      ownerId: "user_1",
+      role: "user",
+      content: "Only message",
+    });
+
+    const outcome = await repository.deleteMessage("user_2", "workspace_1", conversation.id, message.id);
+
+    expect(outcome).toBe("not_found");
+    const { messages } = await repository.listMessages("user_1", "workspace_1", conversation.id, { limit: 20 });
+    expect(messages).toHaveLength(1);
+  });
+
+  it("deleteMessage rejects an invalid/nonexistent message id with \"not_found\"", async () => {
+    if (!reachable) return;
+
+    const conversation = await repository.createConversation("user_1", "workspace_1");
+    await repository.createMessage({
+      conversationId: conversation.id,
+      workspaceId: "workspace_1",
+      ownerId: "user_1",
+      role: "user",
+      content: "Only message",
+    });
+
+    const outcome = await repository.deleteMessage(
+      "user_1",
+      "workspace_1",
+      conversation.id,
+      "665f1c2b9a4e8f0012345678",
+    );
+
+    expect(outcome).toBe("not_found");
+  });
+
+  it("deleteMessage correctly re-derives the new last message after a previous deletion", async () => {
+    if (!reachable) return;
+
+    const conversation = await repository.createConversation("user_1", "workspace_1");
+    const first = await repository.createMessage({
+      conversationId: conversation.id,
+      workspaceId: "workspace_1",
+      ownerId: "user_1",
+      role: "user",
+      content: "First",
+    });
+    const second = await repository.createMessage({
+      conversationId: conversation.id,
+      workspaceId: "workspace_1",
+      ownerId: "user_1",
+      role: "assistant",
+      content: "Second",
+    });
+
+    const firstOutcome = await repository.deleteMessage("user_1", "workspace_1", conversation.id, second.id);
+    expect(firstOutcome).toBe("deleted");
+
+    // `first` is now the true last message — deleting it should
+    // succeed too, proving "last" is re-derived fresh each call, not
+    // cached from before the prior delete.
+    const secondOutcome = await repository.deleteMessage("user_1", "workspace_1", conversation.id, first.id);
+    expect(secondOutcome).toBe("deleted");
+
+    const last = await repository.getLastMessage("user_1", "workspace_1", conversation.id);
+    expect(last).toBeNull();
+  });
+
+  it("deleteMessage never deletes across conversations", async () => {
+    if (!reachable) return;
+
+    const conversationA = await repository.createConversation("user_1", "workspace_1");
+    const conversationB = await repository.createConversation("user_1", "workspace_1");
+    const messageInB = await repository.createMessage({
+      conversationId: conversationB.id,
+      workspaceId: "workspace_1",
+      ownerId: "user_1",
+      role: "user",
+      content: "In conversation B",
+    });
+
+    // Attempting to delete B's message while scoped to conversation A
+    // must not find it at all (not "not_last" — genuinely not found
+    // within A's scope).
+    const outcome = await repository.deleteMessage("user_1", "workspace_1", conversationA.id, messageInB.id);
+
+    expect(outcome).toBe("not_found");
+    const { messages } = await repository.listMessages("user_1", "workspace_1", conversationB.id, { limit: 20 });
+    expect(messages).toHaveLength(1);
+  });
 });

@@ -285,6 +285,78 @@ export class ConversationsRepository implements OnModuleInit {
   }
 
   /**
+   * The conversation's current true last message (by the exact same
+   * `createdAt`+`_id` ordering `listMessages()` already uses — just
+   * descending here instead of ascending), or `null` for an empty
+   * conversation. Scoped by `conversationId`+`ownerId`+`workspaceId`,
+   * same isolation as every other message read in this repository — a
+   * caller can never learn anything about another owner's or another
+   * conversation's messages through this method.
+   */
+  async getLastMessage(ownerId: string, workspaceId: string, conversationId: string): Promise<Message | null> {
+    const rows = await this.messagesCollection
+      .find({ conversationId, ownerId, workspaceId })
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(1)
+      .toArray();
+    return rows[0] ? toMessage(rows[0]) : null;
+  }
+
+  /**
+   * Deletes `messageId` (Phase 6 Step 5 — Message-Level UX), but only
+   * ever when it is genuinely the conversation's current last message
+   * — re-derived here from the database on every call via
+   * `getLastMessage()` above, never trusted from the caller. This is
+   * the one guarded primitive `ConversationsService` builds regenerate
+   * (delete the last assistant reply) and edit-and-resend (delete the
+   * last assistant reply if present, then the now-last user message)
+   * on top of — there is deliberately no general "delete any message"
+   * operation anywhere in this repository.
+   *
+   * Returns `"deleted"`, `"not_found"` (no message with this id exists
+   * for this owner/workspace/conversation — the same no-enumeration
+   * shape `deleteConversation()` already returns as `false`, just
+   * spelled out as a named outcome here since a third outcome exists
+   * too), or `"not_last"` (the message exists and is the caller's, but
+   * isn't — or is no longer — the last message). `ConversationsService`
+   * maps the last two to the distinct `MESSAGE_NOT_FOUND`/
+   * `MESSAGE_NOT_LAST` domain errors.
+   */
+  async deleteMessage(
+    ownerId: string,
+    workspaceId: string,
+    conversationId: string,
+    messageId: string,
+  ): Promise<"deleted" | "not_found" | "not_last"> {
+    const last = await this.getLastMessage(ownerId, workspaceId, conversationId);
+    if (!last) {
+      return "not_found";
+    }
+    if (last.id !== messageId) {
+      // Distinguishing "not last" from "not found" here costs one more
+      // read (does a message with this id exist at all, for this
+      // owner/workspace/conversation?) — worth it so a caller attempting
+      // to delete a message that's genuinely theirs but stale gets the
+      // conflict code rather than a misleading "not found".
+      const exists = await this.messagesCollection.findOne({
+        _id: new ObjectId(messageId),
+        conversationId,
+        ownerId,
+        workspaceId,
+      });
+      return exists ? "not_last" : "not_found";
+    }
+
+    const result = await this.messagesCollection.deleteOne({
+      _id: new ObjectId(messageId),
+      conversationId,
+      ownerId,
+      workspaceId,
+    });
+    return result.deletedCount > 0 ? "deleted" : "not_found";
+  }
+
+  /**
    * Chronological (oldest-first) keyset-paginated reload of a
    * conversation's messages — reading order, not newest-first like
    * `listConversations`. Scoped by `conversationId` (the collection's

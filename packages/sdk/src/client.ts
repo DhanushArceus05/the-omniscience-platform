@@ -8,6 +8,7 @@ import type {
   DeleteAccountResponse,
   DeleteAvatarResponse,
   DeleteConversationResponse,
+  DeleteMessageResponse,
   ForgotPasswordRequest,
   ForgotPasswordResponse,
   GetConversationResponse,
@@ -332,6 +333,31 @@ export class OmniscienceClient {
   ): Promise<DeleteConversationResponse> {
     return this.request<DeleteConversationResponse>(
       `${this.apiBaseUrl}/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}`,
+      { method: "DELETE", headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+  }
+
+  /**
+   * `DELETE /workspaces/:workspaceId/conversations/:conversationId/messages/:messageId`
+   * — Phase 6 Step 5 (Message-Level UX). Only succeeds when `messageId`
+   * is genuinely the conversation's current last message — see
+   * `apps/api`'s `ConversationsRepository.deleteMessage()` doc comment.
+   * The frontend's regenerate and edit-and-resend flows (`useMessageStream`)
+   * are both built on this one method; there is no separate SDK method
+   * for either — both simply call this, then re-call `sendMessage()`/
+   * `sendMessageStream()` unchanged. `CONVERSATION_NOT_FOUND`/
+   * `MESSAGE_NOT_FOUND` use the same no-enumeration convention as every
+   * other method here; `MESSAGE_NOT_LAST` (`409`) surfaces as a
+   * distinct `ApiClientError.code` a caller can check for specifically.
+   */
+  async deleteMessage(
+    accessToken: string,
+    workspaceId: string,
+    conversationId: string,
+    messageId: string,
+  ): Promise<DeleteMessageResponse> {
+    return this.request<DeleteMessageResponse>(
+      `${this.apiBaseUrl}/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}`,
       { method: "DELETE", headers: { Authorization: `Bearer ${accessToken}` } },
     );
   }

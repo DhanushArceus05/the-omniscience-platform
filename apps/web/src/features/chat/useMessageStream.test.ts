@@ -58,8 +58,11 @@ function fakeStream(events: MessageStreamEvent[], options: { throwAfter?: number
   });
 }
 
-function mockClient(sendMessageStream: ReturnType<typeof vi.fn>): OmniscienceClient {
-  return { sendMessageStream } as unknown as OmniscienceClient;
+function mockClient(
+  sendMessageStream: ReturnType<typeof vi.fn>,
+  deleteMessage: ReturnType<typeof vi.fn> = vi.fn(),
+): OmniscienceClient {
+  return { sendMessageStream, deleteMessage } as unknown as OmniscienceClient;
 }
 
 afterEach(() => {
@@ -326,5 +329,286 @@ describe("useMessageStream", () => {
       expect.anything(),
     );
     expect(result.current.messages).toHaveLength(2);
+  });
+});
+
+describe("useMessageStream — regenerateLastAssistantMessage (Phase 6 Step 5)", () => {
+  it("deletes the last assistant message, then resends the preceding user content", async () => {
+    const deleteMessage = vi.fn().mockResolvedValue({ deleted: true });
+    const sendMessageStream = fakeStream([
+      { event: "start", data: { userMessage: userMessage({ id: "message_user_2" }) } },
+      { event: "done", data: { assistantMessage: assistantMessage({ id: "message_assistant_2", content: "New reply" }) } },
+    ]);
+    const client = mockClient(sendMessageStream, deleteMessage);
+    const { result } = renderHook(() =>
+      useMessageStream({ client, accessToken: ACCESS_TOKEN, workspaceId: WORKSPACE_ID, conversationId: CONVERSATION_ID }),
+    );
+
+    act(() => {
+      result.current.hydrate([userMessage(), assistantMessage()]);
+    });
+
+    act(() => {
+      result.current.regenerateLastAssistantMessage();
+    });
+
+    await waitFor(() =>
+      expect(deleteMessage).toHaveBeenCalledWith(ACCESS_TOKEN, WORKSPACE_ID, CONVERSATION_ID, "message_assistant_1"),
+    );
+    await waitFor(() => expect(result.current.isStreaming).toBe(false));
+
+    expect(sendMessageStream).toHaveBeenCalledWith(
+      ACCESS_TOKEN,
+      WORKSPACE_ID,
+      CONVERSATION_ID,
+      "Hello",
+      expect.anything(),
+    );
+    // Regenerate deletes the old assistant reply and resends via the
+    // ordinary sendMessage() path (per the approved design — see
+    // claude/PHASE_PLAN.md's Step 5 section) — it does not delete the
+    // preceding user message, and the resend creates a genuinely new
+    // user message through the normal send flow. So the conversation
+    // ends up with three messages: the original user message, the
+    // resent user message, and the new assistant reply — only the old
+    // assistant reply is actually gone.
+    expect(result.current.messages).toHaveLength(3);
+    expect(result.current.messages[0]?.id).toBe("message_user_1");
+    expect(result.current.messages[1]?.id).toBe("message_user_2");
+    expect(result.current.messages[2]?.content).toBe("New reply");
+  });
+
+  it("is a no-op while already streaming", async () => {
+    let resolveGate!: () => void;
+    const sendMessageStream = vi.fn().mockImplementation(async function* () {
+      yield { event: "start", data: { userMessage: userMessage() } } as MessageStreamEvent;
+      await new Promise<void>((resolve) => {
+        resolveGate = resolve;
+      });
+      yield { event: "done", data: { assistantMessage: assistantMessage() } } as MessageStreamEvent;
+    });
+    const deleteMessage = vi.fn().mockResolvedValue({ deleted: true });
+    const client = mockClient(sendMessageStream, deleteMessage);
+    const { result } = renderHook(() =>
+      useMessageStream({ client, accessToken: ACCESS_TOKEN, workspaceId: WORKSPACE_ID, conversationId: CONVERSATION_ID }),
+    );
+
+    act(() => {
+      result.current.sendMessage("Hello");
+    });
+    await waitFor(() => expect(result.current.isStreaming).toBe(true));
+
+    act(() => {
+      result.current.regenerateLastAssistantMessage();
+    });
+
+    expect(deleteMessage).not.toHaveBeenCalled();
+
+    act(() => {
+      resolveGate();
+    });
+    await waitFor(() => expect(result.current.isStreaming).toBe(false));
+  });
+
+  it("is a no-op when the last message isn't a finished assistant message", () => {
+    const deleteMessage = vi.fn();
+    const client = mockClient(fakeStream([]), deleteMessage);
+    const { result } = renderHook(() =>
+      useMessageStream({ client, accessToken: ACCESS_TOKEN, workspaceId: WORKSPACE_ID, conversationId: CONVERSATION_ID }),
+    );
+
+    // Ends in a user message — no assistant reply to regenerate.
+    act(() => {
+      result.current.hydrate([userMessage()]);
+    });
+    act(() => {
+      result.current.regenerateLastAssistantMessage();
+    });
+
+    expect(deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it("surfaces the delete failure via streamError and never resends", async () => {
+    const deleteMessage = vi.fn().mockRejectedValue(
+      new ApiClientError({ code: "MESSAGE_NOT_LAST", message: "Only the last message can be deleted.", status: 409 }),
+    );
+    const sendMessageStream = vi.fn();
+    const client = mockClient(sendMessageStream, deleteMessage);
+    const { result } = renderHook(() =>
+      useMessageStream({ client, accessToken: ACCESS_TOKEN, workspaceId: WORKSPACE_ID, conversationId: CONVERSATION_ID }),
+    );
+
+    act(() => {
+      result.current.hydrate([userMessage(), assistantMessage()]);
+    });
+
+    act(() => {
+      result.current.regenerateLastAssistantMessage();
+    });
+
+    await waitFor(() => expect(result.current.streamError).not.toBeNull());
+
+    expect(sendMessageStream).not.toHaveBeenCalled();
+    // The message stays exactly as it was — a failed delete never
+    // removes it locally.
+    expect(result.current.messages).toHaveLength(2);
+    expect(result.current.messages[1]?.id).toBe("message_assistant_1");
+  });
+});
+
+describe("useMessageStream — editLastUserMessage (Phase 6 Step 5)", () => {
+  it("with a trailing assistant reply, deletes both then resends the edited content", async () => {
+    const deleteMessage = vi.fn().mockResolvedValue({ deleted: true });
+    const sendMessageStream = fakeStream([
+      { event: "start", data: { userMessage: userMessage({ id: "message_user_2", content: "Edited" }) } },
+      { event: "done", data: { assistantMessage: assistantMessage({ id: "message_assistant_2" }) } },
+    ]);
+    const client = mockClient(sendMessageStream, deleteMessage);
+    const { result } = renderHook(() =>
+      useMessageStream({ client, accessToken: ACCESS_TOKEN, workspaceId: WORKSPACE_ID, conversationId: CONVERSATION_ID }),
+    );
+
+    act(() => {
+      result.current.hydrate([userMessage(), assistantMessage()]);
+    });
+
+    act(() => {
+      result.current.editLastUserMessage("Edited");
+    });
+
+    await waitFor(() =>
+      expect(deleteMessage).toHaveBeenNthCalledWith(
+        1,
+        ACCESS_TOKEN,
+        WORKSPACE_ID,
+        CONVERSATION_ID,
+        "message_assistant_1",
+      ),
+    );
+    await waitFor(() =>
+      expect(deleteMessage).toHaveBeenNthCalledWith(2, ACCESS_TOKEN, WORKSPACE_ID, CONVERSATION_ID, "message_user_1"),
+    );
+    await waitFor(() => expect(result.current.isStreaming).toBe(false));
+
+    expect(sendMessageStream).toHaveBeenCalledWith(
+      ACCESS_TOKEN,
+      WORKSPACE_ID,
+      CONVERSATION_ID,
+      "Edited",
+      expect.anything(),
+    );
+    expect(result.current.messages).toHaveLength(2);
+    expect(result.current.messages[0]?.content).toBe("Edited");
+  });
+
+  it("with no trailing assistant reply, deletes only the user message then resends", async () => {
+    const deleteMessage = vi.fn().mockResolvedValue({ deleted: true });
+    const sendMessageStream = fakeStream([
+      { event: "start", data: { userMessage: userMessage({ id: "message_user_2", content: "Edited" }) } },
+      { event: "done", data: { assistantMessage: assistantMessage({ id: "message_assistant_2" }) } },
+    ]);
+    const client = mockClient(sendMessageStream, deleteMessage);
+    const { result } = renderHook(() =>
+      useMessageStream({ client, accessToken: ACCESS_TOKEN, workspaceId: WORKSPACE_ID, conversationId: CONVERSATION_ID }),
+    );
+
+    act(() => {
+      result.current.hydrate([userMessage()]);
+    });
+
+    act(() => {
+      result.current.editLastUserMessage("Edited");
+    });
+
+    await waitFor(() => expect(deleteMessage).toHaveBeenCalledTimes(1));
+    expect(deleteMessage).toHaveBeenCalledWith(ACCESS_TOKEN, WORKSPACE_ID, CONVERSATION_ID, "message_user_1");
+
+    await waitFor(() => expect(result.current.isStreaming).toBe(false));
+    expect(sendMessageStream).toHaveBeenCalledWith(
+      ACCESS_TOKEN,
+      WORKSPACE_ID,
+      CONVERSATION_ID,
+      "Edited",
+      expect.anything(),
+    );
+  });
+
+  it("is a no-op while already streaming", async () => {
+    let resolveGate!: () => void;
+    const sendMessageStream = vi.fn().mockImplementation(async function* () {
+      yield { event: "start", data: { userMessage: userMessage() } } as MessageStreamEvent;
+      await new Promise<void>((resolve) => {
+        resolveGate = resolve;
+      });
+      yield { event: "done", data: { assistantMessage: assistantMessage() } } as MessageStreamEvent;
+    });
+    const deleteMessage = vi.fn().mockResolvedValue({ deleted: true });
+    const client = mockClient(sendMessageStream, deleteMessage);
+    const { result } = renderHook(() =>
+      useMessageStream({ client, accessToken: ACCESS_TOKEN, workspaceId: WORKSPACE_ID, conversationId: CONVERSATION_ID }),
+    );
+
+    act(() => {
+      result.current.sendMessage("Hello");
+    });
+    await waitFor(() => expect(result.current.isStreaming).toBe(true));
+
+    act(() => {
+      result.current.editLastUserMessage("New content");
+    });
+
+    expect(deleteMessage).not.toHaveBeenCalled();
+
+    act(() => {
+      resolveGate();
+    });
+    await waitFor(() => expect(result.current.isStreaming).toBe(false));
+  });
+
+  it("is a no-op when there is no eligible last user message", () => {
+    const deleteMessage = vi.fn();
+    const client = mockClient(fakeStream([]), deleteMessage);
+    const { result } = renderHook(() =>
+      useMessageStream({ client, accessToken: ACCESS_TOKEN, workspaceId: WORKSPACE_ID, conversationId: CONVERSATION_ID }),
+    );
+
+    act(() => {
+      result.current.hydrate([]);
+    });
+    act(() => {
+      result.current.editLastUserMessage("New content");
+    });
+
+    expect(deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it("surfaces the delete failure via streamError and never resends, leaving the assistant reply deleted but the user message intact if only the second delete fails", async () => {
+    const deleteMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ deleted: true }) // assistant delete succeeds
+      .mockRejectedValueOnce(
+        new ApiClientError({ code: "MESSAGE_NOT_LAST", message: "Only the last message can be deleted.", status: 409 }),
+      ); // user delete fails
+    const sendMessageStream = vi.fn();
+    const client = mockClient(sendMessageStream, deleteMessage);
+    const { result } = renderHook(() =>
+      useMessageStream({ client, accessToken: ACCESS_TOKEN, workspaceId: WORKSPACE_ID, conversationId: CONVERSATION_ID }),
+    );
+
+    act(() => {
+      result.current.hydrate([userMessage(), assistantMessage()]);
+    });
+
+    act(() => {
+      result.current.editLastUserMessage("Edited");
+    });
+
+    await waitFor(() => expect(result.current.streamError).not.toBeNull());
+
+    expect(sendMessageStream).not.toHaveBeenCalled();
+    // The assistant reply's delete succeeded, so it's gone locally too
+    // — this is the accepted partial-failure limitation, not a bug.
+    expect(result.current.messages).toHaveLength(1);
+    expect(result.current.messages[0]?.id).toBe("message_user_1");
   });
 });

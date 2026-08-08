@@ -64,6 +64,7 @@ export type {
   ListMessagesResponse,
   SendMessageRequest,
   SendMessageResponse,
+  DeleteMessageResponse,
 } from "./conversations";
 export type {
   MessageStreamStartEvent,

@@ -4,6 +4,7 @@ import {
   createConversationRequestSchema,
   listConversationsQuerySchema,
   listMessagesQuerySchema,
+  messageIdParamSchema,
   renameConversationRequestSchema,
   sendMessageRequestSchema,
 } from "./conversations";
@@ -49,6 +50,36 @@ describe("conversationIdParamSchema", () => {
 
   it("rejects an empty id", () => {
     expect(() => conversationIdParamSchema.parse("")).toThrow();
+  });
+});
+
+describe("messageIdParamSchema", () => {
+  it("accepts a valid 24-character hex ObjectId", () => {
+    expect(messageIdParamSchema.parse("665f1c2b9a4e8f0012345678")).toBe(
+      "665f1c2b9a4e8f0012345678",
+    );
+  });
+
+  it("accepts an uppercase-hex ObjectId", () => {
+    expect(messageIdParamSchema.parse("665F1C2B9A4E8F0012345678")).toBe(
+      "665F1C2B9A4E8F0012345678",
+    );
+  });
+
+  it("rejects a too-short id", () => {
+    expect(() => messageIdParamSchema.parse("665f1c2b9a4e8f")).toThrow();
+  });
+
+  it("rejects a too-long id", () => {
+    expect(() => messageIdParamSchema.parse("665f1c2b9a4e8f00123456789abc")).toThrow();
+  });
+
+  it("rejects a non-hex id", () => {
+    expect(() => messageIdParamSchema.parse("not-a-valid-object-id-zzzz")).toThrow();
+  });
+
+  it("rejects an empty id", () => {
+    expect(() => messageIdParamSchema.parse("")).toThrow();
   });
 });
 
