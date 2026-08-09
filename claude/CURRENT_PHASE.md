@@ -101,10 +101,12 @@ detail)
   `ConversationThread.tsx`, URL-based conversation-selection persistence) found and fixed via the
   user's own real browser QA before any commit. Implementation, full in-sandbox verification, the
   bugfix round, and the user's own final local QA are all done and confirmed.
-- **Phase 6 — Omniscience Assistant, Step 6 (Phase Close-Out)**: now the active/current step — not
-  yet started, awaiting explicit go-ahead before implementation begins. See
-  `claude/PHASE_PLAN.md`'s Step 6 section for the approved scope (documentation reconciliation
-  only, no new features).
+- **Phase 6 — Omniscience Assistant, Step 6 (Phase Close-Out)**: COMPLETE — documentation
+  reconciliation only, no application code touched. Corrected Step 3's historical record (see the
+  correction note in that section), consolidated the two human-only deferred verification items
+  into `## Phase 6 — Human-Only Deferred Verification` near the end of this file, and formally
+  closed Phase 6 — see `## Phase 6 — Formal Closure` near the end of this file. **Phase 7 has not
+  started.**
 
 
 ## Phase 1 — Premium UI Foundation
@@ -4689,6 +4691,40 @@ incomplete-message handling, duplicate-submit protection, conversation switching
 protection, and retry. Consumes `client.sendMessageStream(...)` from `@omniscience/sdk` as-is —
 no changes to the Step 2 backend/SDK/types contract.
 
+> **Correction (added during Phase 6 Step 6 — Phase Close-Out; the original text above is left
+> unchanged as the historical record of what was written at the time):**
+>
+> 1. **Missing file:** the file list above does not mention
+>    `apps/web/src/features/chat/MarkdownMessage.tsx` — a real, tested, dependency-backed
+>    (`react-markdown`/`remark-gfm`) Markdown renderer wired into `MessageBubble.tsx` for assistant
+>    messages, with its own fenced-code-block copy button. It was genuinely built as part of this
+>    step's own work (confirmed: untouched by every later step's own recorded file lists) but was
+>    simply never added to the summary above. `apps/web/src/features/chat/MarkdownMessage.tsx` is
+>    hereby added to this step's documented file list.
+> 2. **Missing feature:** `MessageBubble.tsx` also already included a separate, whole-message
+>    "Copy message" action (distinct from the code-block copy button inside `MarkdownMessage.tsx`)
+>    — real and tested (`MessageBubble.test.tsx`) — since this step, predating Phase 6 Step 4. This
+>    was also never listed above. Both gaps were found and confirmed during Phase 6 Step 5's
+>    re-investigation, before Step 5 built on top of the existing implementation rather than
+>    duplicating it.
+> 3. **Correction to the "message history" claim:** "message history" above was not actually
+>    complete or unbounded. The original implementation (`ConversationThread.loadHistory()`) called
+>    `listMessages()` exactly once, with no `cursor`, and never followed `nextCursor`. Since the
+>    backend's `listMessages` is a bounded, cursor-paginated, oldest-first query
+>    (`DEFAULT_MESSAGE_LIST_LIMIT = 20`), any conversation that grew past 20 messages had every
+>    message beyond that silently truncated from view on every reload — a real, then-undiscovered
+>    implementation gap in this step, not merely a documentation omission. It went unnoticed through
+>    Steps 4 and this step's own Phase B/bugfix-pass verification because no test conversation had
+>    crossed 20 messages until Phase 6 Step 5's own QA did. **This step did not introduce a bug that
+>    Step 5 later broke — the bug originated here, in Step 3, and was only discovered and fixed
+>    during Step 5's critical bugfix round** (see `## Phase 6 — Omniscience Assistant, Step 5
+>    (Message-Level UX)` below for the fix: `ConversationThread.tsx` now loops on `nextCursor` until
+>    exhausted, capped by a defensive `MAX_HISTORY_PAGES` circuit breaker). That same bugfix round
+>    also added URL-based conversation-selection persistence (an optional `:conversationId` route
+>    segment), addressing a related, separate gap in this step's original routing (a hard browser
+>    refresh previously always lost the selected conversation, since `activeConversationId` lived
+>    only in `ChatPanel`'s React state).
+
 ## Phase B — Responsive/Layout/Polish Pass
 
 Status: **Complete — implemented and verified in-sandbox this session.**
@@ -5218,20 +5254,64 @@ restores the currently-open conversation; navigation between conversations no lo
 the latest user message can be edited; the latest assistant message can be regenerated; older
 messages intentionally cannot be edited/regenerated (matches the approved last-turn-only scope);
 copy still works correctly. No implementation issues remain. **This step is officially COMPLETE.**
-Step 6 is now the active/current step — not yet started, awaiting explicit go-ahead before
-implementation begins (see `claude/PHASE_PLAN.md`'s Step 6 section for approved scope).
+
+---
+
+## Phase 6 — Human-Only Deferred Verification (consolidated record)
+
+One canonical place for the two verification items that remain deferred to a human with a real
+browser/real elapsed time, rather than scattered across several sections above. Both are
+**verification-only gaps, not unfinished engineering** — the underlying implementation is complete
+and covered by automated tests; only the specific manual/real-time activity below has not been
+performed.
+
+**A. Responsive viewport verification**
+`ENGINEERING STATUS: COMPLETE` — `HUMAN-ONLY VERIFICATION: DEFERRED`
+The Phase B responsive/layout/visual-polish pass (fluid CSS grid, `min-height: 0` chains, fluid OTP
+digits, scrollable Tabs, the off-canvas chat drawer below 900px) was reasoned through against the
+actual CSS and covered by automated tests, not captured as real screenshots — this sandbox has
+never had a real browser to render against. The user has since performed substantial real-browser
+QA for Steps 4 and 5 (conversation rename/delete, message copy/regenerate/edit, the Step 5 bugfix
+round), confirmed functional and explicitly **not** a formal, systematic pass across all 9
+originally documented viewport widths (320/360/390/414/768/1024/1280/1440/1920px). That formal
+9-width sweep remains deferred.
+
+**B. Token-refresh soak verification**
+`ENGINEERING STATUS: COMPLETE` — `HUMAN-ONLY VERIFICATION: DEFERRED`
+The proactive token-refresh timer (fixed during the post-Phase-B bugfix pass) was verified
+in-sandbox with fakes/mocked time, not against a real elapsed session. The user has confirmed this
+extended-duration, real-session soak test has not been performed. It remains deferred.
+
+---
+
+## Phase 6 — Formal Closure (Step 6 — Phase Close-Out)
+
+**Phase 6 is formally CLOSED.** Steps 1–5 (Conversation & Message Persistence Foundation; Backend
+Streaming; Chat Frontend; Conversation Management; Message-Level UX), Phase B (Responsive/Polish),
+the post-Phase-B bugfix pass, and Step 6 itself (this documentation reconciliation) are all
+complete. Step 6's own scope was documentation/reconciliation only — no application code was
+touched: it corrected Step 3's historical record (see the correction note in that section above),
+consolidated the two human-only deferred verification items above, and performed a final
+three-file consistency sweep across `claude/CURRENT_PHASE.md`, `claude/PROJECT_STATE.md`, and
+`claude/PHASE_PLAN.md`.
+
+The two human-only deferred verification items above remain open but are explicitly **not**
+blockers to this closure — they are known, accepted, human-only verification gaps, clearly
+separated from engineering completion, per the distinction made in that section.
+
+**Phase 7 has not started.** No Phase 7 plan, scope, or implementation exists yet. Nothing beyond
+this closure statement should be read as Phase 7 having begun.
+
+---
 
 Current development priority remains:
 
-> **Phase 6 — Omniscience Assistant (Steps 1–3, Phase B, and the post-Phase-B bugfix pass complete
-> and verified as described above; Step 4 — Conversation Management — COMPLETE (implementation,
-> local verification, commit, and push all done and confirmed), see immediately above; Step 5 —
-> Message-Level UX — COMPLETE (implementation, full verification, the critical bugfix round, and
-> the user's local QA all done and confirmed), see immediately above; Step 6 — Phase Close-Out —
-> is now the active/current step, a reconstructed, approved plan not yet implemented; live
-> browser QA of the Phase B scroll fixes and real-session soak testing of the token refresh from
-> the post-Phase-B bugfix pass remain pending a maintainer with a browser and network access,
-> tracked for Step 6 close-out)**
+> **Phase 6 — Omniscience Assistant: formally CLOSED.** Steps 1–5, Phase B, the post-Phase-B
+> bugfix pass, and Step 6 (Phase Close-Out — documentation reconciliation only) are all complete;
+> see the "Phase 6 — Formal Closure" and "Phase 6 — Human-Only Deferred Verification" sections
+> immediately above for the full record, including the two deferred human-only verification items
+> (a formal 9-viewport-width QA sweep; a real-session token-refresh soak test) — both engineering-
+> complete, both explicitly not blockers. **Phase 7 has not started.**
 
 ---
 
@@ -5267,6 +5347,6 @@ No engineering work related to this feature should begin during the current acti
 
 Current development priority remains:
 
-> **Phase 6 — Omniscience Assistant (Steps 1–3, Phase B, and the post-Phase-B bugfix pass complete and verified; Step 4 — Conversation Management — COMPLETE (implementation, local verification, commit, and push all done and confirmed); Step 5 — Message-Level UX — COMPLETE (implementation, full verification, the critical bugfix round, and the user's local QA all done and confirmed); Step 6 — Phase Close-Out — is now the active/current step, a reconstructed, approved plan not yet implemented; live browser QA of the Phase B scroll fixes and real-session soak testing of the token refresh remain pending a maintainer with a browser and network access, tracked for Step 6 close-out)**
+> **Phase 6 — Omniscience Assistant: formally CLOSED.** Steps 1–5, Phase B, the post-Phase-B bugfix pass, and Step 6 (Phase Close-Out — documentation reconciliation only, no application code changed) are all complete. Two human-only deferred verification items remain — a formal 9-viewport-width QA sweep and a real-session token-refresh soak test — both engineering-complete and explicitly not blockers to this closure; see the "Phase 6 — Human-Only Deferred Verification" and "Phase 6 — Formal Closure" sections above for the full record. **Phase 7 has not started.**
 
 All future planning should continue following the original platform roadmap before Arceus Activation Mode is started.

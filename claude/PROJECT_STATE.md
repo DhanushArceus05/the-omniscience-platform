@@ -746,10 +746,18 @@ longer loses newly-created messages; refresh restores the currently-open convers
 between conversations no longer loses state; the latest user message can be edited; the latest
 assistant message can be regenerated; older messages intentionally cannot be edited/regenerated
 (matches the approved last-turn-only scope); copy still works correctly. No implementation issues
-remain. **Step 5 is officially COMPLETE.** Step 6 (Phase Close-Out) is now the **active/current
-step** — not yet started, awaiting explicit go-ahead before implementation begins (documentation
-reconciliation only, no new features — see `claude/PHASE_PLAN.md`'s Step 6 section for the approved
-scope).
+remain. **Step 5 is officially COMPLETE.**
+
+**Phase 6, Step 6 (Phase Close-Out): ✅ Complete** — documentation reconciliation only, no
+application code touched. Corrected Step 3's historical record (see the correction above and in
+`claude/CURRENT_PHASE.md`'s Step 3 section), consolidated the two human-only deferred verification
+items (a formal 9-viewport-width QA sweep; a real-session token-refresh soak test — both
+engineering-complete, both explicitly not blockers) into one canonical record in
+`claude/CURRENT_PHASE.md`, and formally closed Phase 6. See `claude/CURRENT_PHASE.md`'s "Phase 6 —
+Human-Only Deferred Verification" and "Phase 6 — Formal Closure" sections for the full record.
+
+**Phase 6 is formally CLOSED.** Steps 1–6, Phase B, and the post-Phase-B bugfix pass are all
+complete. **Phase 7 has not started** — no Phase 7 plan, scope, or implementation exists yet.
 
 ## Repository Rule
 
@@ -904,7 +912,16 @@ This document is considered the authoritative long-term vision for the feature.
   said this "remains deferred — not started"; that was stale — the implementation
   (`apps/web/src/features/chat/`, `ChatPage.tsx`, routed at `/app/workspace/:workspaceId/chat`)
   already existed. See `claude/CURRENT_PHASE.md`'s "Phase 6 — Omniscience Assistant, Step 3"
-  section for the summary.
+  section for the summary. **Correction (added during Phase 6 Step 6):** that section's original
+  file list also omitted `MarkdownMessage.tsx` and the whole-message "Copy message" action in
+  `MessageBubble.tsx` — both real, tested, and already part of this step, just never listed — and
+  its "message history" claim was not actually complete: the original `listMessages()` call never
+  followed `nextCursor`, so any conversation past the 20-message default page size was silently
+  truncated on every reload, a genuine implementation gap in this step, not fixed until Phase 6
+  Step 5's bugfix round (full-history pagination + URL-based conversation-selection persistence).
+  See `claude/CURRENT_PHASE.md`'s corrected "Phase 6 — Omniscience Assistant, Step 3" section for
+  the full correction note — this file does not claim complete/unbounded message-history
+  restoration anywhere else.
 - Phase B (Responsive/layout/visual-polish pass over the Step 3 chat frontend and shared
   AppShell/UI primitives): ✅ Complete, verified in-sandbox this session —
   `pnpm install --frozen-lockfile` / `typecheck` / `lint` / `build` / `test` all green
