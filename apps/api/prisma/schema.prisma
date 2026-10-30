@@ -52,6 +52,7 @@ model User {
   updatedAt       DateTime  @updatedAt
 
   workspaces Workspace[]
+  knowledgeFiles KnowledgeFile[]
 
   @@map("users")
 }
@@ -77,6 +78,58 @@ model Workspace {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  knowledgeFiles KnowledgeFile[]
+
   @@index([ownerId])
   @@map("workspaces")
+}
+
+/// Phase 7 Step 1 — Knowledge file metadata.
+///
+/// Tracks uploaded knowledge documents (PDF/DOCX/TXT) through their
+/// processing lifecycle: upload → extraction → chunking → embedding →
+/// ready. File content is stored on local disk (MVP); this table holds
+/// only metadata, status tracking, and references to the stored file.
+///
+/// - `onDelete: Cascade` on both `workspaceId` and `ownerId`: deleting a
+///   workspace or user cascades to metadata rows only. Local disk files
+///   are removed by the delayed Knowledge storage reconciliation service;
+///   Prisma cascades cannot delete physical files.
+/// - `@@index([workspaceId])`: list/query operations are always scoped
+///   to a single workspace.
+/// - `@@index([ownerId])`: supports user-level operations (e.g., account
+///   deletion cleanup).
+/// - `status` tracks the processing pipeline; transitions are
+///   deterministic and only move forward (no rollback to prior states).
+/// - `chunkCount` is updated once chunking completes; `null` until then.
+/// - `failureReason` is only populated when `status = FAILED`.
+model KnowledgeFile {
+  id           String              @id @default(cuid())
+  workspaceId  String
+  workspace    Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  ownerId      String
+  owner        User                @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  originalName String
+  storageKey   String              @unique
+  mimeType     String
+  fileSize     Int
+  checksum     String
+  status       KnowledgeFileStatus @default(UPLOADED)
+  chunkCount   Int?
+  failureReason String?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  @@index([workspaceId])
+  @@index([ownerId])
+  @@map("knowledge_files")
+}
+
+enum KnowledgeFileStatus {
+  UPLOADED
+  PROCESSING
+  EXTRACTED
+  EMBEDDING_PENDING
+  READY
+  FAILED
 }

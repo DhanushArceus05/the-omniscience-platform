@@ -109,6 +109,18 @@ const baseEnvSchema = z.object({
   // `ANTHROPIC_API_KEY` is set, so they never block API startup.
   AI_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   AI_MAX_RETRIES: z.coerce.number().int().min(0).default(2),
+
+  // ---- Phase 7 Step 1 — Knowledge file storage ----
+  // MVP storage strategy: local disk, same pattern as `AVATAR_STORAGE_DIR`.
+  // Future steps can replace `KnowledgeStorageService`'s internals with
+  // object storage (S3-compatible) without changing callers.
+  //
+  // - `KNOWLEDGE_STORAGE_DIR`: where uploaded knowledge files are written
+  //   on disk. Created automatically if it doesn't exist.
+  // - `KNOWLEDGE_FILE_SIZE_LIMIT_MB`: maximum file size in megabytes.
+  //   Default 25 MB, matching the approved Phase 7 Step 1 spec.
+  KNOWLEDGE_STORAGE_DIR: z.string().min(1).default("./storage/knowledge"),
+  KNOWLEDGE_FILE_SIZE_LIMIT_MB: z.coerce.number().int().positive().default(25),
 });
 
 export const envSchema = baseEnvSchema.superRefine((env, ctx) => {

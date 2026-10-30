@@ -84,3 +84,9 @@ export type {
   SendMessageRequestSchema,
   RenameConversationRequestSchema,
 } from "./conversations";
+export {
+  ALLOWED_KNOWLEDGE_MIME_TYPES,
+  ALLOWED_KNOWLEDGE_EXTENSIONS,
+  knowledgeFileIdParamSchema,
+} from "./knowledge";
+export type { KnowledgeFileIdParamSchema } from "./knowledge";

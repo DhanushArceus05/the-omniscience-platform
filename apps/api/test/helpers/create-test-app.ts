@@ -45,6 +45,11 @@ export const testEnv: Env = {
   AVATAR_STORAGE_DIR: path.join(os.tmpdir(), "omniscience-api-e2e-avatars"),
   AVATAR_PUBLIC_BASE_URL: "http://localhost:4000",
   AVATAR_MAX_UPLOAD_BYTES: 5 * 1024 * 1024,
+  // Phase 7 Step 1 — `KnowledgeStorageService` follows the same pattern
+  // as `AvatarStorageService`: real local-disk I/O in e2e tests, pointed
+  // at a dedicated OS temp directory for isolation.
+  KNOWLEDGE_STORAGE_DIR: path.join(os.tmpdir(), "omniscience-api-e2e-knowledge"),
+  KNOWLEDGE_FILE_SIZE_LIMIT_MB: 25,
 };
 
 /**

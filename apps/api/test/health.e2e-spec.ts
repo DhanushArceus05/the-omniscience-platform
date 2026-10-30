@@ -58,6 +58,12 @@ const testEnv: Env = {
   AVATAR_STORAGE_DIR: "./storage/avatars-test",
   AVATAR_PUBLIC_BASE_URL: "http://localhost:4000",
   AVATAR_MAX_UPLOAD_BYTES: 5 * 1024 * 1024,
+  // Phase 7 Step 1 — KnowledgeModule (@Global()) is part of the real
+  // AppModule this suite boots, so KnowledgeStorageService's constructor
+  // needs these two fields populated, even though this health-only smoke
+  // test never exercises any knowledge endpoint.
+  KNOWLEDGE_STORAGE_DIR: "./storage/knowledge-test",
+  KNOWLEDGE_FILE_SIZE_LIMIT_MB: 25,
 };
 
 class FakeRedisService {

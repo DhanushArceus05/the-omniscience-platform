@@ -36,10 +36,28 @@ export interface FakeWorkspaceRow {
   updatedAt: Date;
 }
 
+export interface FakeKnowledgeFileRow {
+  id: string;
+  workspaceId: string;
+  ownerId: string;
+  originalName: string;
+  storageKey: string;
+  mimeType: string;
+  fileSize: number;
+  checksum: string;
+  status: string;
+  chunkCount: number | null;
+  failureReason: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export class FakePrismaService {
   private readonly users: FakeUserRow[] = [];
   private readonly workspaces: FakeWorkspaceRow[] = [];
+  private readonly knowledgeFiles: FakeKnowledgeFileRow[] = [];
   private workspaceSeq = 0;
+  private knowledgeFileSeq = 0;
 
   user = {
     findUnique: async ({
@@ -173,6 +191,44 @@ export class FakePrismaService {
         return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
       });
       return sorted.slice(0, take);
+    },
+  };
+
+  /** Phase 7 — only the Prisma surface used by Knowledge services and routes. */
+  knowledgeFile = {
+    create: async ({ data }: { data: Omit<FakeKnowledgeFileRow, "id" | "createdAt" | "updatedAt" | "chunkCount" | "failureReason"> & { status: string } }): Promise<FakeKnowledgeFileRow> => {
+      this.knowledgeFileSeq += 1;
+      const now = new Date();
+      const row: FakeKnowledgeFileRow = {
+        ...data,
+        id: `knowledge_${String(this.knowledgeFileSeq).padStart(10, "0")}`,
+        chunkCount: null,
+        failureReason: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      this.knowledgeFiles.push(row);
+      return row;
+    },
+    findUnique: async ({ where }: { where: { id: string } }): Promise<FakeKnowledgeFileRow | null> =>
+      this.knowledgeFiles.find((row) => row.id === where.id) ?? null,
+    findMany: async ({
+      where,
+    }: {
+      where: { workspaceId?: string; storageKey?: { in: string[] } };
+      orderBy?: { createdAt: "desc" };
+      select?: { storageKey: true };
+    }): Promise<Array<FakeKnowledgeFileRow | Pick<FakeKnowledgeFileRow, "storageKey">>> => {
+      let rows = this.knowledgeFiles;
+      if (where.workspaceId) rows = rows.filter((row) => row.workspaceId === where.workspaceId);
+      if (where.storageKey) rows = rows.filter((row) => where.storageKey?.in.includes(row.storageKey));
+      if (where.storageKey) return rows.map(({ storageKey }) => ({ storageKey }));
+      return rows.slice().sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    },
+    delete: async ({ where }: { where: { id: string } }): Promise<FakeKnowledgeFileRow> => {
+      const index = this.knowledgeFiles.findIndex((row) => row.id === where.id);
+      if (index < 0) throw new Error("Record to delete does not exist.");
+      return this.knowledgeFiles.splice(index, 1)[0] as FakeKnowledgeFileRow;
     },
   };
 

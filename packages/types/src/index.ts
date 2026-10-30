@@ -114,3 +114,14 @@ export type {
   PlanExecutionResult,
 } from "./omnicore-execution";
 export type { ToolCapability, ToolMetadata, ToolExecutionResult } from "./tool";
+export type {
+  KnowledgeFileStatus,
+  KnowledgeFile,
+  UploadKnowledgeFileResponse,
+  ListKnowledgeFilesResponse,
+  GetKnowledgeFileResponse,
+  DeleteKnowledgeFileResponse,
+  KnowledgeChunk,
+  KnowledgeQueryResult,
+  Citation,
+} from "./knowledge";

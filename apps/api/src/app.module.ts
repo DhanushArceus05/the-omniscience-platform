@@ -7,6 +7,7 @@ import { AvatarModule } from "./avatar/avatar.module";
 import { ConfigModule } from "./config/config.module";
 import { ConversationsModule } from "./conversations/conversations.module";
 import { HealthModule } from "./health/health.module";
+import { KnowledgeModule } from "./knowledge/knowledge.module";
 import { MailModule } from "./mail/mail.module";
 import { MongoModule } from "./mongo/mongo.module";
 import { OmniCoreModule } from "./omnicore/omnicore.module";
@@ -80,6 +81,18 @@ import { WorkspacesModule } from "./workspaces/workspaces.module";
  *     delete/rename, no RAG/memory/agents — see
  *     `claude/CURRENT_PHASE.md`'s Phase 6 Step 1 section for the full
  *     list of what's deferred.
+ * Phase 7 — OmniKnowledge (RAG System):
+ *   Step 1 (this step): `KnowledgeModule` (`@Global()`, exports
+ *     `KnowledgeService` and `KnowledgeStorageService`) added —
+ *     `POST /workspaces/:workspaceId/knowledge/upload`,
+ *     `GET /workspaces/:workspaceId/knowledge`,
+ *     `GET /workspaces/:workspaceId/knowledge/:fileId`,
+ *     `DELETE /workspaces/:workspaceId/knowledge/:fileId`,
+ *     `GET /workspaces/:workspaceId/knowledge/:fileId/download`, all
+ *     behind `JwtAuthGuard` and scoped to a workspace the caller owns.
+ *     File metadata, local disk storage, and an independently injectable
+ *     document extraction service. Uploads still only persist the file;
+ *     automatic extraction, chunking, embedding, and retrieval remain deferred.
  */
 @Module({
   imports: [
@@ -96,6 +109,7 @@ import { WorkspacesModule } from "./workspaces/workspaces.module";
     AiModule,
     OmniCoreModule,
     ConversationsModule,
+    KnowledgeModule,
     HealthModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
