@@ -194,8 +194,8 @@ export class KnowledgeStorageService {
    * client (e.g., for download headers).
    */
   sanitizeFilename(filename: string): string {
-    // Remove any directory paths
-    const base = path.basename(filename);
+    // Normalize both Windows and Unix separators before extracting the basename.
+    const base = path.basename(filename.replace(/\\/gu, "/"));
     // Replace any remaining problematic characters with underscores
     return base.replace(/[^a-zA-Z0-9._-]/g, "_");
   }

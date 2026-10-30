@@ -316,10 +316,25 @@ describe("KnowledgeStorageService", () => {
   });
 
   describe("sanitizeFilename", () => {
-    it("removes directory paths from filenames", () => {
+    it("removes Unix-style directory paths from filenames", () => {
       expect(service.sanitizeFilename("../../etc/passwd.txt")).toBe("passwd.txt");
       expect(service.sanitizeFilename("/etc/passwd.txt")).toBe("passwd.txt");
+    });
+
+    it("removes Windows-style directory paths from filenames on every platform", () => {
       expect(service.sanitizeFilename("C:\\Windows\\System32\\file.txt")).toBe("file.txt");
+    });
+
+    it("removes directory paths containing mixed separators", () => {
+      expect(service.sanitizeFilename("C:/Windows\\System32/file.txt")).toBe("file.txt");
+    });
+
+    it("removes traversal-like paths using either separator", () => {
+      expect(service.sanitizeFilename("..\\..\\etc/passwd.txt")).toBe("passwd.txt");
+    });
+
+    it("preserves an ordinary filename", () => {
+      expect(service.sanitizeFilename("report.v2_final.pdf")).toBe("report.v2_final.pdf");
     });
 
     it("replaces special characters with underscores", () => {
