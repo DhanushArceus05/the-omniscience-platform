@@ -91,8 +91,9 @@ import { WorkspacesModule } from "./workspaces/workspaces.module";
  *     `GET /workspaces/:workspaceId/knowledge/:fileId/download`, all
  *     behind `JwtAuthGuard` and scoped to a workspace the caller owns.
  *     File metadata, local disk storage, and an independently injectable
- *     document extraction service. Uploads still only persist the file;
- *     automatic extraction, chunking, embedding, and retrieval remain deferred.
+ *     document extraction service. Uploads persist the file as `UPLOADED`;
+ *     an authenticated explicit process route runs extraction, chunking,
+ *     embedding, and vector indexing. Retrieval remains deferred.
  */
 @Module({
   imports: [

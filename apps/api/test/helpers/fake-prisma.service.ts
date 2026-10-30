@@ -48,6 +48,8 @@ export interface FakeKnowledgeFileRow {
   status: string;
   chunkCount: number | null;
   failureReason: string | null;
+  processingAttemptId: string | null;
+  activeGenerationId: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -196,7 +198,7 @@ export class FakePrismaService {
 
   /** Phase 7 — only the Prisma surface used by Knowledge services and routes. */
   knowledgeFile = {
-    create: async ({ data }: { data: Omit<FakeKnowledgeFileRow, "id" | "createdAt" | "updatedAt" | "chunkCount" | "failureReason"> & { status: string } }): Promise<FakeKnowledgeFileRow> => {
+    create: async ({ data }: { data: Omit<FakeKnowledgeFileRow, "id" | "createdAt" | "updatedAt" | "chunkCount" | "failureReason" | "processingAttemptId" | "activeGenerationId"> & { status: string } }): Promise<FakeKnowledgeFileRow> => {
       this.knowledgeFileSeq += 1;
       const now = new Date();
       const row: FakeKnowledgeFileRow = {
@@ -204,6 +206,8 @@ export class FakePrismaService {
         id: `knowledge_${String(this.knowledgeFileSeq).padStart(10, "0")}`,
         chunkCount: null,
         failureReason: null,
+        processingAttemptId: null,
+        activeGenerationId: null,
         createdAt: now,
         updatedAt: now,
       };
@@ -212,6 +216,25 @@ export class FakePrismaService {
     },
     findUnique: async ({ where }: { where: { id: string } }): Promise<FakeKnowledgeFileRow | null> =>
       this.knowledgeFiles.find((row) => row.id === where.id) ?? null,
+    findFirst: async ({ where }: { where: { id: string; workspaceId: string; ownerId: string; status?: string | { in: string[] }; processingAttemptId?: string } }): Promise<FakeKnowledgeFileRow | null> =>
+      this.knowledgeFiles.find((row) => row.id === where.id && row.workspaceId === where.workspaceId && row.ownerId === where.ownerId &&
+        (typeof where.status === "string" ? row.status === where.status : where.status?.in.includes(row.status) ?? true) &&
+        (where.processingAttemptId === undefined || row.processingAttemptId === where.processingAttemptId)) ?? null,
+    updateMany: async ({
+      where,
+      data,
+    }: {
+      where: { id: string; workspaceId: string; ownerId: string; status?: string | { in: string[] }; updatedAt?: Date; processingAttemptId?: string | null };
+      data: Partial<Pick<FakeKnowledgeFileRow, "status" | "chunkCount" | "failureReason" | "processingAttemptId" | "activeGenerationId">>;
+    }): Promise<{ count: number }> => {
+      const row = this.knowledgeFiles.find((candidate) => candidate.id === where.id && candidate.workspaceId === where.workspaceId &&
+        candidate.ownerId === where.ownerId && (typeof where.status === "string" ? candidate.status === where.status :
+          where.status?.in.includes(candidate.status) ?? true) && (!where.updatedAt || candidate.updatedAt.getTime() === where.updatedAt.getTime()) &&
+        (where.processingAttemptId === undefined || candidate.processingAttemptId === where.processingAttemptId));
+      if (!row) return { count: 0 };
+      Object.assign(row, data, { updatedAt: new Date() });
+      return { count: 1 };
+    },
     findMany: async ({
       where,
     }: {
@@ -230,7 +253,28 @@ export class FakePrismaService {
       if (index < 0) throw new Error("Record to delete does not exist.");
       return this.knowledgeFiles.splice(index, 1)[0] as FakeKnowledgeFileRow;
     },
+    deleteMany: async ({ where }: { where: { id: string; workspaceId: string; ownerId: string; status: string; processingAttemptId: string } }): Promise<{ count: number }> => {
+      const index = this.knowledgeFiles.findIndex((row) => row.id === where.id && row.workspaceId === where.workspaceId &&
+        row.ownerId === where.ownerId && row.status === where.status && row.processingAttemptId === where.processingAttemptId);
+      if (index < 0) return { count: 0 };
+      this.knowledgeFiles.splice(index, 1);
+      return { count: 1 };
+    },
   };
+
+  async $transaction<T>(callback: (transaction: FakePrismaService) => Promise<T>): Promise<T> {
+    return callback(this);
+  }
+
+  async $queryRaw<T extends Array<Record<string, unknown>>>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T> {
+    const [id, workspaceId, ownerId, attemptId] = values;
+    const row = this.knowledgeFiles.find((candidate) => candidate.id === id && candidate.workspaceId === workspaceId && candidate.ownerId === ownerId);
+    void strings;
+    if (!row) return [] as unknown as T;
+    if (values.length === 3) return [row] as unknown as T;
+    if (row.processingAttemptId === attemptId && ["PROCESSING", "EXTRACTED", "EMBEDDING_PENDING"].includes(row.status)) return [{ id: row.id }] as unknown as T;
+    return [] as unknown as T;
+  }
 
   async onModuleInit(): Promise<void> {
     // no-op

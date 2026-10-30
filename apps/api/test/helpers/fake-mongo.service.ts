@@ -181,6 +181,14 @@ class InMemoryCollection<T extends Doc> {
     // real-Mongo suite instead.
     return "noop-index";
   }
+
+  listIndexes(): { toArray: () => Promise<Array<{ name: string; key: Record<string, number>; unique?: boolean }>> } {
+    return { toArray: async () => [] };
+  }
+
+  async dropIndex(): Promise<string> {
+    return "noop-drop-index";
+  }
 }
 
 export class FakeMongoService {

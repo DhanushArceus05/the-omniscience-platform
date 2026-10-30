@@ -33,8 +33,8 @@ import { ProviderRegistryService } from "./provider-registry.service";
  * (`providers/anthropic-client.provider.ts`) via a `useFactory` reading
  * the validated `Env`, so production resolves a real
  * `@anthropic-ai/sdk` client while tests can override the same token
- * with a fake. Gemini and OpenAI remain Step 1 metadata-only stubs,
- * unchanged.
+ * with a fake. Gemini remains a metadata-only stub; OpenAI provides the
+ * text embedding capability required by Phase 7 through OmniProvider.
  * Phase 4 Step 3: `AiService` is the thin, vendor-neutral orchestration
  * `AiController`'s new `POST /ai/generate` route depends on — it's the
  * only new file added to `providers` that step; `AiController`,
@@ -49,7 +49,8 @@ import { ProviderRegistryService } from "./provider-registry.service";
  * (`providers/gemini-client.provider.ts`) via a `useFactory` reading the
  * validated `Env`, so production resolves a real `@google/genai` client
  * while tests can override the same token with a fake. OpenAI remains a
- * Step 1 metadata-only stub, unchanged.
+ * stub for non-embedding capabilities; OmniKnowledge uses its real
+ * embeddings implementation.
  */
 @Module({
   imports: [AuthModule],

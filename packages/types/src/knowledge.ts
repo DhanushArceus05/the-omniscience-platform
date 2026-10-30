@@ -11,7 +11,8 @@ export type KnowledgeFileStatus =
   | "EXTRACTED"
   | "EMBEDDING_PENDING"
   | "READY"
-  | "FAILED";
+  | "FAILED"
+  | "DELETING";
 
 export interface KnowledgeFile {
   id: string;

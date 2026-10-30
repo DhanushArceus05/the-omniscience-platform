@@ -121,6 +121,7 @@ const baseEnvSchema = z.object({
   //   Default 25 MB, matching the approved Phase 7 Step 1 spec.
   KNOWLEDGE_STORAGE_DIR: z.string().min(1).default("./storage/knowledge"),
   KNOWLEDGE_FILE_SIZE_LIMIT_MB: z.coerce.number().int().positive().default(25),
+  KNOWLEDGE_EMBEDDING_BATCH_SIZE: z.coerce.number().int().min(1).max(128).default(32),
 });
 
 export const envSchema = baseEnvSchema.superRefine((env, ctx) => {

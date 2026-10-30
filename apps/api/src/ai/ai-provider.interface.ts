@@ -16,13 +16,10 @@ import type {
  * `docs/04_System_Architecture.md` Provider Rule: "business logic
  * requests capabilities, never vendor names."
  *
- * Every execution method (`generateText`, `generateStructured`,
- * `embed`) is intentionally unimplemented in every adapter registered
- * this step: they throw `notImplementedError()` below. Real vendor
- * integration is out of Phase 4 Step 1's scope by design (see
- * `claude/CURRENT_PHASE.md`) — this interface exists so a future phase
- * can implement these methods against a real vendor SDK without any
- * caller-facing change.
+ * Adapters may implement the capabilities they genuinely support;
+ * unimplemented methods use the shared `notImplementedError()` below.
+ * OpenAI's embedding capability is implemented for OmniKnowledge while
+ * its other advertised execution methods remain stubs.
  */
 export interface OmniProvider {
   readonly providerId: ProviderId;
@@ -59,6 +56,8 @@ export interface OmniProvider {
   generateText(modelId: ModelId, prompt: string): Promise<string>;
   generateStructured(modelId: ModelId, prompt: string, schemaName: string): Promise<unknown>;
   embed(modelId: ModelId, input: string): Promise<readonly number[]>;
+  /** Optional provider-native batch embedding path; results retain explicit input indexes. */
+  embedBatch?(modelId: ModelId, input: readonly string[]): Promise<readonly { index: number; embedding: readonly number[] }[]>;
 
   /**
    * Optional, additive streaming counterpart to `generateText` (Phase

@@ -4,12 +4,14 @@ import { PrismaService } from "../prisma/prisma.service";
 import { WorkspacesService } from "../workspaces/workspaces.service";
 import { KnowledgeStorageService } from "./knowledge-storage.service";
 import { KnowledgeService } from "./knowledge.service";
+import { KnowledgeProcessingService } from "./knowledge-processing.service";
 
 describe("KnowledgeService", () => {
   let service: KnowledgeService;
   let prisma: PrismaService;
   let workspaces: jest.Mocked<WorkspacesService>;
   let storage: jest.Mocked<KnowledgeStorageService>;
+  let processing: { claimDeletion: jest.Mock; cleanupDeletionArtifacts: jest.Mock; finishDeletion: jest.Mock; releaseDeletion: jest.Mock };
 
   const mockWorkspace = { id: "ws1", ownerId: "user1" };
   const mockFile = {
@@ -29,6 +31,12 @@ describe("KnowledgeService", () => {
   };
 
   beforeEach(async () => {
+    processing = {
+      claimDeletion: jest.fn().mockResolvedValue({ file: mockFile, attemptId: "delete-attempt" }),
+      cleanupDeletionArtifacts: jest.fn().mockResolvedValue(undefined),
+      finishDeletion: jest.fn().mockResolvedValue(undefined),
+      releaseDeletion: jest.fn().mockResolvedValue(undefined),
+    };
     const module = await Test.createTestingModule({
       providers: [
         KnowledgeService,
@@ -39,7 +47,7 @@ describe("KnowledgeService", () => {
               create: jest.fn(),
               findMany: jest.fn(),
               findUnique: jest.fn(),
-              delete: jest.fn(),
+              deleteMany: jest.fn(),
             },
           },
         },
@@ -60,6 +68,7 @@ describe("KnowledgeService", () => {
             releasePending: jest.fn(),
           },
         },
+        { provide: KnowledgeProcessingService, useValue: processing },
       ],
     }).compile();
 
@@ -205,16 +214,15 @@ describe("KnowledgeService", () => {
   describe("delete", () => {
     it("deletes a file and its storage", async () => {
       workspaces.getById.mockResolvedValue(mockWorkspace as never);
-      (prisma.knowledgeFile.findUnique as jest.Mock).mockResolvedValue(mockFile);
-      (prisma.knowledgeFile.delete as jest.Mock).mockResolvedValue(mockFile);
       storage.delete.mockResolvedValue(undefined);
 
       const result = await service.delete("user1", "ws1", "file1");
 
-      expect(workspaces.getById).toHaveBeenCalledWith("user1", "ws1");
+      expect(processing.claimDeletion).toHaveBeenCalledWith("user1", "ws1", "file1");
+      expect(processing.cleanupDeletionArtifacts).toHaveBeenCalledWith("ws1", "file1");
       expect(storage.delete).toHaveBeenCalledWith("abc-123.pdf");
-      expect(prisma.knowledgeFile.delete).toHaveBeenCalledWith({ where: { id: "file1" } });
-      expect((prisma.knowledgeFile.delete as jest.Mock).mock.invocationCallOrder[0]).toBeLessThan(
+      expect(processing.finishDeletion).toHaveBeenCalledWith({ file: mockFile, attemptId: "delete-attempt" });
+      expect((processing.cleanupDeletionArtifacts as jest.Mock).mock.invocationCallOrder[0]).toBeLessThan(
         (storage.delete as jest.Mock).mock.invocationCallOrder[0] as number,
       );
       expect(result.deleted).toBe(true);
@@ -222,27 +230,32 @@ describe("KnowledgeService", () => {
 
     it("throws NotFoundException if file doesn't exist", async () => {
       workspaces.getById.mockResolvedValue(mockWorkspace as never);
-      (prisma.knowledgeFile.findUnique as jest.Mock).mockResolvedValue(null);
+      processing.claimDeletion.mockRejectedValue(new NotFoundException({ code: "KNOWLEDGE_FILE_NOT_FOUND", message: "File not found." }));
 
       await expect(service.delete("user1", "ws1", "file1")).rejects.toMatchObject({
         response: { code: "KNOWLEDGE_FILE_NOT_FOUND" },
       });
       expect(storage.delete).not.toHaveBeenCalled();
-      expect(prisma.knowledgeFile.delete).not.toHaveBeenCalled();
+      expect(processing.cleanupDeletionArtifacts).not.toHaveBeenCalled();
     });
 
     it("throws NotFoundException if file belongs to different workspace", async () => {
       workspaces.getById.mockResolvedValue(mockWorkspace as never);
-      (prisma.knowledgeFile.findUnique as jest.Mock).mockResolvedValue({
-        ...mockFile,
-        workspaceId: "ws2",
-      });
+      processing.claimDeletion.mockRejectedValue(new NotFoundException({ code: "KNOWLEDGE_FILE_NOT_FOUND", message: "File not found." }));
 
       await expect(service.delete("user1", "ws1", "file1")).rejects.toMatchObject({
         response: { code: "KNOWLEDGE_FILE_NOT_FOUND" },
       });
       expect(storage.delete).not.toHaveBeenCalled();
-      expect(prisma.knowledgeFile.delete).not.toHaveBeenCalled();
+      expect(processing.cleanupDeletionArtifacts).not.toHaveBeenCalled();
+    });
+
+    it("releases the deletion claim while retaining the source file when artifact cleanup fails", async () => {
+      workspaces.getById.mockResolvedValue(mockWorkspace as never);
+      processing.cleanupDeletionArtifacts.mockRejectedValue(new Error("qdrant unavailable"));
+      await expect(service.delete("user1", "ws1", "file1")).rejects.toThrow("qdrant unavailable");
+      expect(processing.releaseDeletion).toHaveBeenCalledWith({ file: mockFile, attemptId: "delete-attempt" });
+      expect(storage.delete).not.toHaveBeenCalled();
     });
   });
 

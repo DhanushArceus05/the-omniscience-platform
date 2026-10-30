@@ -110,7 +110,8 @@ class FakePrismaService {
  * hit. A `{}` stub has no `.collection()` method at all, so that call
  * throws inside `beforeAll`, `app` is never assigned, and both tests
  * below fail. `collection()` here returns just enough of a stand-in —
- * a `createIndex()` that resolves — for that startup call to succeed
+ * `createIndex()`, `listIndexes()`, and `dropIndex()` methods that resolve —
+ * for the Knowledge and Conversations startup index checks to succeed
  * without requiring a real MongoDB instance.
  */
 class FakeMongoService {
@@ -127,6 +128,8 @@ class FakeMongoService {
     return {
       collection: () => ({
         createIndex: async () => "noop-index",
+        listIndexes: () => ({ toArray: async () => [] }),
+        dropIndex: async () => "noop-drop-index",
       }),
     } as unknown as Db;
   }

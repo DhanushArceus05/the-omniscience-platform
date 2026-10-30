@@ -16,6 +16,7 @@ import { FakeMailService } from "./fake-mail.service";
 import { FakeMongoService } from "./fake-mongo.service";
 import { FakePrismaService } from "./fake-prisma.service";
 import { FakeRedisService } from "./fake-redis.service";
+import { KnowledgeVectorsService } from "../../src/knowledge/knowledge-vectors.service";
 
 /** Shared across every e2e spec so `JWT_ACCESS_SECRET` etc. never drift file-to-file. */
 export const testEnv: Env = {
@@ -50,6 +51,7 @@ export const testEnv: Env = {
   // at a dedicated OS temp directory for isolation.
   KNOWLEDGE_STORAGE_DIR: path.join(os.tmpdir(), "omniscience-api-e2e-knowledge"),
   KNOWLEDGE_FILE_SIZE_LIMIT_MB: 25,
+  KNOWLEDGE_EMBEDDING_BATCH_SIZE: 32,
 };
 
 /**
@@ -91,6 +93,12 @@ export async function createTestApp(): Promise<{
     .useValue(new FakePrismaService())
     .overrideProvider(MailService)
     .useValue(mail)
+    .overrideProvider(KnowledgeVectorsService)
+    .useValue({
+      ensureCollection: jest.fn(), indexFile: jest.fn(), upsertBatch: jest.fn(), reconcileGeneration: jest.fn(),
+      deleteFile: jest.fn(), deleteGeneration: jest.fn(), deleteWorkspace: jest.fn(),
+      listWorkspaceIds: jest.fn().mockResolvedValue([]), listArtifacts: jest.fn().mockResolvedValue([]),
+    })
     .compile();
 
   const app = moduleFixture.createNestApplication<NestExpressApplication>();

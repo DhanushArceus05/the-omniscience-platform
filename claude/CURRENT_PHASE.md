@@ -105,8 +105,14 @@ detail)
   reconciliation only, no application code touched. Corrected Step 3's historical record (see the
   correction note in that section), consolidated the two human-only deferred verification items
   into `## Phase 6 — Human-Only Deferred Verification` near the end of this file, and formally
-  closed Phase 6 — see `## Phase 6 — Formal Closure` near the end of this file. **Phase 7 has not
-  started.**
+  closed Phase 6 — see `## Phase 6 — Formal Closure` near the end of this file. **Phase 6 remains
+  closed.**
+- **Phase 7 — OmniKnowledge, Steps 1–5**: Steps 1–2 are complete and pushed; Steps 3–5 are
+  implemented locally and undergoing a focused concurrency/data-consistency repair after final
+  audit. The repair adds attempt fencing, deletion coordination, generation-scoped artifacts, and
+  atomic active-generation publication. Verification is in progress. Steps 3–5 remain uncommitted
+  and unpushed; Step 6 and later Phase 7 steps have not started. See
+  `docs/10_OmniKnowledge_Processing.md` and `claude/PROJECT_STATE.md` for the repair checkpoint.
 
 
 ## Phase 1 — Premium UI Foundation
@@ -5299,8 +5305,9 @@ The two human-only deferred verification items above remain open but are explici
 blockers to this closure — they are known, accepted, human-only verification gaps, clearly
 separated from engineering completion, per the distinction made in that section.
 
-**Phase 7 has not started.** No Phase 7 plan, scope, or implementation exists yet. Nothing beyond
-this closure statement should be read as Phase 7 having begun.
+**Phase 6 is formally closed. Phase 7 — OmniKnowledge is underway.** Steps 1–2 are complete and
+Steps 3–5 are implemented locally; see `docs/10_OmniKnowledge_Processing.md` for the processing
+lifecycle and known limits. No later Phase 7 step has started.
 
 ---
 
@@ -5311,7 +5318,8 @@ Current development priority remains:
 > see the "Phase 6 — Formal Closure" and "Phase 6 — Human-Only Deferred Verification" sections
 > immediately above for the full record, including the two deferred human-only verification items
 > (a formal 9-viewport-width QA sweep; a real-session token-refresh soak test) — both engineering-
-> complete, both explicitly not blockers. **Phase 7 has not started.**
+> complete, both explicitly not blockers. **Phase 7 — OmniKnowledge Steps 1–5 is the active
+> milestone; later Phase 7 steps have not started.**
 
 ---
 
@@ -5347,6 +5355,6 @@ No engineering work related to this feature should begin during the current acti
 
 Current development priority remains:
 
-> **Phase 6 — Omniscience Assistant: formally CLOSED.** Steps 1–5, Phase B, the post-Phase-B bugfix pass, and Step 6 (Phase Close-Out — documentation reconciliation only, no application code changed) are all complete. Two human-only deferred verification items remain — a formal 9-viewport-width QA sweep and a real-session token-refresh soak test — both engineering-complete and explicitly not blockers to this closure; see the "Phase 6 — Human-Only Deferred Verification" and "Phase 6 — Formal Closure" sections above for the full record. **Phase 7 has not started.**
+> **Phase 7 — OmniKnowledge Steps 1–5 is active.** Steps 1–2 are complete; Steps 3–5 are implemented locally. Later Phase 7 steps remain unstarted.
 
 All future planning should continue following the original platform roadmap before Arceus Activation Mode is started.

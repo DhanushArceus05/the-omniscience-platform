@@ -28,6 +28,7 @@ import { ZodValidationPipe } from "../common/pipes/zod-validation.pipe";
 import type { KnowledgeFileUploadInput } from "./knowledge-storage.service";
 import { KnowledgeStorageService } from "./knowledge-storage.service";
 import { KnowledgeService } from "./knowledge.service";
+import { KnowledgeProcessingService } from "./knowledge-processing.service";
 
 /**
  * Phase 7 Step 1 — knowledge file management endpoints.
@@ -41,6 +42,7 @@ export class KnowledgeController {
   constructor(
     private readonly knowledge: KnowledgeService,
     private readonly storage: KnowledgeStorageService,
+    private readonly processing: KnowledgeProcessingService,
   ) {}
 
   /**
@@ -119,6 +121,17 @@ export class KnowledgeController {
     @Param("fileId", new ZodValidationPipe(knowledgeFileIdParamSchema)) fileId: string,
   ): Promise<ApiSuccess<DeleteKnowledgeFileResponse>> {
     return { success: true, data: await this.knowledge.delete(user.sub, workspaceId, fileId) };
+  }
+
+  /** Explicitly starts or retries the extraction/chunk/embedding/index pipeline. */
+  @Post(":fileId/process")
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  async process(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param("workspaceId", new ZodValidationPipe(workspaceIdParamSchema)) workspaceId: string,
+    @Param("fileId", new ZodValidationPipe(knowledgeFileIdParamSchema)) fileId: string,
+  ): Promise<ApiSuccess<{ fileId: string; status: "READY"; chunkCount: number }>> {
+    return { success: true, data: await this.processing.process(user.sub, workspaceId, fileId) };
   }
 
   /**

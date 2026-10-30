@@ -99,9 +99,9 @@ model Workspace {
 ///   to a single workspace.
 /// - `@@index([ownerId])`: supports user-level operations (e.g., account
 ///   deletion cleanup).
-/// - `status` tracks the processing pipeline; transitions are
-///   deterministic and only move forward (no rollback to prior states).
-/// - `chunkCount` is updated once chunking completes; `null` until then.
+/// - `status` tracks extraction/chunk persistence/embedding/vector indexing.
+///   Failed processing may be retried, so the lifecycle can re-enter `PROCESSING`.
+/// - `chunkCount` describes the active generation and changes atomically when a new generation is published.
 /// - `failureReason` is only populated when `status = FAILED`.
 model KnowledgeFile {
   id           String              @id @default(cuid())
@@ -117,6 +117,10 @@ model KnowledgeFile {
   status       KnowledgeFileStatus @default(UPLOADED)
   chunkCount   Int?
   failureReason String?
+  /// Fencing token for the active processing or deletion attempt.
+  processingAttemptId String?
+  /// Generation currently published for READY-only readers.
+  activeGenerationId String?
   createdAt    DateTime            @default(now())
   updatedAt    DateTime            @updatedAt
 
@@ -132,4 +136,5 @@ enum KnowledgeFileStatus {
   EMBEDDING_PENDING
   READY
   FAILED
+  DELETING
 }

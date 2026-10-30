@@ -4,7 +4,7 @@ import { registerVerifyAndLogin } from "./helpers/auth-test-helpers";
 import { createTestApp } from "./helpers/create-test-app";
 import type { FakeMailService } from "./helpers/fake-mail.service";
 
-describe("Knowledge routes (e2e, Phase 7 Steps 1–2)", () => {
+describe("Knowledge routes (e2e, Phase 7 Steps 1–5)", () => {
   let app: INestApplication;
   let mail: FakeMailService;
   const password = "Sup3r$ecretPassw0rd!";
@@ -80,7 +80,7 @@ describe("Knowledge routes (e2e, Phase 7 Steps 1–2)", () => {
       .expect(404);
   });
 
-  it("requires authentication for upload, list, get, and delete", async () => {
+  it("requires authentication for upload, list, get, delete, and processing", async () => {
     const token = await login("knowledge-auth@example.com");
     const workspaceId = await createWorkspace(token);
     const route = `/workspaces/${workspaceId}/knowledge`;
@@ -89,6 +89,7 @@ describe("Knowledge routes (e2e, Phase 7 Steps 1–2)", () => {
     await request(app.getHttpServer()).get(route).expect(401);
     await request(app.getHttpServer()).get(`${route}/missing-file`).expect(401);
     await request(app.getHttpServer()).delete(`${route}/missing-file`).expect(401);
+    await request(app.getHttpServer()).post(`${route}/missing-file/process`).expect(401);
   });
 
   it("does not expose files across workspace ownership boundaries", async () => {
@@ -106,6 +107,7 @@ describe("Knowledge routes (e2e, Phase 7 Steps 1–2)", () => {
       await request(app.getHttpServer()).get(`/workspaces/${workspaceId}/knowledge`).set("Authorization", `Bearer ${otherToken}`).expect(404),
       await request(app.getHttpServer()).get(`/workspaces/${workspaceId}/knowledge/${fileId}`).set("Authorization", `Bearer ${otherToken}`).expect(404),
       await request(app.getHttpServer()).delete(`/workspaces/${workspaceId}/knowledge/${fileId}`).set("Authorization", `Bearer ${otherToken}`).expect(404),
+      await request(app.getHttpServer()).post(`/workspaces/${workspaceId}/knowledge/${fileId}/process`).set("Authorization", `Bearer ${otherToken}`).expect(404),
     ]) {
       expect(response.body.error.code).toBe("WORKSPACE_NOT_FOUND");
     }
@@ -129,8 +131,13 @@ describe("Knowledge routes (e2e, Phase 7 Steps 1–2)", () => {
       .delete(route)
       .set("Authorization", `Bearer ${token}`)
       .expect(404);
+    const missingProcess = await request(app.getHttpServer())
+      .post(`${route}/process`)
+      .set("Authorization", `Bearer ${token}`)
+      .expect(404);
     expect(missingGet.body.error.code).toBe("KNOWLEDGE_FILE_NOT_FOUND");
     expect(missingDelete.body.error.code).toBe("KNOWLEDGE_FILE_NOT_FOUND");
+    expect(missingProcess.body.error.code).toBe("KNOWLEDGE_FILE_NOT_FOUND");
   });
 
   it("rejects an authenticated upload request without a file with a client error", async () => {

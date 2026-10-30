@@ -10,6 +10,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { WorkspacesService } from "../workspaces/workspaces.service";
 import type { KnowledgeFileUploadInput } from "./knowledge-storage.service";
 import { KnowledgeStorageService } from "./knowledge-storage.service";
+import { KnowledgeProcessingService } from "./knowledge-processing.service";
 
 /** The minimal shape `toKnowledgeFileResponse` needs from a Prisma row. */
 interface KnowledgeFileRow {
@@ -41,6 +42,7 @@ export class KnowledgeService {
     private readonly prisma: PrismaService,
     private readonly workspaces: WorkspacesService,
     private readonly storage: KnowledgeStorageService,
+    private readonly processing: KnowledgeProcessingService,
   ) {}
 
   /**
@@ -138,23 +140,18 @@ export class KnowledgeService {
     workspaceId: string,
     fileId: string,
   ): Promise<DeleteKnowledgeFileResponse> {
-    // Verify ownership
-    await this.workspaces.getById(ownerId, workspaceId);
-
-    const file = await this.prisma.knowledgeFile.findUnique({ where: { id: fileId } });
-    if (!file || file.workspaceId !== workspaceId) {
-      throw new NotFoundException({
-        code: "KNOWLEDGE_FILE_NOT_FOUND",
-        message: "File not found.",
-      });
+    const claim = await this.processing.claimDeletion(ownerId, workspaceId, fileId);
+    try {
+      // DELETING fences new attempts; the claim waits behind any row-locked
+      // external write before these idempotent workspace/file-scoped cleanups.
+      await this.processing.cleanupDeletionArtifacts(workspaceId, fileId);
+      await this.storage.delete(claim.file.storageKey);
+      await this.processing.finishDeletion(claim);
+      return { deleted: true };
+    } catch (error) {
+      await this.processing.releaseDeletion(claim).catch(() => undefined);
+      throw error;
     }
-
-    // Remove metadata first. If disk cleanup then fails or the process crashes,
-    // periodic reconciliation deletes only old files absent from all records.
-    await this.prisma.knowledgeFile.delete({ where: { id: fileId } });
-    await this.storage.delete(file.storageKey);
-
-    return { deleted: true };
   }
 
   /**

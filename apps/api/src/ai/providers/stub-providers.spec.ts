@@ -40,7 +40,7 @@ describe.each([
     }
   });
 
-  it("throws NOT_IMPLEMENTED from every execution method rather than calling a vendor API", async () => {
+  it("keeps non-embedding capabilities unimplemented", async () => {
     const provider = new Provider(makeEnv());
     const [model] = provider.listModels();
     if (!model) {
@@ -51,9 +51,6 @@ describe.each([
       expect.objectContaining({ response: expect.objectContaining({ code: "NOT_IMPLEMENTED" }) }),
     );
     await expect(provider.generateStructured(model.modelId, "hello", "schema")).rejects.toEqual(
-      expect.objectContaining({ response: expect.objectContaining({ code: "NOT_IMPLEMENTED" }) }),
-    );
-    await expect(provider.embed(model.modelId, "hello")).rejects.toEqual(
       expect.objectContaining({ response: expect.objectContaining({ code: "NOT_IMPLEMENTED" }) }),
     );
   });
@@ -75,11 +72,10 @@ describe.each([
     expect(surface).not.toContain(secretValue);
   });
 
-  it("never reports a real execution path, even when its API key is configured (Phase 4 Step 3 execution-eligibility guard)", () => {
+  it("reports only its implemented embedding execution path", () => {
     const provider = new Provider(makeEnv({ [envKey]: "test-key-value" } as Partial<Env>));
     expect(provider.isReady()).toBe(true);
-    for (const capability of provider.capabilities) {
-      expect(provider.supportsExecution(capability)).toBe(false);
-    }
+    expect(provider.supportsExecution("embeddings")).toBe(true);
+    expect(provider.supportsExecution("text-generation")).toBe(false);
   });
 });
