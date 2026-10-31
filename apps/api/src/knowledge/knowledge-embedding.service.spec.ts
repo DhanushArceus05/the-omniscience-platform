@@ -54,4 +54,13 @@ describe("KnowledgeEmbeddingService (mocked OmniProvider)", () => {
     await expect(service.embed([chunk(0)])).rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(embedBatch).toHaveBeenCalledTimes(1);
   });
+
+  it("embeds a search query through the same fixed OmniProvider model and validates dimensions", async () => {
+    const embed = jest.fn().mockResolvedValue(vector);
+    const service = new KnowledgeEmbeddingService({ getById: () => ({ embed }) } as never, env);
+    await expect(service.embedQuery("question")).resolves.toEqual(vector);
+    expect(embed).toHaveBeenCalledWith("text-embedding-3-small", "question");
+    const invalid = new KnowledgeEmbeddingService({ getById: () => ({ embed: async () => [Number.NaN] }) } as never, env);
+    await expect(invalid.embedQuery("question")).rejects.toMatchObject({ response: { code: "KNOWLEDGE_EMBEDDING_RESPONSE_INVALID" } });
+  });
 });

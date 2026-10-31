@@ -123,10 +123,26 @@ model KnowledgeFile {
   activeGenerationId String?
   createdAt    DateTime            @default(now())
   updatedAt    DateTime            @updatedAt
+    readLeases   KnowledgeFileReadLease[]
 
   @@index([workspaceId])
   @@index([ownerId])
   @@map("knowledge_files")
+}
+
+/// Durable, expiring readers pin a READY file generation while its text can be sent to model generation.
+model KnowledgeFileReadLease {
+  id           String       @id
+  workspaceId  String
+  fileId       String
+  generationId String
+  expiresAt    DateTime
+  createdAt    DateTime     @default(now())
+  file         KnowledgeFile @relation(fields: [fileId], references: [id], onDelete: Restrict)
+
+  @@index([workspaceId, fileId, expiresAt])
+  @@index([workspaceId, fileId, generationId, expiresAt])
+  @@map("knowledge_file_read_leases")
 }
 
 enum KnowledgeFileStatus {

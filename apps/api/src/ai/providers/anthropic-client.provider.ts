@@ -32,6 +32,7 @@ export interface AnthropicMessagesClient {
   readonly messages: {
     create(
       params: Anthropic.MessageCreateParamsNonStreaming,
+      options?: { readonly signal?: AbortSignal },
     ): Promise<Anthropic.Message>;
     /**
      * The streaming counterpart to `create` (Phase 4 Step 2 → Phase 6
@@ -100,7 +101,7 @@ function createAnthropicClient(env: Env): AnthropicMessagesClient {
   // doesn't declare.
   return {
     messages: {
-      create: (params) => client.messages.create(params),
+      create: (params, options) => client.messages.create(params, options),
       stream: (params, options) => ({
         textStream: extractTextDeltas(client.messages.stream(params, options)),
       }),

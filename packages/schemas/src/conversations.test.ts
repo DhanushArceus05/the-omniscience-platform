@@ -123,6 +123,7 @@ describe("sendMessageRequestSchema", () => {
   it("accepts a valid payload, trimming content", () => {
     expect(sendMessageRequestSchema.parse({ content: "  Hello, OmniCore.  " })).toEqual({
       content: "Hello, OmniCore.",
+      useKnowledge: false,
     });
   });
 
@@ -140,7 +141,18 @@ describe("sendMessageRequestSchema", () => {
 
   it("accepts content at exactly the 8000-character limit", () => {
     const content = "a".repeat(8_000);
-    expect(sendMessageRequestSchema.parse({ content })).toEqual({ content });
+    expect(sendMessageRequestSchema.parse({ content })).toEqual({ content, useKnowledge: false });
+  });
+
+  it("accepts explicit workspace Knowledge mode and rejects non-boolean values", () => {
+    expect(sendMessageRequestSchema.parse({ content: "Hello", useKnowledge: true })).toEqual({ content: "Hello", useKnowledge: true });
+    expect(() => sendMessageRequestSchema.parse({ content: "Hello", useKnowledge: "yes" })).toThrow();
+  });
+
+  it("validates UUID idempotency keys", () => {
+    const requestId = "8c4c3b0c-2395-4b7a-92ab-0f0bd3e3cc05";
+    expect(sendMessageRequestSchema.parse({ content: "Question", requestId })).toEqual({ content: "Question", useKnowledge: false, requestId });
+    expect(() => sendMessageRequestSchema.parse({ content: "Question", requestId: "not-a-uuid" })).toThrow();
   });
 
   it("rejects unknown fields", () => {

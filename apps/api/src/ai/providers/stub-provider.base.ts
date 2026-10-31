@@ -65,7 +65,7 @@ export abstract class StubProviderDescriptor implements OmniProvider {
   // `modelId`) so every concrete adapter's own call signature matches
   // `OmniProvider` exactly, not just structurally through the interface.
   // eslint-disable-next-line @typescript-eslint/require-await, @typescript-eslint/no-unused-vars
-  async generateText(modelId: ModelId, _prompt: string): Promise<string> {
+  async generateText(modelId: ModelId, _prompt: string, _options?: { readonly signal?: AbortSignal }): Promise<string> {
     throw notImplementedError(this.providerId, modelId);
   }
 

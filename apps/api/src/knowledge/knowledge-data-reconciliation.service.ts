@@ -4,6 +4,7 @@ import { LOGGER } from "../config/config.constants";
 import { PrismaService } from "../prisma/prisma.service";
 import { KnowledgeChunksRepository } from "./knowledge-chunks.repository";
 import { KnowledgeVectorsService } from "./knowledge-vectors.service";
+import { KnowledgeReadLeaseService } from "./knowledge-read-lease.service";
 
 const INTERVAL_MS = 6 * 60 * 60 * 1000;
 const STALE_LIFECYCLE_LEASE_MS = 30 * 60 * 1000;
@@ -19,6 +20,7 @@ export class KnowledgeDataReconciliationService implements OnModuleInit, OnModul
     private readonly chunks: KnowledgeChunksRepository,
     private readonly vectors: KnowledgeVectorsService,
     @Inject(LOGGER) private readonly logger: Logger,
+    private readonly readLeases: KnowledgeReadLeaseService,
   ) {}
 
   onModuleInit(): void {
@@ -77,6 +79,7 @@ export class KnowledgeDataReconciliationService implements OnModuleInit, OnModul
           const file = fileByKey.get(`${artifact.workspaceId}\0${artifact.fileId}`);
           if (file?.status === "DELETING" && file.processingAttemptId && Date.now() - file.updatedAt.getTime() < STALE_LIFECYCLE_LEASE_MS) continue;
           if (file?.activeGenerationId === artifact.generationId || file?.processingAttemptId === artifact.generationId) continue;
+          if (await this.readLeases.hasLive(artifact.workspaceId, artifact.fileId, artifact.generationId)) continue;
           await this.vectors.deleteGeneration(artifact.workspaceId, artifact.fileId, artifact.generationId);
           await this.chunks.deleteGeneration(artifact.workspaceId, artifact.fileId, artifact.generationId);
           removed += 1;

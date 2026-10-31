@@ -124,4 +124,6 @@ export type {
   KnowledgeChunk,
   KnowledgeQueryResult,
   Citation,
+  KnowledgeGrounding,
+  KnowledgeMessageAttribution,
 } from "./knowledge";

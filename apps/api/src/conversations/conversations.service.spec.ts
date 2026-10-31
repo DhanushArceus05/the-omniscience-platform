@@ -4,6 +4,8 @@ import { OmniCoreService } from "../omnicore/omnicore.service";
 import { WorkspacesService } from "../workspaces/workspaces.service";
 import { ConversationsService } from "./conversations.service";
 import { ConversationsRepository } from "./conversations.repository";
+import { KnowledgeRetrievalService } from "../knowledge/knowledge-retrieval.service";
+import { KnowledgeContextService } from "../knowledge/knowledge-context.service";
 
 describe("ConversationsService", () => {
   let service: ConversationsService;
@@ -14,6 +16,12 @@ describe("ConversationsService", () => {
     getConversation: jest.fn(),
     touchConversation: jest.fn(),
     createMessage: jest.fn(),
+    beginUserMessageRequest: jest.fn(),
+    assertUserMessageRequest: jest.fn().mockResolvedValue(undefined),
+    heartbeatUserMessageRequest: jest.fn().mockResolvedValue(undefined),
+    markUserMessageRequestRetryable: jest.fn().mockResolvedValue(undefined),
+    publishAssistantMessage: jest.fn(),
+    persistIncompleteAssistantAttempt: jest.fn().mockResolvedValue(undefined),
     listMessages: jest.fn(),
     renameConversation: jest.fn(),
     deleteConversation: jest.fn(),
@@ -22,6 +30,8 @@ describe("ConversationsService", () => {
   };
   const workspaces = { getById: jest.fn() };
   const omniCore = { execute: jest.fn(), executeStream: jest.fn() };
+  const knowledgeRetrieval = { retrieve: jest.fn(), validateSources: jest.fn(), assertLeases: jest.fn().mockResolvedValue(undefined), renewLeases: jest.fn().mockResolvedValue(true), releaseLeases: jest.fn().mockResolvedValue(undefined) };
+  const knowledgeContext = { build: jest.fn() };
 
   const workspace = {
     id: "workspace_1",
@@ -42,6 +52,16 @@ describe("ConversationsService", () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     workspaces.getById.mockResolvedValue(workspace);
+    knowledgeRetrieval.retrieve.mockResolvedValue([]);
+    knowledgeRetrieval.validateSources.mockResolvedValue([]);
+    repository.beginUserMessageRequest.mockImplementation(async (input: Record<string, unknown>) => ({
+      userMessage: await repository.createMessage(input),
+      ...(input.requestId ? { requestId: input.requestId, leaseId: "lease" } : {}),
+    }));
+    repository.publishAssistantMessage.mockImplementation(async (input: Record<string, unknown>) => ({
+      id: "published-assistant", conversationId: input.conversationId, role: "assistant", content: input.content,
+      createdAt: "2026-01-01T00:00:01.000Z", status: input.status ?? "complete",
+    }));
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -49,6 +69,8 @@ describe("ConversationsService", () => {
         { provide: ConversationsRepository, useValue: repository },
         { provide: WorkspacesService, useValue: workspaces },
         { provide: OmniCoreService, useValue: omniCore },
+        { provide: KnowledgeRetrievalService, useValue: knowledgeRetrieval },
+        { provide: KnowledgeContextService, useValue: knowledgeContext },
       ],
     }).compile();
 
@@ -255,6 +277,164 @@ describe("ConversationsService", () => {
       expect(omniCore.execute).toHaveBeenCalledWith("Hello, OmniCore.");
     });
 
+    it("keeps retrieval disabled by default, preserves the original prompt, and marks new responses NO_KNOWLEDGE", async () => {
+      repository.createMessage.mockResolvedValueOnce(userMessage).mockResolvedValueOnce(assistantMessage);
+      omniCore.execute.mockResolvedValue({ ...omniCoreResult, text: "Literal [S1]" });
+      await service.sendMessage("user_1", "workspace_1", conversation.id, "Question");
+      expect(knowledgeRetrieval.retrieve).not.toHaveBeenCalled();
+      expect(omniCore.execute).toHaveBeenCalledWith("Question");
+      expect(repository.createMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        content: "Literal [S1]", knowledge: { grounding: "NO_KNOWLEDGE", citations: [] },
+      }));
+    });
+
+    it("propagates read-lease loss to non-streaming model execution, waits for provider abort, and permits a safe retry", async () => {
+      jest.useFakeTimers();
+      try {
+        const requestId = "f810393f-395b-4319-8d40-fdd578b96934";
+        const source = {
+          sourceId: "source-a", workspaceId: "workspace_1", fileId: "file_1", fileName: "guide.txt",
+          generationId: "generation-1", chunkId: "chunk-1", chunkIndex: 0, text: "leased context", score: 0.9,
+        };
+        const lease = { id: "read-lease-1", workspaceId: "workspace_1", fileId: "file_1", generationId: "generation-1" };
+        knowledgeRetrieval.retrieve.mockResolvedValue({ sources: [source], leases: [lease] });
+        knowledgeContext.build.mockReturnValue({ prompt: "user question plus leased context", sources: [{ label: "S1", source }] });
+        knowledgeRetrieval.renewLeases.mockResolvedValue(false);
+        repository.createMessage.mockResolvedValue(userMessage);
+
+        let providerSignal: AbortSignal | undefined;
+        let signalSeen!: () => void;
+        const executionStarted = new Promise<void>((resolve) => { signalSeen = resolve; });
+        let rejectProvider!: (error: unknown) => void;
+        const providerOperation = new Promise<never>((_resolve, reject) => { rejectProvider = reject; });
+        omniCore.execute.mockImplementation((_prompt: string, options?: { signal?: AbortSignal }) => {
+          providerSignal = options?.signal;
+          signalSeen();
+          return providerOperation;
+        });
+
+        const firstAttempt = service.sendMessage("user_1", "workspace_1", conversation.id, "Question", true, requestId);
+        const firstAttemptRejected = expect(firstAttempt).rejects.toBeDefined();
+        await executionStarted;
+        expect(providerSignal).toBeInstanceOf(AbortSignal);
+        expect(providerSignal?.aborted).toBe(false);
+
+        await jest.advanceTimersByTimeAsync(30_000);
+        expect(providerSignal?.aborted).toBe(true);
+        // The service keeps the read lease until the provider operation itself
+        // terminates; merely aborting a signal or racing the outer promise is
+        // not treated as completed cleanup.
+        expect(knowledgeRetrieval.releaseLeases).not.toHaveBeenCalled();
+
+        rejectProvider(new Error("provider observed abort"));
+        await firstAttemptRejected;
+        expect(knowledgeRetrieval.releaseLeases).toHaveBeenCalledWith([lease]);
+        expect(repository.publishAssistantMessage).not.toHaveBeenCalled();
+
+        knowledgeRetrieval.renewLeases.mockResolvedValue(true);
+        omniCore.execute.mockReset().mockResolvedValue(omniCoreResult);
+        await expect(service.sendMessage("user_1", "workspace_1", conversation.id, "Question", true, requestId))
+          .resolves.toMatchObject({ assistantMessage: { content: omniCoreResult.text } });
+        expect(repository.beginUserMessageRequest).toHaveBeenCalledTimes(2);
+        expect(repository.publishAssistantMessage).toHaveBeenCalledTimes(1);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it("uses bounded retrieved context and persists only validated source-label citations", async () => {
+      const source = {
+        sourceId: "source-a", workspaceId: "workspace_1", fileId: "file_1", fileName: "guide.pdf", generationId: "gen_1",
+        chunkId: "chunk_1", chunkIndex: 0, text: "The policy is 30 days.", score: 0.88, pageNumbers: [4],
+      };
+      knowledgeRetrieval.retrieve.mockResolvedValue([source]);
+      knowledgeContext.build.mockReturnValue({ prompt: "bounded protected context", sources: [{ label: "S1", source }] });
+      knowledgeRetrieval.validateSources.mockResolvedValue([source]);
+      omniCore.execute.mockResolvedValue({ ...omniCoreResult, text: "The policy is 30 days [S1]. Unknown [S9]." });
+      repository.createMessage.mockResolvedValueOnce(userMessage).mockResolvedValueOnce(assistantMessage);
+
+      await service.sendMessage("user_1", "workspace_1", conversation.id, "Question", true);
+
+      expect(knowledgeRetrieval.retrieve).toHaveBeenCalledWith("user_1", "workspace_1", "Question");
+      expect(knowledgeContext.build).toHaveBeenCalledWith("Question", [source]);
+      expect(omniCore.execute).toHaveBeenCalledWith("bounded protected context");
+      expect(repository.createMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({ role: "user", knowledgeRequested: true }));
+      expect(repository.createMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        content: "The policy is 30 days [S1]. Unknown .",
+        knowledge: { grounding: "SOURCE_REFERENCED", citations: [{
+          id: "chunk_1", sourceId: "S1", fileId: "file_1", fileName: "guide.pdf", chunkId: "chunk_1", chunkIndex: 0,
+          pageNumbers: [4], retrievalScore: 0.88, excerpt: "The policy is 30 days.", excerptKind: "GENERAL_SOURCE_EXCERPT",
+        }] },
+      }));
+    });
+
+    it.each([
+      "The policy lasts 90 days [S1].",
+      "The weather is sunny [S1].",
+      'The policy lasts 30 days and the source says "The policy lasts 30 days." [S1].',
+      'The policy lasts 90 days, as shown in "an invented quotation" [S1] (fake.pdf, page 999).',
+    ])("does not claim semantic grounding for a contradicted, unrelated, or fabricated quotation response: %s", async (modelText) => {
+      const source = {
+        sourceId: "source-a", workspaceId: "workspace_1", fileId: "file_1", fileName: "guide.pdf", generationId: "gen_1",
+        chunkId: "chunk_1", chunkIndex: 0, text: "The policy lasts 30 days.", score: 0.88, pageNumbers: [4],
+      };
+      knowledgeRetrieval.retrieve.mockResolvedValue([source]);
+      knowledgeContext.build.mockReturnValue({ prompt: "bounded protected context", sources: [{ label: "S1", source }] });
+      knowledgeRetrieval.validateSources.mockResolvedValue([source]);
+      omniCore.execute.mockResolvedValue({ ...omniCoreResult, text: `${modelText} [S1]` });
+      repository.createMessage.mockResolvedValueOnce(userMessage).mockResolvedValueOnce(assistantMessage);
+
+      await service.sendMessage("user_1", "workspace_1", conversation.id, "Question", true);
+
+      const assistantInput = repository.createMessage.mock.calls[1]?.[0] as { content: string; knowledge: { grounding: string; citations: Array<Record<string, unknown>> } };
+      expect(assistantInput.knowledge.grounding).toBe("SOURCE_REFERENCED");
+      expect(assistantInput.knowledge.grounding).not.toBe("GROUNDED");
+      expect(assistantInput.knowledge.grounding).not.toBe("PARTIALLY_GROUNDED");
+      expect(assistantInput.content).toContain("[S1]");
+      expect(assistantInput.knowledge.citations).toEqual([expect.objectContaining({
+        fileName: "guide.pdf", pageNumbers: [4], excerpt: "The policy lasts 30 days.", excerptKind: "GENERAL_SOURCE_EXCERPT",
+      })]);
+      expect(JSON.stringify(assistantInput.knowledge.citations)).not.toContain("fake.pdf");
+      expect(JSON.stringify(assistantInput.knowledge.citations)).not.toContain("invented quotation");
+    });
+
+    it.each(["deleted source", "inactive generation", "cross-workspace source"])("does not cite an inaccessible %s", async () => {
+      const source = { sourceId: "source-a", workspaceId: "workspace_1", fileId: "file_1", fileName: "guide.pdf", generationId: "gen_1", chunkId: "chunk_1", chunkIndex: 0, text: "The policy lasts 30 days.", score: 0.88 };
+      knowledgeRetrieval.retrieve.mockResolvedValue([source]);
+      knowledgeContext.build.mockReturnValue({ prompt: "bounded protected context", sources: [{ label: "S1", source }] });
+      knowledgeRetrieval.validateSources.mockResolvedValue([]);
+      omniCore.execute.mockResolvedValue({ ...omniCoreResult, text: "The policy lasts 30 days [S1]." });
+      repository.createMessage.mockResolvedValueOnce(userMessage).mockResolvedValueOnce(assistantMessage);
+      await service.sendMessage("user_1", "workspace_1", conversation.id, "Question", true);
+      expect(repository.createMessage.mock.calls[1]?.[0]).toMatchObject({ knowledge: { grounding: "NOT_GROUNDED", citations: [] } });
+    });
+
+    it("deduplicates repeated valid source labels and drops unknown labels", async () => {
+      const source = {
+        sourceId: "source-a", workspaceId: "workspace_1", fileId: "file_1", fileName: "guide.pdf", generationId: "gen_1",
+        chunkId: "chunk_1", chunkIndex: 0, text: "The policy lasts 30 days.", score: 0.88,
+      };
+      knowledgeRetrieval.retrieve.mockResolvedValue([source]);
+      knowledgeContext.build.mockReturnValue({ prompt: "bounded protected context", sources: [{ label: "S1", source }] });
+      knowledgeRetrieval.validateSources.mockResolvedValue([source]);
+      omniCore.execute.mockResolvedValue({ ...omniCoreResult, text: "A [S1] B [S1] C [S99]." });
+      repository.createMessage.mockResolvedValueOnce(userMessage).mockResolvedValueOnce(assistantMessage);
+
+      await service.sendMessage("user_1", "workspace_1", conversation.id, "Question", true);
+
+      const assistantInput = repository.createMessage.mock.calls[1]?.[0] as { content: string; knowledge: { citations: unknown[] } };
+      expect(assistantInput.content).toBe("A [S1] B [S1] C .");
+      expect(assistantInput.knowledge.citations).toHaveLength(1);
+    });
+
+    it("propagates retrieval infrastructure failures after persisting the user turn without generating or citing", async () => {
+      repository.createMessage.mockResolvedValueOnce(userMessage);
+      knowledgeRetrieval.retrieve.mockRejectedValue(new Error("private database detail"));
+      await expect(service.sendMessage("user_1", "workspace_1", conversation.id, "Question", true)).rejects.toThrow("private database detail");
+      expect(repository.createMessage).toHaveBeenCalledTimes(1);
+      expect(omniCore.execute).not.toHaveBeenCalled();
+    });
+
     it("persists only the trimmed OmniCore metadata on the assistant message", async () => {
       repository.createMessage.mockResolvedValueOnce(userMessage).mockResolvedValueOnce(assistantMessage);
       omniCore.execute.mockResolvedValue(omniCoreResult);
@@ -276,6 +456,7 @@ describe("ConversationsService", () => {
           modelId: "claude-sonnet-5",
           taskPlanId: "task-plan_1",
         },
+        knowledge: { grounding: "NO_KNOWLEDGE", citations: [] },
       });
     });
 
@@ -475,6 +656,82 @@ describe("ConversationsService", () => {
       });
     });
 
+    it("keeps split streaming source labels bounded and persists citations only for validated labels", async () => {
+      const source = {
+        sourceId: "source-a", workspaceId: "workspace_1", fileId: "file_1", fileName: "guide.pdf", generationId: "gen_1",
+        chunkId: "chunk_1", chunkIndex: 0, text: "Supported fact.", score: 0.9,
+      };
+      knowledgeRetrieval.retrieve.mockResolvedValue([source]);
+      knowledgeContext.build.mockReturnValue({ prompt: "protected", sources: [{ label: "S1", source }] });
+      knowledgeRetrieval.validateSources.mockResolvedValue([source]);
+      omniCore.executeStream.mockResolvedValue(streamResult(fakeStream(["Supported [S", "1] and [S9]", "."])));
+      repository.createMessage.mockImplementation(async (input: { role: string; content: string; knowledge?: unknown }) => ({
+        ...(input.role === "assistant" ? completeAssistantMessage : userMessage), content: input.content,
+        ...(input.knowledge ? { knowledge: input.knowledge } : {}),
+      } as never));
+
+      const events = await collect(service.sendMessageStream("user_1", "workspace_1", conversation.id, "Question", new AbortController().signal, true));
+      expect(omniCore.executeStream).toHaveBeenCalledWith("protected", expect.any(Object));
+      expect(events.filter((event) => event.event === "delta").map((event) => event.event === "delta" ? event.data.text : "").join(""))
+        .toBe("Supported [S1] and .");
+      expect(repository.createMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        content: "Supported [S1] and .",
+        knowledge: { grounding: "SOURCE_REFERENCED", citations: [expect.objectContaining({ sourceId: "S1", chunkId: "chunk_1", excerptKind: "GENERAL_SOURCE_EXCERPT" })] },
+      }));
+    });
+
+    it("emits the persisted user turn and a safe retrieval error without invoking generation", async () => {
+      const retrievalError = new HttpException({ code: "KNOWLEDGE_RETRIEVAL_UNAVAILABLE", message: "Knowledge search is temporarily unavailable." }, 503);
+      knowledgeRetrieval.retrieve.mockRejectedValue(retrievalError);
+      repository.createMessage.mockResolvedValueOnce(userMessage);
+      const events = await collect(service.sendMessageStream("user_1", "workspace_1", conversation.id, "Question", new AbortController().signal, true));
+      expect(events).toEqual([
+        { event: "start", data: { userMessage, assistantExpected: false } },
+        { event: "error", data: { code: "KNOWLEDGE_RETRIEVAL_UNAVAILABLE", message: "Knowledge search is temporarily unavailable.", assistantMessagePersisted: false, retryable: true } },
+      ]);
+      expect(repository.createMessage).toHaveBeenCalledTimes(1);
+      expect(omniCore.executeStream).not.toHaveBeenCalled();
+    });
+
+    it("reuses the persisted user turn on a retrieval retry with the same request ID", async () => {
+      const requestId = "8c4c3b0c-2395-4b7a-92ab-0f0bd3e3cc05";
+      const persistedUser = { ...userMessage, requestId };
+      repository.beginUserMessageRequest.mockResolvedValue({ userMessage: persistedUser, requestId, leaseId: "attempt-1" });
+      knowledgeRetrieval.retrieve.mockRejectedValueOnce(new HttpException({ code: "KNOWLEDGE_RETRIEVAL_UNAVAILABLE", message: "Retry" }, 503)).mockResolvedValueOnce([]);
+      omniCore.executeStream.mockResolvedValue(streamResult(fakeStream(["Answer"]))) ;
+      await collect(service.sendMessageStream("user_1", "workspace_1", conversation.id, "Question", new AbortController().signal, true, requestId));
+      repository.beginUserMessageRequest.mockResolvedValue({ userMessage: persistedUser, requestId, leaseId: "attempt-2" });
+      await collect(service.sendMessageStream("user_1", "workspace_1", conversation.id, "Question", new AbortController().signal, true, requestId));
+      expect(repository.beginUserMessageRequest).toHaveBeenNthCalledWith(1, expect.objectContaining({ requestId, role: "user" }));
+      expect(repository.beginUserMessageRequest).toHaveBeenNthCalledWith(2, expect.objectContaining({ requestId, role: "user" }));
+      expect(repository.createMessage.mock.calls.filter(([input]) => input.role === "user")).toHaveLength(0);
+      expect(repository.publishAssistantMessage).toHaveBeenCalledTimes(1);
+      expect(repository.createMessage.mock.calls.filter(([input]) => input.role === "assistant")).toHaveLength(0);
+    });
+
+    it("keeps partial stream output incomplete and retries the same user turn to one complete response", async () => {
+      const requestId = "d744efc8-f4d2-4a71-8c72-2997776c61ad";
+      const persistedUser = { ...userMessage, requestId };
+      repository.beginUserMessageRequest
+        .mockResolvedValueOnce({ userMessage: persistedUser, requestId, leaseId: "attempt-a" })
+        .mockResolvedValueOnce({ userMessage: persistedUser, requestId, leaseId: "attempt-b" });
+      const providerError = new HttpException({ code: "PROVIDER_UNAVAILABLE", message: "Unavailable" }, 503);
+      omniCore.executeStream
+        .mockResolvedValueOnce(streamResult(fakeFailingStream(["partial answer"], providerError)))
+        .mockResolvedValueOnce(streamResult(fakeStream(["complete answer"])));
+
+      const failed = await collect(service.sendMessageStream("user_1", "workspace_1", conversation.id, "Question", new AbortController().signal, false, requestId));
+      expect(failed.some((event) => event.event === "delta" && event.data.text === "partial answer")).toBe(true);
+      expect(failed.some((event) => event.event === "done")).toBe(false);
+      expect(repository.persistIncompleteAssistantAttempt).toHaveBeenCalledWith(expect.objectContaining({ content: "partial answer", status: "incomplete" }), requestId, "attempt-a");
+
+      const retried = await collect(service.sendMessageStream("user_1", "workspace_1", conversation.id, "Question", new AbortController().signal, false, requestId));
+      expect(retried.some((event) => event.event === "done")).toBe(true);
+      expect(repository.publishAssistantMessage).toHaveBeenCalledTimes(1);
+      expect(repository.publishAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({ content: "complete answer", status: "complete" }), requestId, "attempt-b");
+      expect(repository.markUserMessageRequestRetryable).toHaveBeenCalledWith(persistedUser.id, requestId, "attempt-a");
+    });
+
     it("yields start, then one delta per chunk in order, then done", async () => {
       repository.createMessage
         .mockResolvedValueOnce(userMessage)
@@ -523,6 +780,7 @@ describe("ConversationsService", () => {
         content: "Hello!",
         omniCore: omniCoreMetadata,
         status: "complete",
+        knowledge: { grounding: "NO_KNOWLEDGE", citations: [] },
       });
       expect(repository.touchConversation).toHaveBeenCalledWith(conversation.id, "Hello!");
     });
@@ -565,6 +823,7 @@ describe("ConversationsService", () => {
         content: "Hello! How can",
         omniCore: omniCoreMetadata,
         status: "incomplete",
+        knowledge: { grounding: "NO_KNOWLEDGE", citations: [] },
       });
       expect(repository.createMessage).toHaveBeenCalledTimes(2);
       expect(repository.touchConversation).toHaveBeenCalledWith(conversation.id, "Hello! How can");

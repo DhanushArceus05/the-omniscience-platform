@@ -191,6 +191,24 @@ describe("AnthropicProvider", () => {
       });
     });
 
+    it("forwards cancellation to the non-streaming SDK request", async () => {
+      const client = makeClient();
+      let sdkRequestAborted = false;
+      client.messages.create.mockImplementation((_params: unknown, options?: { signal?: AbortSignal }) => new Promise((_, reject) => {
+        options?.signal?.addEventListener("abort", () => {
+          sdkRequestAborted = true;
+          reject(new Error("request aborted"));
+        }, { once: true });
+      }));
+      const provider = new AnthropicProvider(makeEnv({ ANTHROPIC_API_KEY: "test-key" }), client);
+      const controller = new AbortController();
+      const request = provider.generateText("claude-sonnet-5", "Question", { signal: controller.signal });
+      controller.abort();
+      await expect(request).rejects.toBeDefined();
+      expect(sdkRequestAborted).toBe(true);
+      expect(client.messages.create).toHaveBeenCalledWith(expect.objectContaining({ model: "claude-sonnet-5" }), { signal: controller.signal });
+    });
+
     it("joins multiple text blocks and trims surrounding whitespace", async () => {
       const client = makeClient();
       client.messages.create.mockResolvedValue({

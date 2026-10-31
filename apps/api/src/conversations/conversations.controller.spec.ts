@@ -207,7 +207,7 @@ describe("ConversationsController", () => {
       { sub: "user_1", email: "user@example.com" },
       "workspace_1",
       "665f1c2b9a4e8f0012345678",
-      { content: "Hello" },
+      { content: "Hello", useKnowledge: false },
     );
 
     expect(conversationsService.sendMessage).toHaveBeenCalledWith(
@@ -215,6 +215,8 @@ describe("ConversationsController", () => {
       "workspace_1",
       "665f1c2b9a4e8f0012345678",
       "Hello",
+      false,
+      undefined,
     );
     expect(result).toEqual({ success: true, data: { userMessage, assistantMessage } });
   });
@@ -287,7 +289,7 @@ describe("ConversationsController", () => {
         { sub: "user_1", email: "user@example.com" },
         "workspace_1",
         "conv_1",
-        { content: "Hello" },
+        { content: "Hello", useKnowledge: false },
         req as unknown as Parameters<typeof controller.sendMessageStream>[4],
         res as unknown as Parameters<typeof controller.sendMessageStream>[5],
       );
@@ -319,7 +321,7 @@ describe("ConversationsController", () => {
         { sub: "user_1", email: "user@example.com" },
         "workspace_1",
         "conv_1",
-        { content: "Hello" },
+        { content: "Hello", useKnowledge: false },
         req as unknown as Parameters<typeof controller.sendMessageStream>[4],
         res as unknown as Parameters<typeof controller.sendMessageStream>[5],
       );
@@ -330,6 +332,8 @@ describe("ConversationsController", () => {
         "conv_1",
         "Hello",
         expect.any(AbortSignal),
+        false,
+        undefined,
       );
     });
 
@@ -353,7 +357,7 @@ describe("ConversationsController", () => {
         { sub: "user_1", email: "user@example.com" },
         "workspace_1",
         "conv_1",
-        { content: "hi" },
+        { content: "hi", useKnowledge: false },
         req as unknown as Parameters<typeof controller.sendMessageStream>[4],
         res as unknown as Parameters<typeof controller.sendMessageStream>[5],
       );
@@ -391,7 +395,7 @@ describe("ConversationsController", () => {
         { sub: "user_1", email: "user@example.com" },
         "workspace_1",
         "conv_1",
-        { content: "hi" },
+        { content: "hi", useKnowledge: false },
         req as unknown as Parameters<typeof controller.sendMessageStream>[4],
         res as unknown as Parameters<typeof controller.sendMessageStream>[5],
       );
@@ -425,7 +429,7 @@ describe("ConversationsController", () => {
           { sub: "user_1", email: "user@example.com" },
           "workspace_1",
           "conv_1",
-          { content: "hi" },
+          { content: "hi", useKnowledge: false },
           req as unknown as Parameters<typeof controller.sendMessageStream>[4],
           res as unknown as Parameters<typeof controller.sendMessageStream>[5],
         ),
@@ -459,7 +463,7 @@ describe("ConversationsController", () => {
           { sub: "user_1", email: "user@example.com" },
           "workspace_1",
           "conv_1",
-          { content: "hi" },
+          { content: "hi", useKnowledge: false },
           req as unknown as Parameters<typeof controller.sendMessageStream>[4],
           res as unknown as Parameters<typeof controller.sendMessageStream>[5],
         ),

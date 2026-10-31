@@ -58,6 +58,7 @@ export class FakePrismaService {
   private readonly users: FakeUserRow[] = [];
   private readonly workspaces: FakeWorkspaceRow[] = [];
   private readonly knowledgeFiles: FakeKnowledgeFileRow[] = [];
+  private readonly knowledgeReadLeases: Array<{ id: string; workspaceId: string; fileId: string; generationId: string; expiresAt: Date }> = [];
   private workspaceSeq = 0;
   private knowledgeFileSeq = 0;
 
@@ -262,18 +263,126 @@ export class FakePrismaService {
     },
   };
 
-  async $transaction<T>(callback: (transaction: FakePrismaService) => Promise<T>): Promise<T> {
+  knowledgeFileReadLease = {
+    create: async ({ data }: { data: { id: string; workspaceId: string; fileId: string; generationId: string; expiresAt: Date } }) => {
+      this.knowledgeReadLeases.push(data);
+      return data;
+    },
+    updateMany: async ({ where, data }: { where: { id: string; workspaceId: string; fileId: string; generationId: string; expiresAt: { gt: Date } }; data: { expiresAt: Date } }) => {
+      const lease = this.knowledgeReadLeases.find((item) => item.id === where.id && item.workspaceId === where.workspaceId && item.fileId === where.fileId && item.generationId === where.generationId && item.expiresAt > where.expiresAt.gt);
+      const file = this.knowledgeFiles.find((item) => item.id === where.fileId && item.workspaceId === where.workspaceId);
+      if (!lease || !file || file.activeGenerationId !== where.generationId || !["READY", "PROCESSING", "EXTRACTED", "EMBEDDING_PENDING", "DELETING"].includes(file.status)) return { count: 0 };
+      lease.expiresAt = data.expiresAt;
+      return { count: 1 };
+    },
+    count: async ({ where }: { where: { id?: string; workspaceId?: string; fileId?: string; generationId?: string; expiresAt?: { gt?: Date; lte?: Date } } }) => this.knowledgeReadLeases.filter((item) =>
+      (where.id === undefined || item.id === where.id) && (where.workspaceId === undefined || item.workspaceId === where.workspaceId) &&
+      (where.fileId === undefined || item.fileId === where.fileId) && (where.generationId === undefined || item.generationId === where.generationId) &&
+      (where.expiresAt?.gt === undefined || item.expiresAt > where.expiresAt.gt) && (where.expiresAt?.lte === undefined || item.expiresAt <= where.expiresAt.lte)).length,
+    deleteMany: async ({ where }: { where: { id?: string; workspaceId?: string; fileId?: string; generationId?: string; expiresAt?: { lte?: Date } } }) => {
+      const before = this.knowledgeReadLeases.length;
+      for (let index = this.knowledgeReadLeases.length - 1; index >= 0; index -= 1) {
+        const lease = this.knowledgeReadLeases[index];
+        if (lease && (where.id === undefined || lease.id === where.id) && (where.workspaceId === undefined || lease.workspaceId === where.workspaceId) &&
+          (where.fileId === undefined || lease.fileId === where.fileId) && (where.generationId === undefined || lease.generationId === where.generationId) &&
+          (where.expiresAt?.lte === undefined || lease.expiresAt <= where.expiresAt.lte)) this.knowledgeReadLeases.splice(index, 1);
+      }
+      return { count: before - this.knowledgeReadLeases.length };
+    },
+  };
+
+  async $transaction<T>(callback: (transaction: FakePrismaService) => Promise<T>, _options?: unknown): Promise<T> {
     return callback(this);
   }
 
   async $queryRaw<T extends Array<Record<string, unknown>>>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T> {
+    const query = strings.join("");
+    if (query.includes('FROM "knowledge_file_read_leases"')) {
+      if (query.includes("COUNT(*)")) {
+        const [first, second, third] = values;
+        const file = this.knowledgeFiles.find((item) => item.id === first && item.workspaceId === second);
+        const ownerId = query.includes('f."ownerId" =') ? first as string : undefined;
+        const workspaceId = query.includes('l."workspaceId" =') || query.includes('WHERE "workspaceId" =') ? first as string : undefined;
+        const fileId = query.includes('"fileId" =') ? (query.includes('"generationId" =') ? second as string : second as string) : undefined;
+        const generationId = query.includes('"generationId" =') ? (query.includes('JOIN "knowledge_files"') ? undefined : third as string | undefined) : undefined;
+        const live = this.knowledgeReadLeases.filter((lease) => {
+          const knowledgeFile = this.knowledgeFiles.find((item) => item.id === lease.fileId);
+          return lease.expiresAt > new Date() &&
+            (ownerId === undefined || knowledgeFile?.ownerId === ownerId) &&
+            (workspaceId === undefined || lease.workspaceId === workspaceId) &&
+            (fileId === undefined || lease.fileId === fileId) &&
+            (generationId === undefined || lease.generationId === generationId);
+        }).length;
+        void file;
+        return [{ count: BigInt(live) }] as unknown as T;
+      }
+      const [id, workspaceId, fileId, generationId] = values;
+      const lease = this.knowledgeReadLeases.find((item) => item.id === id && item.workspaceId === workspaceId && item.fileId === fileId && item.generationId === generationId && item.expiresAt > new Date());
+      return lease ? [{ id: lease.id }] as unknown as T : [] as unknown as T;
+    }
+    if (query.includes('FROM "knowledge_files" WHERE "ownerId" =') && query.includes("FOR UPDATE")) {
+      const ownerId = values[0];
+      return this.knowledgeFiles.filter((file) => file.ownerId === ownerId).map(({ id, workspaceId }) => ({ id, workspaceId })) as unknown as T;
+    }
+    if (query.includes('FROM "knowledge_files" WHERE "workspaceId" =') && query.includes("FOR UPDATE")) {
+      const workspaceId = values[0];
+      return this.knowledgeFiles.filter((file) => file.workspaceId === workspaceId).map(({ id, workspaceId: ws }) => ({ id, workspaceId: ws })) as unknown as T;
+    }
     const [id, workspaceId, ownerId, attemptId] = values;
     const row = this.knowledgeFiles.find((candidate) => candidate.id === id && candidate.workspaceId === workspaceId && candidate.ownerId === ownerId);
-    void strings;
     if (!row) return [] as unknown as T;
+    if (query.includes('"status" = \'READY\'')) {
+      return row.status === "READY" && row.activeGenerationId === attemptId ? [{ id: row.id }] as unknown as T : [] as unknown as T;
+    }
     if (values.length === 3) return [row] as unknown as T;
     if (row.processingAttemptId === attemptId && ["PROCESSING", "EXTRACTED", "EMBEDDING_PENDING"].includes(row.status)) return [{ id: row.id }] as unknown as T;
     return [] as unknown as T;
+  }
+
+  async $executeRaw(strings: TemplateStringsArray, ...values: unknown[]): Promise<number> {
+    const query = strings.join("");
+    if (query.includes('INSERT INTO "knowledge_file_read_leases"')) {
+      const [id, workspaceId, fileId, generationId, ttlMs] = values;
+      this.knowledgeReadLeases.push({ id: id as string, workspaceId: workspaceId as string, fileId: fileId as string, generationId: generationId as string, expiresAt: new Date(Date.now() + Number(ttlMs)) });
+      return 1;
+    }
+    if (query.includes('UPDATE "knowledge_file_read_leases"')) {
+      const [ttlMs, id, workspaceId, fileId, generationId] = values;
+      const lease = this.knowledgeReadLeases.find((item) => item.id === id && item.workspaceId === workspaceId && item.fileId === fileId && item.generationId === generationId && item.expiresAt > new Date());
+      const file = this.knowledgeFiles.find((item) => item.id === fileId && item.workspaceId === workspaceId && item.activeGenerationId === generationId && ["READY", "PROCESSING", "EXTRACTED", "EMBEDDING_PENDING", "DELETING"].includes(item.status));
+      if (!lease || !file) return 0;
+      lease.expiresAt = new Date(Date.now() + Number(ttlMs));
+      return 1;
+    }
+    if (query.includes('DELETE FROM "knowledge_file_read_leases"')) {
+      let scope: (lease: (typeof this.knowledgeReadLeases)[number]) => boolean;
+      if (query.includes("USING \"knowledge_files\"")) {
+        const ownerId = values[0];
+        scope = (lease) => this.knowledgeFiles.some((file) => file.id === lease.fileId && file.ownerId === ownerId) && lease.expiresAt <= new Date();
+      } else if (query.includes("generationId")) {
+        const [workspaceId, fileId, generationId] = values;
+        scope = (lease) => lease.workspaceId === workspaceId && lease.fileId === fileId && (generationId == null || lease.generationId === generationId) && lease.expiresAt <= new Date();
+      } else {
+        const workspaceId = values[0];
+        scope = (lease) => lease.workspaceId === workspaceId && lease.expiresAt <= new Date();
+      }
+      const before = this.knowledgeReadLeases.length;
+      for (let index = this.knowledgeReadLeases.length - 1; index >= 0; index -= 1) if (scope(this.knowledgeReadLeases[index]!)) this.knowledgeReadLeases.splice(index, 1);
+      return before - this.knowledgeReadLeases.length;
+    }
+    if (query.includes('UPDATE "knowledge_files" SET "status" = \'DELETING\'')) {
+      const attemptId = values[0];
+      const id = values[1];
+      const workspaceId = values[2];
+      const ownerId = values.length === 4 ? values[3] : undefined;
+      const file = this.knowledgeFiles.find((item) => item.id === id && item.workspaceId === workspaceId && (ownerId === undefined || item.ownerId === ownerId));
+      if (!file) return 0;
+      file.status = "DELETING";
+      file.processingAttemptId = attemptId as string;
+      file.updatedAt = new Date();
+      return 1;
+    }
+    return 0;
   }
 
   async onModuleInit(): Promise<void> {

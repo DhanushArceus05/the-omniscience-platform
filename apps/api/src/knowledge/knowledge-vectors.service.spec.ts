@@ -84,6 +84,27 @@ describe("KnowledgeVectorsService (mocked Qdrant HTTP)", () => {
       .rejects.toMatchObject({ response: { code: "KNOWLEDGE_VECTOR_INVALID" } });
   });
 
+  it("searches with a mandatory workspace filter and returns validated source payloads", async () => {
+    fetchMock.mockImplementation(async (input) => {
+      if (String(input).endsWith("/collections/omniscience_knowledge")) return Response.json({ result: { config: { params: { vectors: { size: 1536, distance: "Cosine" } } } } });
+      if (String(input).endsWith("/points/search")) return Response.json({ result: [{
+        id: "point-id", score: 0.77, payload: { workspaceId: "ws-a", fileId: "file-a", generationId: "gen-a", chunkId: "chunk-a", chunkIndex: 3 },
+      }] });
+      return Response.json({ result: { status: "completed" } });
+    });
+    const service = new KnowledgeVectorsService(env);
+    const results = await service.search("ws-a", Array(1536).fill(0.2), 8, ["gen-a"]);
+    expect(results).toEqual([{ id: "point-id", score: 0.77, payload: { workspaceId: "ws-a", fileId: "file-a", generationId: "gen-a", chunkId: "chunk-a", chunkIndex: 3 } }]);
+    const request = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/points/search"));
+    expect(JSON.parse(String(request?.[1]?.body))).toMatchObject({
+      filter: { must: [
+        { key: "workspaceId", match: { value: "ws-a" } },
+        { key: "generationId", match: { any: ["gen-a"] } },
+      ] },
+      with_payload: ["workspaceId", "fileId", "generationId", "chunkId", "chunkIndex"],
+    });
+  });
+
   it("deletes a staging generation only within the specified workspace and file", async () => {
     const service = new KnowledgeVectorsService(env);
     await service.deleteGeneration("ws-a", "file-a", "gen-a");

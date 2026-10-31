@@ -830,6 +830,15 @@ describe("OmniscienceClient conversation/message methods (Phase 6 Step 1)", () =
     );
   });
 
+  it("sendMessage() transmits the explicit workspace Knowledge toggle", async () => {
+    const fetchImpl = mockJsonFetch(201, { success: true, data: { userMessage, assistantMessage } });
+    const client = makeClient(fetchImpl);
+    await client.sendMessage("access-token", "workspace_1", conversation.id, "Question", { useKnowledge: true });
+    expect(fetchImpl).toHaveBeenCalledWith(expect.stringContaining("/messages"), expect.objectContaining({
+      body: JSON.stringify({ content: "Question", useKnowledge: true }),
+    }));
+  });
+
   it("sendMessage() surfaces an OmniCore domain error (e.g. AMBIGUOUS_INTENT) unchanged", async () => {
     const fetchImpl = mockJsonFetch(422, {
       success: false,
@@ -898,6 +907,25 @@ describe("OmniscienceClient conversation/message methods (Phase 6 Step 1)", () =
           signal: controller.signal,
         }),
       );
+    });
+
+    it("sends useKnowledge only when the caller explicitly enables it", async () => {
+      const fetchImpl = mockStreamFetch([startFrame, doneFrame]);
+      const client = makeClient(fetchImpl);
+      await collect(client.sendMessageStream("access-token", "workspace_1", conversation.id, "Question", { useKnowledge: true }));
+      expect(fetchImpl).toHaveBeenCalledWith(expect.stringContaining("/messages/stream"), expect.objectContaining({
+        body: JSON.stringify({ content: "Question", useKnowledge: true }),
+      }));
+    });
+
+    it("sends the stable request ID with a Knowledge retry", async () => {
+      const fetchImpl = mockStreamFetch([startFrame, doneFrame]);
+      const client = makeClient(fetchImpl);
+      const requestId = "8c4c3b0c-2395-4b7a-92ab-0f0bd3e3cc05";
+      await collect(client.sendMessageStream("access-token", "workspace_1", conversation.id, "Question", { useKnowledge: true, requestId }));
+      expect(fetchImpl).toHaveBeenCalledWith(expect.stringContaining("/messages/stream"), expect.objectContaining({
+        body: JSON.stringify({ content: "Question", useKnowledge: true, requestId }),
+      }));
     });
 
     it("yields typed start/delta/done events in order for a well-formed single-chunk stream", async () => {

@@ -5,6 +5,7 @@ import { WorkspacesService } from "../workspaces/workspaces.service";
 import { KnowledgeStorageService } from "./knowledge-storage.service";
 import { KnowledgeService } from "./knowledge.service";
 import { KnowledgeProcessingService } from "./knowledge-processing.service";
+import { KnowledgeReadLeaseService } from "./knowledge-read-lease.service";
 
 describe("KnowledgeService", () => {
   let service: KnowledgeService;
@@ -12,6 +13,7 @@ describe("KnowledgeService", () => {
   let workspaces: jest.Mocked<WorkspacesService>;
   let storage: jest.Mocked<KnowledgeStorageService>;
   let processing: { claimDeletion: jest.Mock; cleanupDeletionArtifacts: jest.Mock; finishDeletion: jest.Mock; releaseDeletion: jest.Mock };
+  const readLeases = { waitForFileDrain: jest.fn().mockResolvedValue(undefined) };
 
   const mockWorkspace = { id: "ws1", ownerId: "user1" };
   const mockFile = {
@@ -37,6 +39,7 @@ describe("KnowledgeService", () => {
       finishDeletion: jest.fn().mockResolvedValue(undefined),
       releaseDeletion: jest.fn().mockResolvedValue(undefined),
     };
+    readLeases.waitForFileDrain.mockReset().mockResolvedValue(undefined);
     const module = await Test.createTestingModule({
       providers: [
         KnowledgeService,
@@ -69,6 +72,7 @@ describe("KnowledgeService", () => {
           },
         },
         { provide: KnowledgeProcessingService, useValue: processing },
+        { provide: KnowledgeReadLeaseService, useValue: readLeases },
       ],
     }).compile();
 
@@ -219,6 +223,7 @@ describe("KnowledgeService", () => {
       const result = await service.delete("user1", "ws1", "file1");
 
       expect(processing.claimDeletion).toHaveBeenCalledWith("user1", "ws1", "file1");
+      expect(readLeases.waitForFileDrain).toHaveBeenCalledWith("ws1", "file1");
       expect(processing.cleanupDeletionArtifacts).toHaveBeenCalledWith("ws1", "file1");
       expect(storage.delete).toHaveBeenCalledWith("abc-123.pdf");
       expect(processing.finishDeletion).toHaveBeenCalledWith({ file: mockFile, attemptId: "delete-attempt" });
@@ -256,6 +261,21 @@ describe("KnowledgeService", () => {
       await expect(service.delete("user1", "ws1", "file1")).rejects.toThrow("qdrant unavailable");
       expect(processing.releaseDeletion).toHaveBeenCalledWith({ file: mockFile, attemptId: "delete-attempt" });
       expect(storage.delete).not.toHaveBeenCalled();
+    });
+
+    it("does not clean or report success while a leased retrieval is still in flight", async () => {
+      let release!: () => void;
+      const barrier = new Promise<void>((resolve) => { release = resolve; });
+      readLeases.waitForFileDrain.mockReturnValueOnce(barrier);
+      let settled = false;
+      const deletion = service.delete("user1", "ws1", "file1").finally(() => { settled = true; });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(processing.cleanupDeletionArtifacts).not.toHaveBeenCalled();
+      release();
+      await deletion;
+      expect(processing.cleanupDeletionArtifacts).toHaveBeenCalledWith("ws1", "file1");
     });
   });
 

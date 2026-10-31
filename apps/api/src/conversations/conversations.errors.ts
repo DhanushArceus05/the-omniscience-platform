@@ -36,13 +36,15 @@ import { HttpException, HttpStatus } from "@nestjs/common";
  *     failure raised by `OmniCoreService.execute()` itself
  *     (`AMBIGUOUS_INTENT`, `TOOL_TIMEOUT`, etc.).
  */
-export type ConversationsDomainErrorCode = "CONVERSATION_NOT_FOUND" | "MESSAGE_NOT_FOUND" | "MESSAGE_NOT_LAST";
+export type ConversationsDomainErrorCode = "CONVERSATION_NOT_FOUND" | "MESSAGE_NOT_FOUND" | "MESSAGE_NOT_LAST" | "MESSAGE_REQUEST_FENCED" | "KNOWLEDGE_READ_LEASE_EXPIRED";
 
 const CONVERSATIONS_DOMAIN_ERROR_STATUS: Readonly<Record<ConversationsDomainErrorCode, HttpStatus>> =
   {
     CONVERSATION_NOT_FOUND: HttpStatus.NOT_FOUND,
     MESSAGE_NOT_FOUND: HttpStatus.NOT_FOUND,
     MESSAGE_NOT_LAST: HttpStatus.CONFLICT,
+    MESSAGE_REQUEST_FENCED: HttpStatus.CONFLICT,
+    KNOWLEDGE_READ_LEASE_EXPIRED: HttpStatus.CONFLICT,
   };
 
 /**

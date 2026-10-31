@@ -15,7 +15,7 @@ describe("ChatComposer", () => {
     fireEvent.change(textarea, { target: { value: "  Hello  " } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
-    expect(onSend).toHaveBeenCalledWith("  Hello  ");
+    expect(onSend).toHaveBeenCalledWith("  Hello  ", false);
     expect(textarea.value).toBe("");
   });
 
@@ -27,7 +27,16 @@ describe("ChatComposer", () => {
     fireEvent.change(textarea, { target: { value: "Hello" } });
     fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
 
-    expect(onSend).toHaveBeenCalledWith("Hello");
+    expect(onSend).toHaveBeenCalledWith("Hello", false);
+  });
+
+  it("sends with workspace Knowledge only when the explicit toggle is enabled", () => {
+    const onSend = vi.fn();
+    render(<ChatComposer onSend={onSend} onStop={vi.fn()} isStreaming={false} />);
+    fireEvent.click(screen.getByLabelText("Use workspace Knowledge"));
+    fireEvent.change(screen.getByLabelText("Message"), { target: { value: "Question" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(onSend).toHaveBeenCalledWith("Question", true);
   });
 
   it("does not send on Shift+Enter — inserts a newline instead", () => {

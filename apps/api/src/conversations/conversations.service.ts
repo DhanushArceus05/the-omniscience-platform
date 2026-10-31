@@ -13,11 +13,16 @@ import type {
   MessageOmniCoreMetadata,
   MessageStreamEvent,
   SendMessageResponse,
+  Citation,
+  KnowledgeMessageAttribution,
 } from "@omniscience/types";
 import { OmniCoreService } from "../omnicore/omnicore.service";
 import { WorkspacesService } from "../workspaces/workspaces.service";
 import { conversationsDomainError } from "./conversations.errors";
-import { ConversationsRepository } from "./conversations.repository";
+import { ConversationsRepository, type UserMessageRequestClaim } from "./conversations.repository";
+import { KnowledgeRetrievalService, type RetrievedKnowledgeSource } from "../knowledge/knowledge-retrieval.service";
+import { KnowledgeContextService } from "../knowledge/knowledge-context.service";
+import type { KnowledgeReadLease } from "../knowledge/knowledge-read-lease.service";
 
 /**
  * Orchestrates the Phase 6 Step 1 conversation/message foundation:
@@ -50,6 +55,8 @@ export class ConversationsService {
     private readonly repository: ConversationsRepository,
     private readonly workspaces: WorkspacesService,
     private readonly omniCore: OmniCoreService,
+    private readonly knowledgeRetrieval: KnowledgeRetrievalService,
+    private readonly knowledgeContext: KnowledgeContextService,
   ) {}
 
   /** Verifies the caller owns `workspaceId` (via `WorkspacesService`, throwing its own `WORKSPACE_NOT_FOUND` if not) before creating a conversation in it. `createConversation`/`listConversations` are the only operations in this service that address a workspace as the primary resource with no `conversationId` to hide behind, so `WORKSPACE_NOT_FOUND` here reveals nothing a caller doesn't already know from `GET /workspaces`. */
@@ -207,45 +214,71 @@ export class ConversationsService {
     workspaceId: string,
     conversationId: string,
     content: string,
+    useKnowledge = false,
+    requestId?: string,
   ): Promise<SendMessageResponse> {
     await this.getOwnedConversationOrThrow(ownerId, workspaceId, conversationId);
 
-    const userMessage: Message = await this.repository.createMessage({
+    const claim = await this.beginUserTurn({
       conversationId,
       workspaceId,
       ownerId,
       role: "user",
       content,
+      ...(useKnowledge ? { knowledgeRequested: true } : {}),
+      ...(requestId ? { requestId } : {}),
     });
+    if (claim.completedAssistant) return { userMessage: claim.userMessage, assistantMessage: claim.completedAssistant };
+    const requestLease = this.startMessageRequestLease(claim);
+    let contextLease: ReturnType<ConversationsService["startKnowledgeReadLease"]> | undefined;
+    try {
+      await requestLease.assertActive();
+      const context = await this.prepareKnowledgeContext(ownerId, workspaceId, content, useKnowledge);
+      contextLease = this.startKnowledgeReadLease(context.leases);
+      await contextLease.assertActive();
+      await requestLease.assertActive();
+      const executionSignal = contextLease.signal(requestLease.signal());
+      const result = executionSignal
+        ? await this.omniCore.execute(context.prompt, { signal: executionSignal })
+        : await this.omniCore.execute(context.prompt);
+      await contextLease.assertActive();
+      await requestLease.assertActive();
 
-    // Deliberately not wrapped in try/catch: an OmniCore domain error
-    // must propagate to the caller unchanged (see this method's doc
-    // comment) — `userMessage` above is already persisted and stays
-    // that way regardless of what happens next.
-    const result = await this.omniCore.execute(content);
+      const omniCoreMetadata: MessageOmniCoreMetadata = {
+        planId: result.planId,
+        intent: result.intent,
+        matchedRuleId: result.matchedRuleId,
+        confidence: result.confidence,
+        providerId: result.providerId,
+        modelId: result.modelId,
+        taskPlanId: result.execution.taskPlanId,
+      };
 
-    const omniCoreMetadata: MessageOmniCoreMetadata = {
-      planId: result.planId,
-      intent: result.intent,
-      matchedRuleId: result.matchedRuleId,
-      confidence: result.confidence,
-      providerId: result.providerId,
-      modelId: result.modelId,
-      taskPlanId: result.execution.taskPlanId,
-    };
+      const knowledge = await this.finalizeKnowledgeAttribution(ownerId, workspaceId, result.text, context.sources, useKnowledge);
+      const answer = useKnowledge ? sanitizeSourceLabels(result.text, new Set(knowledge.citations.map((citation) => citation.sourceId))) : result.text;
+      await requestLease.assertActive();
+      const assistantInput = {
+        conversationId,
+        workspaceId,
+        ownerId,
+        role: "assistant",
+        content: answer,
+        omniCore: omniCoreMetadata,
+        knowledge,
+      } as const;
+      const assistantMessage: Message = claim.requestId && claim.leaseId
+        ? await this.repository.publishAssistantMessage(assistantInput, claim.requestId, claim.leaseId)
+        : await this.repository.createMessage(assistantInput);
+      await this.repository.touchConversation(conversationId, preview(answer));
 
-    const assistantMessage: Message = await this.repository.createMessage({
-      conversationId,
-      workspaceId,
-      ownerId,
-      role: "assistant",
-      content: result.text,
-      omniCore: omniCoreMetadata,
-    });
-
-    await this.repository.touchConversation(conversationId, preview(result.text));
-
-    return { userMessage, assistantMessage };
+      return { userMessage: claim.userMessage, assistantMessage };
+    } catch (error) {
+      if (claim.requestId && claim.leaseId) await this.repository.markUserMessageRequestRetryable(claim.userMessage.id, claim.requestId, claim.leaseId).catch(() => undefined);
+      throw error;
+    } finally {
+      await contextLease?.stop();
+      await requestLease.stop();
+    }
   }
 
   /**
@@ -302,16 +335,26 @@ export class ConversationsService {
     conversationId: string,
     content: string,
     signal: AbortSignal,
+    useKnowledge = false,
+    requestId?: string,
   ): AsyncGenerator<MessageStreamEvent> {
     await this.getOwnedConversationOrThrow(ownerId, workspaceId, conversationId);
-
-    const userMessage: Message = await this.repository.createMessage({
+    const claim = await this.beginUserTurn({
       conversationId,
       workspaceId,
       ownerId,
       role: "user",
       content,
+      ...(useKnowledge ? { knowledgeRequested: true } : {}),
+      ...(requestId ? { requestId } : {}),
     });
+    const userMessage = claim.userMessage;
+    if (claim.completedAssistant) {
+      yield { event: "start", data: { userMessage, assistantExpected: false } };
+      yield { event: "done", data: { assistantMessage: claim.completedAssistant } };
+      return;
+    }
+    const requestLease = this.startMessageRequestLease(claim);
 
     // Same "not wrapped in try/catch" reasoning `sendMessage()` already
     // documents: a failure here (classification, planning, model
@@ -319,7 +362,34 @@ export class ConversationsService {
     // must propagate to the caller as a normal thrown error — the
     // controller has not opened SSE headers yet, so this is still an
     // ordinary HTTP error response, not a stream event.
-    const result = await this.omniCore.executeStream(content, { signal });
+    let context: { prompt: string; sources: Array<{ label: string; source: RetrievedKnowledgeSource }>; leases: KnowledgeReadLease[] };
+    try {
+      await requestLease.assertActive();
+      context = await this.prepareKnowledgeContext(ownerId, workspaceId, content, useKnowledge);
+      await requestLease.assertActive();
+    } catch (error) {
+      // The user turn has already been persisted. Start the stream so the
+      // client reconciles that exact message, then deliver the retrieval
+      // failure as a terminal event instead of leaving an invisible turn.
+      if (claim.requestId && claim.leaseId) await this.repository.markUserMessageRequestRetryable(userMessage.id, claim.requestId, claim.leaseId).catch(() => undefined);
+      yield { event: "start", data: { userMessage, assistantExpected: false } };
+      yield { event: "error", data: { ...toStreamErrorPayload(error), assistantMessagePersisted: false, retryable: true } };
+      await requestLease.stop();
+      return;
+    }
+    const contextLease = this.startKnowledgeReadLease(context.leases);
+    let result: Awaited<ReturnType<OmniCoreService["executeStream"]>>;
+    try {
+      await contextLease.assertActive();
+      const leaseSignal = contextLease.signal(requestLease.signal(signal));
+      result = await this.omniCore.executeStream(context.prompt, { signal: leaseSignal });
+      await contextLease.assertActive();
+    } catch (error) {
+      await contextLease.stop();
+      if (claim.requestId && claim.leaseId) await this.repository.markUserMessageRequestRetryable(userMessage.id, claim.requestId, claim.leaseId).catch(() => undefined);
+      await requestLease.stop();
+      throw error;
+    }
 
     yield { event: "start", data: { userMessage } };
 
@@ -334,40 +404,189 @@ export class ConversationsService {
     };
 
     let accumulated = "";
+    let pendingText = "";
+    const allowedLabels = new Set(context.sources.map((source) => source.label));
     try {
       for await (const chunk of result.textStream) {
-        accumulated += chunk;
-        yield { event: "delta", data: { text: chunk } };
+        await requestLease.assertActive();
+        await contextLease.assertActive();
+        pendingText += chunk;
+        const splitAt = pendingText.lastIndexOf("[");
+        const safeLength = splitAt >= 0 && pendingText.length - splitAt <= 16 ? splitAt : pendingText.length;
+        if (safeLength > 0) {
+          const safeChunk = useKnowledge ? sanitizeSourceLabels(pendingText.slice(0, safeLength), allowedLabels) : pendingText.slice(0, safeLength);
+          pendingText = pendingText.slice(safeLength);
+          if (safeChunk) {
+            accumulated += safeChunk;
+            yield { event: "delta", data: { text: safeChunk } };
+          }
+        }
       }
 
-      const assistantMessage: Message = await this.repository.createMessage({
+      const tail = useKnowledge ? sanitizeSourceLabels(pendingText, allowedLabels) : pendingText;
+      if (tail) { accumulated += tail; yield { event: "delta", data: { text: tail } }; }
+      const knowledge = await this.finalizeKnowledgeAttribution(ownerId, workspaceId, accumulated, context.sources, useKnowledge);
+      const answer = useKnowledge ? sanitizeSourceLabels(accumulated, new Set(knowledge?.citations.map((citation) => citation.sourceId) ?? [])) : accumulated;
+
+      await requestLease.assertActive();
+      await contextLease.assertActive();
+      const assistantInput = {
         conversationId,
         workspaceId,
         ownerId,
         role: "assistant",
-        content: accumulated,
+        content: answer,
         omniCore: omniCoreMetadata,
         status: "complete",
-      });
-      await this.repository.touchConversation(conversationId, preview(accumulated));
+        ...(knowledge ? { knowledge } : {}),
+      } as const;
+      const assistantMessage: Message = claim.requestId && claim.leaseId
+        ? await this.repository.publishAssistantMessage(assistantInput, claim.requestId, claim.leaseId)
+        : await this.repository.createMessage(assistantInput);
+      await this.repository.touchConversation(conversationId, preview(answer));
 
       yield { event: "done", data: { assistantMessage } };
     } catch (error) {
       if (accumulated.length > 0) {
-        await this.repository.createMessage({
+        const knowledge = await this.finalizeKnowledgeAttribution(ownerId, workspaceId, accumulated, context.sources, useKnowledge);
+        const partialAnswer = useKnowledge ? sanitizeSourceLabels(accumulated, new Set(knowledge?.citations.map((citation) => citation.sourceId) ?? [])) : accumulated;
+        await requestLease.assertActive();
+        const incompleteInput = {
           conversationId,
           workspaceId,
           ownerId,
           role: "assistant",
-          content: accumulated,
+          content: partialAnswer,
           omniCore: omniCoreMetadata,
           status: "incomplete",
-        });
-        await this.repository.touchConversation(conversationId, preview(accumulated));
+          ...(knowledge ? { knowledge } : {}),
+        } as const;
+        if (claim.requestId && claim.leaseId) {
+          await this.repository.persistIncompleteAssistantAttempt(incompleteInput, claim.requestId, claim.leaseId).catch(() => undefined);
+          await this.repository.markUserMessageRequestRetryable(userMessage.id, claim.requestId, claim.leaseId).catch(() => undefined);
+        } else {
+          await this.repository.createMessage(incompleteInput);
+          await this.repository.touchConversation(conversationId, preview(partialAnswer));
+        }
       }
 
+      if (claim.requestId && claim.leaseId && accumulated.length === 0) await this.repository.markUserMessageRequestRetryable(userMessage.id, claim.requestId, claim.leaseId).catch(() => undefined);
       yield { event: "error", data: toStreamErrorPayload(error) };
+    } finally {
+      await contextLease.stop();
+      await requestLease.stop();
     }
+  }
+
+  private async prepareKnowledgeContext(
+    ownerId: string,
+    workspaceId: string,
+    content: string,
+    useKnowledge: boolean,
+  ): Promise<{ prompt: string; sources: Array<{ label: string; source: RetrievedKnowledgeSource }>; leases: KnowledgeReadLease[] }> {
+    if (!useKnowledge) return { prompt: content, sources: [], leases: [] };
+    const retrieved = await this.knowledgeRetrieval.retrieve(ownerId, workspaceId, content);
+    const retrievedSources = retrieved.sources ?? retrieved;
+    const leases = retrieved.leases ?? [];
+    if (!retrievedSources.length) return { prompt: content, sources: [], leases };
+    try {
+      const built = this.knowledgeContext.build(content, retrievedSources);
+      return { ...built, leases };
+    } catch (error) {
+      await this.knowledgeRetrieval.releaseLeases?.(leases).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private startKnowledgeReadLease(leases: readonly KnowledgeReadLease[]) {
+    let stopped = false;
+    let lost = false;
+    const controller = new AbortController();
+    const timer = leases.length ? setInterval(() => {
+      void this.knowledgeRetrieval.renewLeases?.(leases).then((ok: boolean) => { if (!ok) { lost = true; controller.abort(); } }).catch(() => { lost = true; controller.abort(); });
+    }, 30_000) : undefined;
+    timer?.unref();
+    return {
+      assertActive: async () => {
+        if (lost) throw conversationsDomainError("KNOWLEDGE_READ_LEASE_EXPIRED", "Knowledge context is no longer available. Please retry.");
+        await this.knowledgeRetrieval.assertLeases?.(leases);
+      },
+      signal: (caller?: AbortSignal) => caller && leases.length ? AbortSignal.any([caller, controller.signal]) : caller ?? (leases.length ? controller.signal : undefined),
+      stop: async () => {
+        if (stopped) return;
+        stopped = true;
+        if (timer) clearInterval(timer);
+        await this.knowledgeRetrieval.releaseLeases?.(leases).catch(() => undefined);
+      },
+    };
+  }
+
+  private async beginUserTurn(input: Parameters<ConversationsRepository["beginUserMessageRequest"]>[0]): Promise<UserMessageRequestClaim> {
+    if (typeof this.repository.beginUserMessageRequest !== "function") return { userMessage: await this.repository.createMessage(input) };
+    return this.repository.beginUserMessageRequest(input);
+  }
+
+  private startMessageRequestLease(claim: UserMessageRequestClaim): {
+    assertActive: () => Promise<void>;
+    signal: (callerSignal?: AbortSignal) => AbortSignal | undefined;
+    stop: () => Promise<void>;
+  } {
+    if (!claim.requestId || !claim.leaseId) return { assertActive: async () => undefined, signal: (s) => s, stop: async () => undefined };
+    const controller = new AbortController();
+    const heartbeat = setInterval(() => {
+      void this.repository.heartbeatUserMessageRequest(claim.userMessage.id, claim.requestId!, claim.leaseId!).catch(() => controller.abort());
+    }, 60_000);
+    heartbeat.unref();
+    return {
+      assertActive: async () => {
+        if (controller.signal.aborted) throw conversationsDomainError("MESSAGE_REQUEST_FENCED", "This response attempt is no longer active.");
+        await this.repository.assertUserMessageRequest(claim.userMessage.id, claim.requestId!, claim.leaseId!);
+      },
+      signal: (callerSignal) => callerSignal ? AbortSignal.any([callerSignal, controller.signal]) : controller.signal,
+      stop: async () => { clearInterval(heartbeat); },
+    };
+  }
+
+  private async finalizeKnowledgeAttribution(
+    ownerId: string,
+    workspaceId: string,
+    answer: string,
+    sources: readonly { label: string; source: RetrievedKnowledgeSource }[],
+    useKnowledge: boolean,
+  ): Promise<KnowledgeMessageAttribution> {
+    if (!useKnowledge) return { grounding: "NO_KNOWLEDGE", citations: [] };
+    const referenced = new Set([...answer.matchAll(/\[(S\d+)\]/gu)].map((match) => match[1]).filter((label): label is string => Boolean(label)));
+    const candidates = sources.filter((item) => referenced.has(item.label));
+    let validated: RetrievedKnowledgeSource[];
+    try {
+      validated = await this.knowledgeRetrieval.validateSources(ownerId, workspaceId, candidates.map((item) => item.source));
+    } catch {
+      return { grounding: "RETRIEVAL_UNAVAILABLE", citations: [] };
+    }
+    const validatedById = new Map(validated.map((source) => [source.chunkId, source]));
+    const citations: Citation[] = [];
+    const seen = new Set<string>();
+    for (const item of candidates) {
+      const source = validatedById.get(item.source.chunkId);
+      if (!source || seen.has(source.chunkId)) continue;
+      seen.add(source.chunkId);
+      citations.push({
+        id: source.chunkId,
+        sourceId: item.label,
+        fileId: source.fileId,
+        fileName: source.fileName,
+        chunkId: source.chunkId,
+        chunkIndex: source.chunkIndex,
+        ...(source.pageNumbers ? { pageNumbers: source.pageNumbers } : {}),
+        retrievalScore: source.score,
+        excerpt: source.text.slice(0, 240),
+        excerptKind: "GENERAL_SOURCE_EXCERPT",
+      });
+    }
+    // A valid source label proves only that the model referenced an actual
+    // retrieved source. This pipeline has no claim-entailment verifier, so
+    // it must never describe that reference as grounded support.
+    return { grounding: citations.length ? "SOURCE_REFERENCED" : "NOT_GROUNDED", citations };
   }
 
   /** Shared "own conversation or 404" lookup — `null` from the repository becomes the shared `CONVERSATION_NOT_FOUND`. */
@@ -388,6 +607,10 @@ export class ConversationsService {
 function preview(text: string, maxLength = 140): string {
   const trimmed = text.trim();
   return trimmed.length > maxLength ? `${trimmed.slice(0, maxLength)}…` : trimmed;
+}
+
+function sanitizeSourceLabels(text: string, allowedLabels: ReadonlySet<string>): string {
+  return text.replace(/\[(S\d+)\]/gu, (marker, label: string) => allowedLabels.has(label) ? marker : "");
 }
 
 /**

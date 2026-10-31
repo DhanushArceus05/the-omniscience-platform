@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 import { AuthModule } from "../auth/auth.module";
 import { OmniCoreModule } from "../omnicore/omnicore.module";
 import { WorkspacesModule } from "../workspaces/workspaces.module";
+import { KnowledgeModule } from "../knowledge/knowledge.module";
 import { ConversationsController } from "./conversations.controller";
 import { ConversationsRepository } from "./conversations.repository";
 import { ConversationsService } from "./conversations.service";
@@ -21,7 +22,7 @@ import { ConversationsService } from "./conversations.service";
  * every feature module that needs them.
  */
 @Module({
-  imports: [AuthModule, WorkspacesModule, OmniCoreModule],
+  imports: [AuthModule, WorkspacesModule, OmniCoreModule, KnowledgeModule],
   controllers: [ConversationsController],
   providers: [ConversationsService, ConversationsRepository],
 })

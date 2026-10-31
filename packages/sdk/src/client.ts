@@ -406,13 +406,14 @@ export class OmniscienceClient {
     workspaceId: string,
     conversationId: string,
     content: string,
+    options: { readonly useKnowledge?: boolean; readonly requestId?: string } = {},
   ): Promise<SendMessageResponse> {
     return this.request<SendMessageResponse>(
       `${this.apiBaseUrl}/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}/messages`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, ...(options.useKnowledge ? { useKnowledge: true } : {}), ...(options.requestId ? { requestId: options.requestId } : {}) }),
       },
     );
   }
@@ -469,7 +470,7 @@ export class OmniscienceClient {
     workspaceId: string,
     conversationId: string,
     content: string,
-    options: { readonly signal?: AbortSignal } = {},
+    options: { readonly signal?: AbortSignal; readonly useKnowledge?: boolean; readonly requestId?: string } = {},
   ): AsyncGenerator<MessageStreamEvent> {
     const url = `${this.apiBaseUrl}/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}/messages/stream`;
 
@@ -478,7 +479,7 @@ export class OmniscienceClient {
       response = await this.fetchImpl(url, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, ...(options.useKnowledge ? { useKnowledge: true } : {}), ...(options.requestId ? { requestId: options.requestId } : {}) }),
         signal: options.signal,
       });
     } catch (error) {

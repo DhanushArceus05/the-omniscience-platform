@@ -1,6 +1,6 @@
 import type { Env } from "@omniscience/config";
 import type { Message } from "@omniscience/types";
-import { MongoClient } from "mongodb";
+import { MongoClient, ObjectId } from "mongodb";
 import type { Logger } from "pino";
 import { MongoService } from "../mongo/mongo.service";
 import { ConversationsRepository } from "./conversations.repository";
@@ -137,6 +137,60 @@ describe("ConversationsRepository (real MongoDB)", () => {
     expect(conversationIndexes.some((idx) => idx.name === "ownership_scoped_newest_first")).toBe(true);
     expect(messageIndexes.some((idx) => idx.name === "conversation_scoped_chronological")).toBe(true);
     expect(messageIndexes.some((idx) => idx.name === "ownership_scoped_defense_in_depth")).toBe(true);
+    expect(messageIndexes.some((idx) => idx.name === "request_idempotency_user_turn" && idx.unique)).toBe(true);
+    expect(messageIndexes.some((idx) => idx.name === "request_assistant_attempt" && idx.unique)).toBe(true);
+  });
+
+  it("reuses one persisted user turn across a failed retrieval retry and a completed replay", async () => {
+    if (!reachable) return;
+    const conversation = await repository.createConversation("user_1", "workspace_1");
+    const requestId = "8c4c3b0c-2395-4b7a-92ab-0f0bd3e3cc05";
+    const input = { conversationId: conversation.id, workspaceId: "workspace_1", ownerId: "user_1", role: "user" as const, content: "Question", requestId, knowledgeRequested: true };
+    const first = await repository.beginUserMessageRequest(input);
+    expect(first.userMessage.id).toMatch(/^[0-9a-f]{24}$/);
+    await repository.markUserMessageRequestRetryable(first.userMessage.id, requestId, first.leaseId as string);
+    const retry = await repository.beginUserMessageRequest(input);
+    expect(retry.userMessage.id).toBe(first.userMessage.id);
+    const assistant = await repository.publishAssistantMessage({ conversationId: conversation.id, workspaceId: "workspace_1", ownerId: "user_1", role: "assistant", content: "Answer" }, requestId, retry.leaseId as string);
+    const replay = await repository.beginUserMessageRequest(input);
+    expect(replay.userMessage.id).toBe(first.userMessage.id);
+    expect(replay.completedAssistant?.id).toBe(assistant.id);
+    const messages = await repository.listMessages("user_1", "workspace_1", conversation.id, { limit: 20 });
+    expect(messages.messages.filter((message) => message.role === "user")).toHaveLength(1);
+    expect(messages.messages.filter((message) => message.role === "assistant")).toHaveLength(1);
+  });
+
+  it("allows only one concurrent retry attempt to claim a request ID", async () => {
+    if (!reachable) return;
+    const conversation = await repository.createConversation("user_1", "workspace_1");
+    const input = { conversationId: conversation.id, workspaceId: "workspace_1", ownerId: "user_1", role: "user" as const, content: "Question", requestId: "f42f649f-6824-4bf4-9b0f-c320d7135a18" };
+    const results = await Promise.allSettled([repository.beginUserMessageRequest(input), repository.beginUserMessageRequest(input)]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const storedUsers = await mongoService.getDb().collection("messages").countDocuments({ requestId: input.requestId, role: "user" });
+    expect(storedUsers).toBe(1);
+  });
+
+  it("fences an expired Mongo request lease at the atomic assistant publication point", async () => {
+    if (!reachable) return;
+    const conversation = await repository.createConversation("user_1", "workspace_1");
+    const requestId = "f5987b16-60ca-4b7f-97cb-3a451ee2a71a";
+    const input = { conversationId: conversation.id, workspaceId: "workspace_1", ownerId: "user_1", role: "user" as const, content: "Question", requestId };
+    const attemptA = await repository.beginUserMessageRequest(input);
+    await mongoService.getDb().collection("messages").updateOne(
+      { _id: new ObjectId(attemptA.userMessage.id) },
+      { $set: { requestLeaseExpiresAt: new Date(Date.now() - 1) } },
+    );
+    const attemptB = await repository.beginUserMessageRequest(input);
+    await expect(repository.publishAssistantMessage({ ...input, role: "assistant", content: "stale A" }, requestId, attemptA.leaseId as string)).rejects.toMatchObject({
+      response: { code: "MESSAGE_REQUEST_LEASE_LOST" },
+    });
+    const published = await repository.publishAssistantMessage({ ...input, role: "assistant", content: "current B" }, requestId, attemptB.leaseId as string);
+    const replay = await repository.beginUserMessageRequest(input);
+    expect(replay.completedAssistant?.id).toBe(published.id);
+    expect(replay.completedAssistant?.content).toBe("current B");
+    const assistants = await mongoService.getDb().collection("messages").countDocuments({ requestId, role: "assistant" });
+    expect(assistants).toBe(1);
   });
 
   it("creates a conversation with a null title, owned by the caller", async () => {
@@ -734,5 +788,220 @@ describe("ConversationsRepository (real MongoDB)", () => {
     expect(outcome).toBe("not_found");
     const { messages } = await repository.listMessages("user_1", "workspace_1", conversationB.id, { limit: 20 });
     expect(messages).toHaveLength(1);
+  });
+});
+
+function memoryMongoForPublication(): { getDb: () => { collection: (name: string) => unknown } } {
+  type Doc = Record<string, unknown>;
+  const collections = new Map<string, Doc[]>();
+  const equal = (a: unknown, b: unknown) => a instanceof ObjectId && b instanceof ObjectId ? a.equals(b) : a instanceof Date && b instanceof Date ? a.getTime() === b.getTime() : a === b;
+  const compare = (a: unknown, b: unknown): number => {
+    if (a instanceof Date && b instanceof Date) return a.getTime() - b.getTime();
+    if (a instanceof ObjectId && b instanceof ObjectId) return a.toHexString().localeCompare(b.toHexString());
+    if (typeof a === "number" && typeof b === "number") return a - b;
+    if (typeof a === "string" && typeof b === "string") return a.localeCompare(b);
+    return 0;
+  };
+  const matches = (doc: Doc, filter: Doc): boolean => Object.entries(filter).every(([key, condition]) => {
+    if (key === "$or") return (condition as Doc[]).some((branch) => matches(doc, branch));
+    if (key === "$and") return (condition as Doc[]).every((branch) => matches(doc, branch));
+    if (key === "$expr") {
+      const expression = (condition as Doc).$gt as unknown[];
+      const field = String(expression?.[0] ?? "").replace(/^\$/u, "");
+      return compare(doc[field], new Date()) > 0 && expression?.[1] === "$$NOW";
+    }
+    const value = doc[key];
+    if (condition && typeof condition === "object" && !(condition instanceof Date) && !(condition instanceof ObjectId)) {
+      return Object.entries(condition).every(([operator, expected]) => {
+        if (operator === "$exists") return (value !== undefined) === Boolean(expected);
+        if (operator === "$gt") return compare(value, expected) > 0;
+        if (operator === "$gte") return compare(value, expected) >= 0;
+        if (operator === "$lt") return compare(value, expected) < 0;
+        if (operator === "$lte") return compare(value, expected) <= 0;
+        return false;
+      });
+    }
+    return equal(value, condition);
+  });
+  const collection = (name: string) => {
+    if (!collections.has(name)) collections.set(name, []);
+    const docs = collections.get(name)!;
+    return {
+      createIndex: async () => "index",
+      dropIndex: async () => "index",
+      insertOne: async (doc: Doc) => { docs.push(doc); return { insertedId: doc._id }; },
+      findOne: async (filter: Doc) => docs.find((doc) => matches(doc, filter)) ?? null,
+      findOneAndUpdate: async (filter: Doc, update: { $set?: Doc; $unset?: Doc }) => {
+        const doc = docs.find((candidate) => matches(candidate, filter));
+        if (!doc) return null;
+        Object.assign(doc, update.$set ?? {});
+        for (const key of Object.keys(update.$unset ?? {})) delete doc[key];
+        return doc;
+      },
+      updateOne: async (filter: Doc, update: { $set?: Doc; $unset?: Doc }) => {
+        const doc = docs.find((candidate) => matches(candidate, filter));
+        if (!doc) return { matchedCount: 0 };
+        Object.assign(doc, update.$set ?? {});
+        for (const key of Object.keys(update.$unset ?? {})) delete doc[key];
+        return { matchedCount: 1 };
+      },
+      deleteOne: async (filter: Doc) => {
+        const index = docs.findIndex((doc) => matches(doc, filter));
+        if (index < 0) return { deletedCount: 0 };
+        docs.splice(index, 1);
+        return { deletedCount: 1 };
+      },
+      find: (filter: Doc) => {
+        const rows = docs.filter((doc) => matches(doc, filter));
+        let sortSpec: Doc = {};
+        let limit = Number.POSITIVE_INFINITY;
+        const cursor = {
+          sort(spec: Doc) { sortSpec = spec; return cursor; },
+          limit(value: number) { limit = value; return cursor; },
+          async toArray() {
+            return [...rows].sort((a, b) => Object.entries(sortSpec).reduce((result, [field, direction]) => result || compare(a[field], b[field]) * Number(direction), 0)).slice(0, limit);
+          },
+        };
+        return cursor;
+      },
+    };
+  };
+  return { getDb: () => ({ collection }) };
+}
+
+describe("ConversationsRepository request publication (mocked standalone Mongo protocol)", () => {
+  let repository: ConversationsRepository;
+  let fakeMongo: ReturnType<typeof memoryMongoForPublication>;
+  let conversation: { id: string };
+  const inputBase = {
+    workspaceId: "workspace-a", ownerId: "owner-a", role: "user" as const,
+    content: "Question", requestId: "request-fence-test",
+  };
+
+  beforeEach(async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date("2030-01-01T00:00:00Z"));
+    fakeMongo = memoryMongoForPublication();
+    repository = new ConversationsRepository(fakeMongo as never);
+    await repository.onModuleInit();
+    conversation = await repository.createConversation(inputBase.ownerId, inputBase.workspaceId);
+  });
+
+  afterEach(() => jest.useRealTimers());
+
+  it("rejects attempt A after B takes over and publishes only B's assistant response", async () => {
+    const input = { ...inputBase, conversationId: conversation.id };
+    const a = await repository.beginUserMessageRequest(input);
+    jest.advanceTimersByTime(5 * 60_000 + 1);
+    const b = await repository.beginUserMessageRequest(input);
+    expect(b.leaseId).not.toBe(a.leaseId);
+
+    await expect(repository.publishAssistantMessage({
+      ...input, role: "assistant", content: "stale A", status: "complete",
+    }, input.requestId, a.leaseId as string)).rejects.toMatchObject({ response: { code: "MESSAGE_REQUEST_LEASE_LOST" } });
+
+    const publishedB = await repository.publishAssistantMessage({
+      ...input, role: "assistant", content: "current B", status: "complete",
+    }, input.requestId, b.leaseId as string);
+    expect(publishedB.content).toBe("current B");
+    const replay = await repository.beginUserMessageRequest(input);
+    expect(replay.completedAssistant?.id).toBe(publishedB.id);
+    const listed = await repository.listMessages(input.ownerId, input.workspaceId, conversation.id, { limit: 20 });
+    expect(listed.messages.filter((message) => message.role === "user")).toHaveLength(1);
+    expect(listed.messages.filter((message) => message.role === "assistant")).toHaveLength(1);
+    expect(listed.messages.find((message) => message.role === "assistant")?.content).toBe("current B");
+  });
+
+  it("keeps incomplete stream output hidden and lets a retry publish one completed response", async () => {
+    const input = { ...inputBase, conversationId: conversation.id };
+    const a = await repository.beginUserMessageRequest(input);
+    await repository.persistIncompleteAssistantAttempt({
+      ...input, role: "assistant", content: "partial text", status: "incomplete",
+    }, input.requestId, a.leaseId as string);
+    await expect(repository.beginUserMessageRequest(input)).rejects.toMatchObject({
+      response: { code: "MESSAGE_REQUEST_IN_PROGRESS" },
+    });
+    await repository.markUserMessageRequestRetryable(a.userMessage.id, input.requestId, a.leaseId as string);
+    const afterFailure = await repository.listMessages(input.ownerId, input.workspaceId, conversation.id, { limit: 20 });
+    expect(afterFailure.messages.map((message) => message.role)).toEqual(["user"]);
+
+    const b = await repository.beginUserMessageRequest(input);
+    const completed = await repository.publishAssistantMessage({
+      ...input, role: "assistant", content: "complete answer", status: "complete",
+    }, input.requestId, b.leaseId as string);
+    const replay = await repository.beginUserMessageRequest(input);
+    expect(replay.completedAssistant).toMatchObject({ id: completed.id, status: "complete", content: "complete answer" });
+    const listed = await repository.listMessages(input.ownerId, input.workspaceId, conversation.id, { limit: 20 });
+    expect(listed.messages.filter((message) => message.role === "assistant")).toEqual([completed]);
+  });
+
+  it("rejects incomplete candidates at the publication boundary", async () => {
+    const input = { ...inputBase, conversationId: conversation.id };
+    const claim = await repository.beginUserMessageRequest(input);
+    await expect(repository.publishAssistantMessage({
+      ...input, role: "assistant", content: "partial", status: "incomplete",
+    }, input.requestId, claim.leaseId as string)).rejects.toMatchObject({
+      response: { code: "MESSAGE_RESPONSE_INCOMPLETE" },
+    });
+    await expect(repository.beginUserMessageRequest(input)).rejects.toMatchObject({
+      response: { code: "MESSAGE_REQUEST_IN_PROGRESS" },
+    });
+    expect((await repository.listMessages(inputBase.ownerId, input.workspaceId, conversation.id, { limit: 20 })).messages)
+      .toHaveLength(1);
+  });
+
+  it("hides every request-bound assistant artifact lacking a valid publication pointer", async () => {
+    const input = { ...inputBase, conversationId: conversation.id };
+    const claim = await repository.beginUserMessageRequest(input);
+    const messages = (fakeMongo.getDb() as { collection(name: string): { insertOne(doc: Record<string, unknown>): Promise<unknown> } }).collection("messages");
+    await messages.insertOne({
+      _id: new ObjectId(), conversationId: conversation.id, workspaceId: input.workspaceId,
+      ownerId: input.ownerId, role: "assistant", content: "malformed orphan", createdAt: new Date(),
+      requestId: input.requestId, publicationState: "STAGED",
+    });
+    await messages.insertOne({
+      _id: new ObjectId(), conversationId: conversation.id, workspaceId: input.workspaceId,
+      ownerId: input.ownerId, role: "assistant", content: "unpublished candidate", createdAt: new Date(),
+      requestId: input.requestId, requestLeaseId: claim.leaseId, publicationState: "STAGED",
+    });
+
+    const listed = await repository.listMessages(input.ownerId, input.workspaceId, conversation.id, { limit: 20 });
+    expect(listed.messages.map((message) => message.content)).toEqual(["Question"]);
+    expect((await repository.getLastMessage(input.ownerId, input.workspaceId, conversation.id))?.content).toBe("Question");
+  });
+
+  it("marks retryable only while the same current Mongo lease is unexpired", async () => {
+    const input = { ...inputBase, conversationId: conversation.id };
+    const a = await repository.beginUserMessageRequest(input);
+    await repository.markUserMessageRequestRetryable(a.userMessage.id, input.requestId, a.leaseId as string);
+    const b = await repository.beginUserMessageRequest(input);
+    expect(b.leaseId).not.toBe(a.leaseId);
+
+    jest.advanceTimersByTime(5 * 60_000 + 1);
+    await repository.markUserMessageRequestRetryable(b.userMessage.id, input.requestId, b.leaseId as string);
+    const c = await repository.beginUserMessageRequest(input);
+    expect(c.leaseId).not.toBe(b.leaseId);
+    await repository.markUserMessageRequestRetryable(c.userMessage.id, input.requestId, b.leaseId as string);
+    await expect(repository.beginUserMessageRequest(input)).rejects.toMatchObject({
+      response: { code: "MESSAGE_REQUEST_IN_PROGRESS" },
+    });
+    await repository.markUserMessageRequestRetryable(c.userMessage.id, input.requestId, c.leaseId as string);
+    await repository.markUserMessageRequestRetryable(c.userMessage.id, input.requestId, c.leaseId as string);
+    const retry = await repository.beginUserMessageRequest(input);
+    expect(retry.userMessage.id).toBe(a.userMessage.id);
+  });
+
+  it("allows only one of two concurrent publications under the same lease token", async () => {
+    const input = { ...inputBase, conversationId: conversation.id };
+    const claim = await repository.beginUserMessageRequest(input);
+    const results = await Promise.allSettled([
+      repository.publishAssistantMessage({ ...input, role: "assistant", content: "one" }, input.requestId, claim.leaseId as string),
+      repository.publishAssistantMessage({ ...input, role: "assistant", content: "two" }, input.requestId, claim.leaseId as string),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const listed = await repository.listMessages(input.ownerId, input.workspaceId, conversation.id, { limit: 20 });
+    const assistants = listed.messages.filter((message) => message.role === "assistant");
+    expect(assistants).toHaveLength(1);
   });
 });

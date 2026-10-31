@@ -53,7 +53,7 @@ export interface OmniProvider {
    */
   supportsExecution(capability: ModelCapability): boolean;
 
-  generateText(modelId: ModelId, prompt: string): Promise<string>;
+  generateText(modelId: ModelId, prompt: string, options?: { readonly signal?: AbortSignal }): Promise<string>;
   generateStructured(modelId: ModelId, prompt: string, schemaName: string): Promise<unknown>;
   embed(modelId: ModelId, input: string): Promise<readonly number[]>;
   /** Optional provider-native batch embedding path; results retain explicit input indexes. */

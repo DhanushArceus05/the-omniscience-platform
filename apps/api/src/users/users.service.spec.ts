@@ -2,6 +2,7 @@ import { BadRequestException, UnauthorizedException } from "@nestjs/common";
 import { PasswordHasherService } from "../auth/password-hasher.service";
 import { RefreshTokenStore } from "../auth/refresh-token.store";
 import { AvatarStorageService } from "../avatar/avatar-storage.service";
+import { KnowledgeReadLeaseService } from "../knowledge/knowledge-read-lease.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { UsersService } from "./users.service";
 
@@ -27,6 +28,11 @@ describe("UsersService", () => {
     getMaxUploadBytes: jest.fn(() => 5 * 1024 * 1024),
   } as unknown as AvatarStorageService;
 
+  const knowledgeReadLeases = {
+    prepareOwnerDeletion: jest.fn(),
+    waitForOwnerDrain: jest.fn(),
+  } as unknown as KnowledgeReadLeaseService;
+
   const buildUser = (overrides: Partial<Record<string, unknown>> = {}) => ({
     id: "user_1",
     email: "user@example.com",
@@ -43,7 +49,9 @@ describe("UsersService", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    service = new UsersService(prisma, passwordHasher, refreshTokens, avatarStorage);
+    (knowledgeReadLeases.prepareOwnerDeletion as jest.Mock).mockResolvedValue(undefined);
+    (knowledgeReadLeases.waitForOwnerDrain as jest.Mock).mockResolvedValue(undefined);
+    service = new UsersService(prisma, passwordHasher, refreshTokens, avatarStorage, knowledgeReadLeases);
   });
 
   describe("updateProfile", () => {
@@ -285,6 +293,8 @@ describe("UsersService", () => {
 
       const result = await service.deleteAccount("user_1", "CorrectPassw0rd!");
 
+      expect(knowledgeReadLeases.prepareOwnerDeletion).toHaveBeenCalledWith("user_1");
+      expect(knowledgeReadLeases.waitForOwnerDrain).toHaveBeenCalledWith("user_1");
       expect(passwordHasher.verify).toHaveBeenCalledWith(
         "hashed-current-password",
         "CorrectPassw0rd!",
@@ -307,6 +317,8 @@ describe("UsersService", () => {
 
     it("deletes the user row before revoking sessions", async () => {
       const callOrder: string[] = [];
+      (knowledgeReadLeases.prepareOwnerDeletion as jest.Mock).mockImplementation(async () => { callOrder.push("fence"); });
+      (knowledgeReadLeases.waitForOwnerDrain as jest.Mock).mockImplementation(async () => { callOrder.push("drain"); });
       (prisma.user.findUnique as jest.Mock).mockResolvedValue(buildUser());
       (passwordHasher.verify as jest.Mock).mockResolvedValue(true);
       (prisma.user.delete as jest.Mock).mockImplementation(async () => {
@@ -320,7 +332,15 @@ describe("UsersService", () => {
 
       await service.deleteAccount("user_1", "CorrectPassw0rd!");
 
-      expect(callOrder).toEqual(["delete", "revokeAllForUser"]);
+      expect(callOrder).toEqual(["fence", "drain", "delete", "revokeAllForUser"]);
+    });
+
+    it("does not delete the account when Knowledge readers fail to drain", async () => {
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue(buildUser());
+      (passwordHasher.verify as jest.Mock).mockResolvedValue(true);
+      (knowledgeReadLeases.waitForOwnerDrain as jest.Mock).mockRejectedValue(new Error("active readers"));
+      await expect(service.deleteAccount("user_1", "CorrectPassw0rd!")).rejects.toThrow("active readers");
+      expect(prisma.user.delete).not.toHaveBeenCalled();
     });
 
     it("throws BadRequestException when the password is wrong, deleting nothing and revoking nothing", async () => {

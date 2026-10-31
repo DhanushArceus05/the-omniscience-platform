@@ -107,12 +107,12 @@ detail)
   into `## Phase 6 — Human-Only Deferred Verification` near the end of this file, and formally
   closed Phase 6 — see `## Phase 6 — Formal Closure` near the end of this file. **Phase 6 remains
   closed.**
-- **Phase 7 — OmniKnowledge, Steps 1–5**: Steps 1–2 are complete and pushed; Steps 3–5 are
-  implemented locally and undergoing a focused concurrency/data-consistency repair after final
-  audit. The repair adds attempt fencing, deletion coordination, generation-scoped artifacts, and
-  atomic active-generation publication. Verification is in progress. Steps 3–5 remain uncommitted
-  and unpushed; Step 6 and later Phase 7 steps have not started. See
-  `docs/10_OmniKnowledge_Processing.md` and `claude/PROJECT_STATE.md` for the repair checkpoint.
+- **Phase 7 — OmniKnowledge, Steps 1–8**: Steps 1–5 are complete and pushed. Steps 6–8 are
+  implemented locally and undergoing a targeted repair/verification pass: durable retrieval leases
+  pin workspace/file/generation reads across model use; request UUIDs make retrieval retries
+  idempotent; citations distinguish source references from verified claim support. Steps 9–12 and
+  Phase 8 OmniMemory have not started. See `docs/10_OmniKnowledge_Processing.md` for contracts and
+  limitations.
 
 
 ## Phase 1 — Premium UI Foundation
@@ -5305,9 +5305,9 @@ The two human-only deferred verification items above remain open but are explici
 blockers to this closure — they are known, accepted, human-only verification gaps, clearly
 separated from engineering completion, per the distinction made in that section.
 
-**Phase 6 is formally closed. Phase 7 — OmniKnowledge is underway.** Steps 1–2 are complete and
-Steps 3–5 are implemented locally; see `docs/10_OmniKnowledge_Processing.md` for the processing
-lifecycle and known limits. No later Phase 7 step has started.
+**Phase 6 is formally closed. Phase 7 — OmniKnowledge is underway.** Steps 1–5 are complete and
+pushed; Steps 6–8 are implemented locally and undergoing verification. Steps 9–12 are unstarted.
+See `docs/10_OmniKnowledge_Processing.md` for the processing lifecycle and retrieval/RAG contracts.
 
 ---
 
@@ -5318,8 +5318,8 @@ Current development priority remains:
 > see the "Phase 6 — Formal Closure" and "Phase 6 — Human-Only Deferred Verification" sections
 > immediately above for the full record, including the two deferred human-only verification items
 > (a formal 9-viewport-width QA sweep; a real-session token-refresh soak test) — both engineering-
-> complete, both explicitly not blockers. **Phase 7 — OmniKnowledge Steps 1–5 is the active
-> milestone; later Phase 7 steps have not started.**
+> complete, both explicitly not blockers. **Phase 7 — OmniKnowledge Steps 1–8 is the active
+> milestone; Steps 9–12 have not started.**
 
 ---
 
@@ -5355,6 +5355,6 @@ No engineering work related to this feature should begin during the current acti
 
 Current development priority remains:
 
-> **Phase 7 — OmniKnowledge Steps 1–5 is active.** Steps 1–2 are complete; Steps 3–5 are implemented locally. Later Phase 7 steps remain unstarted.
+> **Phase 7 — OmniKnowledge Steps 1–8 is active.** Steps 1–5 are complete and pushed; Steps 6–8 are implemented locally and under verification. Steps 9–12 remain unstarted.
 
 All future planning should continue following the original platform roadmap before Arceus Activation Mode is started.

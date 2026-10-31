@@ -29,7 +29,7 @@ describe("KnowledgeDataReconciliationService (mocked databases)", () => {
     vectors.deleteWorkspace.mockResolvedValue(undefined);
     chunks.deleteGeneration.mockResolvedValue(undefined);
     vectors.deleteGeneration.mockResolvedValue(undefined);
-    service = new KnowledgeDataReconciliationService(prisma as never, chunks as never, vectors as never, logger as never);
+    service = new KnowledgeDataReconciliationService(prisma as never, chunks as never, vectors as never, logger as never, { hasLive: jest.fn().mockResolvedValue(false) } as never);
   });
 
   it("removes orphan workspaces and inactive generations while preserving published and processing generations", async () => {

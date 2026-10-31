@@ -14,6 +14,12 @@ interface VectorPoint {
   payload: { workspaceId: string; fileId: string; generationId: string; chunkId: string; chunkIndex: number };
 }
 
+export interface KnowledgeVectorSearchHit {
+  id: string;
+  score: number;
+  payload: { workspaceId: string; fileId: string; generationId: string; chunkId: string; chunkIndex: number };
+}
+
 @Injectable()
 export class KnowledgeVectorsService {
   private ready = false;
@@ -62,6 +68,31 @@ export class KnowledgeVectorsService {
     for (let start = 0; start < points.length; start += UPSERT_BATCH_SIZE) {
       await this.request("PUT", `/collections/${COLLECTION}/points?wait=true`, { points: points.slice(start, start + UPSERT_BATCH_SIZE) });
     }
+  }
+
+  async search(workspaceId: string, vector: readonly number[], limit: number, activeGenerationIds: readonly string[]): Promise<KnowledgeVectorSearchHit[]> {
+    await this.ensureCollection();
+    if (vector.length !== VECTOR_SIZE || vector.some((n) => !Number.isFinite(n)) || !Number.isInteger(limit) || limit < 1 || limit > 64 || !activeGenerationIds.length) {
+      throw new ServiceUnavailableException({ code: "KNOWLEDGE_VECTOR_QUERY_INVALID", message: "Knowledge search could not be completed." });
+    }
+    const response = await this.request("POST", `/collections/${COLLECTION}/points/search`, {
+      vector,
+      limit,
+      with_payload: ["workspaceId", "fileId", "generationId", "chunkId", "chunkIndex"],
+      with_vector: false,
+      filter: { must: [
+        { key: "workspaceId", match: { value: workspaceId } },
+        { key: "generationId", match: { any: [...new Set(activeGenerationIds)] } },
+      ] },
+    });
+    if (!isSearchResponse(response)) throw vectorUnavailable();
+    return response.result.map((hit) => {
+      if (!isValidSearchHit(hit)) throw vectorUnavailable();
+      return { id: hit.id, score: hit.score, payload: {
+        workspaceId: hit.payload.workspaceId, fileId: hit.payload.fileId, generationId: hit.payload.generationId,
+        chunkId: hit.payload.chunkId, chunkIndex: hit.payload.chunkIndex,
+      } };
+    });
   }
 
   async reconcileGeneration(workspaceId: string, fileId: string, generationId: string, desiredPointIds: ReadonlySet<string>): Promise<void> {
@@ -247,6 +278,24 @@ function isScrollResponse(value: unknown): value is { result: { points: Array<{ 
   const result = value.result;
   return typeof result === "object" && result !== null && "points" in result && Array.isArray(result.points) &&
     "next_page_offset" in result;
+}
+
+interface RawSearchHit { id: unknown; score: unknown; payload: unknown }
+
+function isSearchResponse(value: unknown): value is { result: RawSearchHit[] } {
+  return typeof value === "object" && value !== null && "result" in value && Array.isArray(value.result);
+}
+
+function isValidSearchHit(hit: RawSearchHit): hit is {
+  id: string;
+  score: number;
+  payload: { workspaceId: string; fileId: string; generationId: string; chunkId: string; chunkIndex: number };
+} {
+  if (typeof hit.id !== "string" || typeof hit.score !== "number" || !Number.isFinite(hit.score) || hit.score < -1 || hit.score > 1 ||
+    typeof hit.payload !== "object" || hit.payload === null) return false;
+  const payload = hit.payload as Record<string, unknown>;
+  return typeof payload.workspaceId === "string" && typeof payload.fileId === "string" &&
+    typeof payload.generationId === "string" && typeof payload.chunkId === "string" && Number.isInteger(payload.chunkIndex);
 }
 
 function assertNewOffset(seen: Set<string>, offset: unknown): void {

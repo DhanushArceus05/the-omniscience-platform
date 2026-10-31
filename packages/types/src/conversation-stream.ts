@@ -33,6 +33,8 @@ export interface MessageStreamStartEvent {
   readonly event: "start";
   readonly data: {
     readonly userMessage: Message;
+    /** False for a persisted user turn that ends without an assistant row, or for an idempotent replay. */
+    readonly assistantExpected?: boolean;
   };
 }
 
@@ -62,6 +64,10 @@ export interface MessageStreamErrorEvent {
   readonly data: {
     readonly code: string;
     readonly message: string;
+    /** False when the user turn was persisted but no assistant row was created. */
+    readonly assistantMessagePersisted?: boolean;
+    /** True when the same requestId can safely retry this logical turn. */
+    readonly retryable?: boolean;
   };
 }
 

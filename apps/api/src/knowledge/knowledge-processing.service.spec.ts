@@ -13,7 +13,7 @@ function deferred<T = void>() {
   return { promise, resolve };
 }
 
-function harness(overrides: { file?: ReturnType<typeof freshFile>; extract?: jest.Mock; embedBatches?: jest.Mock; upsertBatch?: jest.Mock; chunked?: jest.Mock } = {}) {
+function harness(overrides: { file?: ReturnType<typeof freshFile>; extract?: jest.Mock; embedBatches?: jest.Mock; upsertBatch?: jest.Mock; chunked?: jest.Mock; waitForGenerationDrain?: jest.Mock } = {}) {
   let row: ReturnType<typeof freshFile> | null = overrides.file ?? freshFile();
   let transactionTail = Promise.resolve();
   const matches = (where: Record<string, unknown>) => {
@@ -85,6 +85,7 @@ function harness(overrides: { file?: ReturnType<typeof freshFile>; extract?: jes
     }) } as never,
     { upsertBatch, reconcileGeneration, deleteGeneration, deleteFile } as never,
     { AI_REQUEST_TIMEOUT_MS: 30_000 } as never,
+    { waitForGenerationDrain: overrides.waitForGenerationDrain ?? jest.fn().mockResolvedValue(undefined) } as never,
   );
   return { service, prisma, chunks: { replace: persistedChunks, deleteGeneration, deleteFile }, vectors: { upsertBatch, reconcileGeneration, deleteGeneration, deleteFile }, getRow: () => row };
 }
@@ -110,6 +111,19 @@ describe("KnowledgeProcessingService (mocked persistence/provider/vector boundar
     expect(stagingGeneration).not.toBe("old-generation");
     expect(h.chunks.deleteGeneration).toHaveBeenCalledWith("ws", "file", stagingGeneration);
     expect(h.vectors.deleteGeneration).toHaveBeenCalledWith("ws", "file", stagingGeneration);
+  });
+
+  it("does not publish a new generation until the prior generation's active readers drain", async () => {
+    const drainEntered = deferred();
+    const allowPublish = deferred();
+    const waitForGenerationDrain = jest.fn(async () => { drainEntered.resolve(); await allowPublish.promise; });
+    const h = harness({ file: freshFile({ status: "READY", activeGenerationId: "old-generation", chunkCount: 2 }), waitForGenerationDrain });
+    const processing = h.service.process("owner", "ws", "file");
+    await drainEntered.promise;
+    expect(h.getRow()).toMatchObject({ status: "EMBEDDING_PENDING", activeGenerationId: "old-generation" });
+    allowPublish.resolve();
+    await expect(processing).resolves.toMatchObject({ status: "READY" });
+    expect(h.getRow()?.activeGenerationId).not.toBe("old-generation");
   });
 
   it("prevents stale attempt A from writing or changing attempt B after lease takeover", async () => {

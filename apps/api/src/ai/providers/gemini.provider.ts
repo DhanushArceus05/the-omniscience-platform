@@ -121,7 +121,7 @@ export class GeminiProvider extends StubProviderDescriptor {
    * this module's callers already know how to handle — never a raw
    * SDK exception.
    */
-  override async generateText(modelId: ModelId, prompt: string): Promise<string> {
+  override async generateText(modelId: ModelId, prompt: string, options: { readonly signal?: AbortSignal } = {}): Promise<string> {
     // 1. Credential must be present before anything else is attempted —
     //    same ordering, and same reasoning, as `AnthropicProvider`.
     if (!this.hasCredential()) {
@@ -149,7 +149,10 @@ export class GeminiProvider extends StubProviderDescriptor {
       response = await this.client.models.generateContent({
         model: modelId,
         contents: prompt,
-        config: { maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS },
+        config: {
+          maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
+          ...(options.signal ? { abortSignal: options.signal } : {}),
+        },
       });
     } catch (error) {
       // Retries already happened (or were correctly skipped) inside the

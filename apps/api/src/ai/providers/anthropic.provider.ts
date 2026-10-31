@@ -111,7 +111,7 @@ export class AnthropicProvider extends StubProviderDescriptor {
    * this module's callers already know how to handle — never a raw
    * SDK exception.
    */
-  override async generateText(modelId: ModelId, prompt: string): Promise<string> {
+  override async generateText(modelId: ModelId, prompt: string, options: { readonly signal?: AbortSignal } = {}): Promise<string> {
     // 1. Credential must be present before anything else is attempted —
     //    there is no point validating the model id just to fail on
     //    configuration a moment later, and this ordering matches the
@@ -141,11 +141,14 @@ export class AnthropicProvider extends StubProviderDescriptor {
 
     let response;
     try {
-      response = await this.client.messages.create({
+      const params = {
         model: modelId,
         max_tokens: DEFAULT_MAX_TOKENS,
-        messages: [{ role: "user", content: prompt }],
-      });
+        messages: [{ role: "user" as const, content: prompt }],
+      };
+      response = options.signal
+        ? await this.client.messages.create(params, { signal: options.signal })
+        : await this.client.messages.create(params);
     } catch (error) {
       // Retries already happened (or were correctly skipped) inside the
       // SDK client itself, per its own `maxRetries` configuration — see

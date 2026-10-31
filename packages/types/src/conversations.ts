@@ -18,6 +18,8 @@
  * list endpoints.
  */
 
+import type { KnowledgeMessageAttribution } from "./knowledge";
+
 export interface Conversation {
   id: string;
   workspaceId: string;
@@ -115,6 +117,12 @@ export interface Message {
    * carries whichever status actually applied when it was persisted.
    */
   status: MessageStatus;
+  /** Optional additive Knowledge attribution; absent on legacy messages. */
+  knowledge?: KnowledgeMessageAttribution;
+  /** Present only on user messages sent with workspace Knowledge enabled. */
+  knowledgeRequested?: boolean;
+  /** Stable logical-turn key used to deduplicate safe retries. */
+  requestId?: string;
 }
 
 export interface ListMessagesQuery {
@@ -133,6 +141,10 @@ export interface ListMessagesResponse {
 
 export interface SendMessageRequest {
   content: string;
+  /** Uses workspace-scoped Knowledge retrieval for this turn when true. */
+  useKnowledge?: boolean;
+  /** Stable UUID generated once per logical send and reused by its retries. */
+  requestId?: string;
 }
 
 /**

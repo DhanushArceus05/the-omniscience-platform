@@ -10,6 +10,7 @@ import { PasswordHasherService } from "../auth/password-hasher.service";
 import { RefreshTokenStore } from "../auth/refresh-token.store";
 import { AvatarStorageService, type AvatarUploadInput } from "../avatar/avatar-storage.service";
 import { PrismaService } from "../prisma/prisma.service";
+import { KnowledgeReadLeaseService } from "../knowledge/knowledge-read-lease.service";
 
 /**
  * Orchestrates the Phase 2 Step 6 user-profile flow (updating the
@@ -32,6 +33,7 @@ export class UsersService {
     private readonly passwordHasher: PasswordHasherService,
     private readonly refreshTokens: RefreshTokenStore,
     private readonly avatarStorage: AvatarStorageService,
+    private readonly knowledgeReadLeases: KnowledgeReadLeaseService,
   ) {}
 
   async updateProfile(userId: string, name: string): Promise<UpdateProfileResponse> {
@@ -198,6 +200,11 @@ export class UsersService {
       });
     }
 
+    // Fence every KnowledgeFile before waiting, so no new retrieval lease
+    // can start while the account cascade is pending. PostgreSQL's
+    // restrictive lease FK remains the final guard if the drain fails.
+    await this.knowledgeReadLeases.prepareOwnerDeletion(userId);
+    await this.knowledgeReadLeases.waitForOwnerDrain(userId);
     await this.prisma.user.delete({ where: { id: userId } });
     await this.refreshTokens.revokeAllForUser(userId);
     // Best-effort, same as the session-revocation line above: the User

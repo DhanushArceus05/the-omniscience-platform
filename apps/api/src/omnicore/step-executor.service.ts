@@ -100,8 +100,11 @@ export class StepExecutorService {
 
     const { model } = this.selector.select({ requiredCapabilities: step.capabilities });
     const provider = this.registry.getById(model.providerId);
+    const generation = options.signal
+      ? provider.generateText(model.modelId, step.inputRequirements, { signal: options.signal })
+      : provider.generateText(model.modelId, step.inputRequirements);
     const output = await raceAgainstTimeoutAndCancellation(
-      provider.generateText(model.modelId, step.inputRequirements),
+      generation,
       options,
       { timeoutCode: "EXECUTION_TIMEOUT", cancelledCode: "EXECUTION_CANCELLED" },
     );
@@ -196,8 +199,11 @@ export class StepExecutorService {
       return;
     }
 
+    const generation = options.signal
+      ? provider.generateText(modelId, prompt, { signal: options.signal })
+      : provider.generateText(modelId, prompt);
     const output = await raceAgainstTimeoutAndCancellation(
-      provider.generateText(modelId, prompt),
+      generation,
       options,
       { timeoutCode: "EXECUTION_TIMEOUT", cancelledCode: "EXECUTION_CANCELLED" },
     );

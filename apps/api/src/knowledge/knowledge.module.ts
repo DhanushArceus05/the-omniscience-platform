@@ -13,6 +13,9 @@ import { KnowledgeEmbeddingService } from "./knowledge-embedding.service";
 import { KnowledgeVectorsService } from "./knowledge-vectors.service";
 import { KnowledgeProcessingService } from "./knowledge-processing.service";
 import { KnowledgeDataReconciliationService } from "./knowledge-data-reconciliation.service";
+import { KnowledgeRetrievalService } from "./knowledge-retrieval.service";
+import { KnowledgeContextService } from "./knowledge-context.service";
+import { KnowledgeReadLeaseService } from "./knowledge-read-lease.service";
 
 /**
  * Phase 7 Steps 1–5 — Knowledge storage, extraction, chunking, embedding,
@@ -43,7 +46,10 @@ import { KnowledgeDataReconciliationService } from "./knowledge-data-reconciliat
     KnowledgeVectorsService,
     KnowledgeProcessingService,
     KnowledgeDataReconciliationService,
+    KnowledgeRetrievalService,
+    KnowledgeContextService,
+    KnowledgeReadLeaseService,
   ],
-  exports: [KnowledgeService, KnowledgeStorageService, DocumentExtractionService, KnowledgeProcessingService],
+  exports: [KnowledgeService, KnowledgeStorageService, DocumentExtractionService, KnowledgeProcessingService, KnowledgeRetrievalService, KnowledgeContextService, KnowledgeReadLeaseService],
 })
 export class KnowledgeModule {}

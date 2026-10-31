@@ -28,6 +28,7 @@ export interface GeminiGenerateContentParams {
   readonly contents: string;
   readonly config?: {
     readonly maxOutputTokens?: number;
+    readonly abortSignal?: AbortSignal;
   };
 }
 

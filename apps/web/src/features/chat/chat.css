@@ -365,6 +365,7 @@
 
 .omni-chat-composer {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--omni-space-3);
   align-items: flex-end;
   flex-shrink: 0;
@@ -377,12 +378,22 @@
 
 .omni-chat-composer__textarea {
   flex: 1;
+  flex-basis: 100%;
   min-height: 2.75rem;
   max-height: 12rem;
   resize: none;
   overflow-y: auto;
   line-height: 1.5;
   padding: var(--omni-space-3);
+}
+
+.omni-chat-composer__knowledge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--omni-space-2);
+  margin-right: auto;
+  color: var(--omni-color-text-secondary);
+  font-size: var(--omni-text-xs);
 }
 
 /*

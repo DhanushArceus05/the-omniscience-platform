@@ -128,6 +128,26 @@ describe("GeminiProvider", () => {
       });
     });
 
+    it("forwards cancellation to the Gemini HTTP request", async () => {
+      const client = makeClient();
+      let sdkRequestAborted = false;
+      client.models.generateContent.mockImplementation((params: { config?: { abortSignal?: AbortSignal } }) => new Promise((_, reject) => {
+        params.config?.abortSignal?.addEventListener("abort", () => {
+          sdkRequestAborted = true;
+          reject(new Error("request aborted"));
+        }, { once: true });
+      }));
+      const provider = new GeminiProvider(makeEnv({ GEMINI_API_KEY: "test-key" }), client);
+      const controller = new AbortController();
+      const request = provider.generateText("gemini-3.5-flash", "Question", { signal: controller.signal });
+      controller.abort();
+      await expect(request).rejects.toBeDefined();
+      expect(sdkRequestAborted).toBe(true);
+      expect(client.models.generateContent).toHaveBeenCalledWith(expect.objectContaining({
+        config: { maxOutputTokens: 4096, abortSignal: controller.signal },
+      }));
+    });
+
     it("trims surrounding whitespace from the response text", async () => {
       const client = makeClient();
       client.models.generateContent.mockResolvedValue({ text: "  Hello, world!  " });

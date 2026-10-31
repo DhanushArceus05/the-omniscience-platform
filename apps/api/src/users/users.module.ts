@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 import { AuthModule } from "../auth/auth.module";
+import { KnowledgeModule } from "../knowledge/knowledge.module";
 import { UsersController } from "./users.controller";
 import { UsersService } from "./users.service";
 
@@ -21,7 +22,7 @@ import { UsersService } from "./users.service";
  * `UsersService.deleteAccount`'s docstring).
  */
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, KnowledgeModule],
   controllers: [UsersController],
   providers: [UsersService],
 })

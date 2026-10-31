@@ -49,6 +49,25 @@ describe("StepExecutorService", () => {
     expect(result).toEqual({ output: "Hello!", providerId: "anthropic", modelId: "claude-sonnet-5" });
   });
 
+  it("passes cancellation to the underlying non-streaming provider call and waits for its abort", async () => {
+    const controller = new AbortController();
+    let providerAborted = false;
+    const generateText = jest.fn((_model: string, _prompt: string, options?: { signal?: AbortSignal }) => new Promise<string>((_resolve, reject) => {
+      options?.signal?.addEventListener("abort", () => {
+        providerAborted = true;
+        reject(new Error("request aborted"));
+      }, { once: true });
+    }));
+    mockHappyPath(generateText);
+
+    const execution = service.execute(stepFixture(), { signal: controller.signal });
+    await Promise.resolve();
+    controller.abort();
+    await expect(execution).rejects.toMatchObject({ response: { code: "EXECUTION_CANCELLED" } });
+    expect(providerAborted).toBe(true);
+    expect(generateText).toHaveBeenCalledWith("claude-sonnet-5", "hi there", { signal: controller.signal });
+  });
+
   it("throws UNSUPPORTED_CAPABILITY for a step requiring a capability this phase cannot execute", async () => {
     await expect(service.execute(stepFixture({ capabilities: ["vision"] }))).rejects.toEqual(
       expect.objectContaining({ response: expect.objectContaining({ code: "UNSUPPORTED_CAPABILITY" }) }),
@@ -267,6 +286,26 @@ describe("StepExecutorService", () => {
 
       expect(chunks).toEqual(["Complete non-streaming response."]);
       expect(generateText).toHaveBeenCalledWith("gpt-4o", "hi there");
+    });
+
+    it("forwards cancellation to the non-streaming fallback and does not yield after abort", async () => {
+      const controller = new AbortController();
+      let providerAborted = false;
+      const generateText = jest.fn((_model: string, _prompt: string, options?: { signal?: AbortSignal }) => new Promise<string>((_resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => {
+          providerAborted = true;
+          reject(new Error("fallback aborted"));
+        }, { once: true });
+      }));
+      selector.select.mockReturnValue({ model: { providerId: "openai", modelId: "gpt-4o" }, matchedRule: "priority-fallback" });
+      registry.getById.mockReturnValue({ generateText });
+      const stream = await service.executeStream(stepFixture(), { signal: controller.signal });
+      const first = stream.textStream[Symbol.asyncIterator]().next();
+      await Promise.resolve();
+      controller.abort();
+      await expect(first).rejects.toMatchObject({ response: { code: "EXECUTION_CANCELLED" } });
+      expect(providerAborted).toBe(true);
+      expect(generateText).toHaveBeenCalledWith("gpt-4o", "hi there", { signal: controller.signal });
     });
 
     it("propagates a non-cancellation provider error unchanged while iterating a real stream", async () => {

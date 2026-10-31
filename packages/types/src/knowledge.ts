@@ -57,22 +57,29 @@ export interface KnowledgeChunk {
   pageMetadata?: number | null;
 }
 
-/**
- * Phase 7 Step 6+ — Retrieval results (deferred until retrieval is implemented).
- */
 export interface KnowledgeQueryResult {
   chunk: KnowledgeChunk;
   score: number;
 }
 
-/**
- * Phase 7 Step 8+ — Citation metadata (deferred until citations are implemented).
- */
+/** New values describe reference state, never semantic entailment. Legacy values remain readable from old persisted messages. */
+export type KnowledgeGrounding = "NO_KNOWLEDGE" | "NOT_GROUNDED" | "SOURCE_REFERENCED" | "RETRIEVAL_UNAVAILABLE" | "GROUNDED" | "PARTIALLY_GROUNDED";
+
 export interface Citation {
+  id: string;
+  sourceId: string;
   fileId: string;
   fileName: string;
+  chunkId: string;
   chunkIndex: number;
-  pageNumber?: number | null;
-  score: number;
+  pageNumbers?: number[];
+  retrievalScore: number;
   excerpt: string;
+  /** The excerpt is a server-selected general excerpt, not a verified quotation or proof of claim support. */
+  excerptKind?: "GENERAL_SOURCE_EXCERPT";
+}
+
+export interface KnowledgeMessageAttribution {
+  grounding: KnowledgeGrounding;
+  citations: Citation[];
 }

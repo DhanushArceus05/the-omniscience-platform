@@ -11,6 +11,8 @@ import { ConfigModule } from "../config/config.module";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { MailModule } from "../mail/mail.module";
 import { MailService } from "../mail/mail.service";
+import { MongoModule } from "../mongo/mongo.module";
+import { MongoService } from "../mongo/mongo.service";
 import { PasswordHasherService } from "../auth/password-hasher.service";
 import { PrismaModule } from "../prisma/prisma.module";
 import { PrismaService } from "../prisma/prisma.service";
@@ -31,6 +33,14 @@ const testEnv = {
   AVATAR_STORAGE_DIR: "./storage/avatars-test",
   AVATAR_PUBLIC_BASE_URL: "http://localhost:4000",
   AVATAR_MAX_UPLOAD_BYTES: 5 * 1024 * 1024,
+  KNOWLEDGE_STORAGE_DIR: "./storage/knowledge-test",
+  KNOWLEDGE_FILE_SIZE_LIMIT_MB: 25,
+  KNOWLEDGE_EMBEDDING_BATCH_SIZE: 32,
+  KNOWLEDGE_RETRIEVAL_LIMIT: 8,
+  KNOWLEDGE_RETRIEVAL_MIN_SCORE: 0.35,
+  KNOWLEDGE_RETRIEVAL_PER_FILE_LIMIT: 3,
+  AI_REQUEST_TIMEOUT_MS: 30_000,
+  QDRANT_URL: "http://localhost:6333",
 } as unknown as Env;
 
 describe("UsersModule", () => {
@@ -48,6 +58,7 @@ describe("UsersModule", () => {
         PrismaModule,
         RedisModule,
         MailModule,
+        MongoModule,
         AvatarModule,
         AuthModule,
         UsersModule,
@@ -71,6 +82,8 @@ describe("UsersModule", () => {
       })
       .overrideProvider(MailService)
       .useValue({ sendMail: jest.fn(), isConfigured: () => false })
+      .overrideProvider(MongoService)
+      .useValue({ getDb: jest.fn() })
       .compile();
 
     expect(module.get(PasswordHasherService)).toBeInstanceOf(PasswordHasherService);

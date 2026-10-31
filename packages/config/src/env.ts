@@ -122,6 +122,9 @@ const baseEnvSchema = z.object({
   KNOWLEDGE_STORAGE_DIR: z.string().min(1).default("./storage/knowledge"),
   KNOWLEDGE_FILE_SIZE_LIMIT_MB: z.coerce.number().int().positive().default(25),
   KNOWLEDGE_EMBEDDING_BATCH_SIZE: z.coerce.number().int().min(1).max(128).default(32),
+  KNOWLEDGE_RETRIEVAL_LIMIT: z.coerce.number().int().min(1).max(20).default(8),
+  KNOWLEDGE_RETRIEVAL_MIN_SCORE: z.coerce.number().min(-1).max(1).default(0.35),
+  KNOWLEDGE_RETRIEVAL_PER_FILE_LIMIT: z.coerce.number().int().min(1).max(10).default(3),
 });
 
 export const envSchema = baseEnvSchema.superRefine((env, ctx) => {

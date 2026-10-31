@@ -120,6 +120,8 @@ export const listMessagesQuerySchema = z
 export const sendMessageRequestSchema = z
   .object({
     content: omniCorePromptSchema,
+    useKnowledge: z.boolean().optional().default(false),
+    requestId: z.string().uuid().optional(),
   })
   .strict();
 

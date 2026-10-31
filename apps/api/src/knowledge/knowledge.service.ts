@@ -11,6 +11,7 @@ import { WorkspacesService } from "../workspaces/workspaces.service";
 import type { KnowledgeFileUploadInput } from "./knowledge-storage.service";
 import { KnowledgeStorageService } from "./knowledge-storage.service";
 import { KnowledgeProcessingService } from "./knowledge-processing.service";
+import { KnowledgeReadLeaseService } from "./knowledge-read-lease.service";
 
 /** The minimal shape `toKnowledgeFileResponse` needs from a Prisma row. */
 interface KnowledgeFileRow {
@@ -43,6 +44,7 @@ export class KnowledgeService {
     private readonly workspaces: WorkspacesService,
     private readonly storage: KnowledgeStorageService,
     private readonly processing: KnowledgeProcessingService,
+    private readonly readLeases: KnowledgeReadLeaseService,
   ) {}
 
   /**
@@ -142,6 +144,7 @@ export class KnowledgeService {
   ): Promise<DeleteKnowledgeFileResponse> {
     const claim = await this.processing.claimDeletion(ownerId, workspaceId, fileId);
     try {
+      await this.readLeases.waitForFileDrain(workspaceId, fileId);
       // DELETING fences new attempts; the claim waits behind any row-locked
       // external write before these idempotent workspace/file-scoped cleanups.
       await this.processing.cleanupDeletionArtifacts(workspaceId, fileId);

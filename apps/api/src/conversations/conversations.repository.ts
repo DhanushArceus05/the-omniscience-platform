@@ -1,5 +1,6 @@
-import { BadRequestException, Injectable, OnModuleInit } from "@nestjs/common";
-import type { Conversation, Message, MessageOmniCoreMetadata, MessageRole, MessageStatus } from "@omniscience/types";
+import { BadRequestException, ConflictException, Injectable, OnModuleInit } from "@nestjs/common";
+import { randomUUID } from "node:crypto";
+import type { Conversation, KnowledgeMessageAttribution, Message, MessageOmniCoreMetadata, MessageRole, MessageStatus } from "@omniscience/types";
 import { ObjectId } from "mongodb";
 import type { Collection } from "mongodb";
 import { MongoService } from "../mongo/mongo.service";
@@ -40,6 +41,14 @@ interface MessageDocument {
   createdAt: Date;
   omniCore?: MessageOmniCoreMetadata;
   status?: MessageStatus;
+  knowledge?: KnowledgeMessageAttribution;
+  knowledgeRequested?: boolean;
+  requestId?: string;
+  requestState?: "PROCESSING" | "RETRYABLE" | "COMPLETED";
+  requestLeaseId?: string;
+  requestLeaseExpiresAt?: Date;
+  publishedAssistantId?: ObjectId;
+  publicationState?: "STAGED" | "PUBLISHED" | "INCOMPLETE";
 }
 
 interface KeysetCursor {
@@ -61,7 +70,19 @@ export interface CreateMessageInput {
    * caller that can ever produce the latter.
    */
   status?: MessageStatus;
+  knowledge?: KnowledgeMessageAttribution;
+  knowledgeRequested?: boolean;
+  requestId?: string;
 }
+
+export interface UserMessageRequestClaim {
+  userMessage: Message;
+  requestId?: string;
+  leaseId?: string;
+  completedAssistant?: Message;
+}
+
+const MESSAGE_REQUEST_LEASE_MS = 5 * 60 * 1000;
 
 /**
  * The only file in `ConversationsModule` that touches `MongoService`
@@ -117,6 +138,17 @@ export class ConversationsRepository implements OnModuleInit {
     await this.messagesCollection.createIndex(
       { ownerId: 1, workspaceId: 1 },
       { name: "ownership_scoped_defense_in_depth" },
+    );
+    await this.messagesCollection.dropIndex("request_idempotency_per_turn_role").catch((error: { code?: number }) => {
+      if (error.code !== 27) throw error;
+    });
+    await this.messagesCollection.createIndex(
+      { ownerId: 1, workspaceId: 1, conversationId: 1, requestId: 1 },
+      { name: "request_idempotency_user_turn", unique: true, partialFilterExpression: { requestId: { $type: "string" }, role: "user" } },
+    );
+    await this.messagesCollection.createIndex(
+      { ownerId: 1, workspaceId: 1, conversationId: 1, requestId: 1, requestLeaseId: 1 },
+      { name: "request_assistant_attempt", unique: true, partialFilterExpression: { requestId: { $type: "string" }, role: "assistant", requestLeaseId: { $type: "string" } } },
     );
   }
 
@@ -279,9 +311,145 @@ export class ConversationsRepository implements OnModuleInit {
       createdAt: new Date(),
       ...(input.omniCore ? { omniCore: input.omniCore } : {}),
       ...(input.status ? { status: input.status } : {}),
+      ...(input.knowledge ? { knowledge: input.knowledge } : {}),
+      ...(input.knowledgeRequested ? { knowledgeRequested: true } : {}),
+      ...(input.requestId ? { requestId: input.requestId } : {}),
     };
     await this.messagesCollection.insertOne(doc);
     return toMessage(doc);
+  }
+
+  /** Creates one user turn per owner/workspace/conversation/request UUID and claims its retry lease atomically. */
+  async beginUserMessageRequest(input: CreateMessageInput & { role: "user" }): Promise<UserMessageRequestClaim> {
+    if (!input.requestId) return { userMessage: await this.createMessage(input) };
+    const scope = { ownerId: input.ownerId, workspaceId: input.workspaceId, conversationId: input.conversationId, requestId: input.requestId };
+    let user = await this.messagesCollection.findOne({ ...scope, role: "user" });
+    if (!user) {
+      const now = new Date();
+      const doc: MessageDocument = {
+        _id: new ObjectId(), conversationId: input.conversationId, workspaceId: input.workspaceId,
+        ownerId: input.ownerId, role: "user", content: input.content, createdAt: now,
+        requestId: input.requestId, requestState: "RETRYABLE",
+        ...(input.knowledgeRequested ? { knowledgeRequested: true } : {}),
+      };
+      try {
+        await this.messagesCollection.insertOne(doc);
+        user = doc;
+      } catch (error) {
+        if (!isDuplicateKeyError(error)) throw error;
+        user = await this.messagesCollection.findOne({ ...scope, role: "user" });
+        if (!user) throw error;
+      }
+    }
+    if (user.content !== input.content || Boolean(user.knowledgeRequested) !== Boolean(input.knowledgeRequested)) {
+      throw messageRequestConflict("IDEMPOTENCY_KEY_REUSED", "This request ID is already associated with a different message.");
+    }
+    if (user.publishedAssistantId instanceof ObjectId) {
+      const published = await this.messagesCollection.findOne({ _id: user.publishedAssistantId, ...scope, role: "assistant" });
+      if (!published) throw messageRequestConflict("MESSAGE_PUBLICATION_UNAVAILABLE", "The completed response is temporarily unavailable. Please retry.");
+      await this.messagesCollection.updateOne({ _id: published._id, ...scope }, { $set: { publicationState: "PUBLISHED" } });
+      return { userMessage: toMessage(user), requestId: input.requestId, completedAssistant: toMessage(published) };
+    }
+
+    const now = new Date();
+    const leaseId = randomUUID();
+    const claimed = await this.messagesCollection.findOneAndUpdate({
+      _id: user._id,
+      ...scope,
+      role: "user",
+      $or: [
+        { requestState: "RETRYABLE" },
+        { requestState: { $exists: false } },
+        { requestState: "PROCESSING", requestLeaseExpiresAt: { $lte: now } },
+      ],
+    }, {
+      $set: { requestState: "PROCESSING", requestLeaseId: leaseId, requestLeaseExpiresAt: new Date(now.getTime() + MESSAGE_REQUEST_LEASE_MS) },
+    }, { returnDocument: "after" });
+    if (claimed) return { userMessage: toMessage(claimed), requestId: input.requestId, leaseId };
+
+    // Only the user-row pointer set by the atomic publication CAS makes an
+    // assistant result replayable. Orphaned STAGED/INCOMPLETE rows are never
+    // promoted or returned as a completed response.
+    throw messageRequestConflict("MESSAGE_REQUEST_IN_PROGRESS", "This message is already being processed. Please retry shortly.");
+  }
+
+  async heartbeatUserMessageRequest(userMessageId: string, requestId: string, leaseId: string): Promise<void> {
+    const now = new Date();
+    const result = await this.messagesCollection.updateOne({
+      _id: new ObjectId(userMessageId), requestId, role: "user", requestState: "PROCESSING", requestLeaseId: leaseId,
+      requestLeaseExpiresAt: { $gt: now },
+    }, { $set: { requestLeaseExpiresAt: new Date(now.getTime() + MESSAGE_REQUEST_LEASE_MS) } });
+    if (result.matchedCount !== 1) throw messageRequestConflict("MESSAGE_REQUEST_LEASE_LOST", "The message retry is no longer active.");
+  }
+
+  async assertUserMessageRequest(userMessageId: string, requestId: string, leaseId: string): Promise<void> {
+    const row = await this.messagesCollection.findOne({
+      _id: new ObjectId(userMessageId), requestId, role: "user", requestState: "PROCESSING", requestLeaseId: leaseId,
+      requestLeaseExpiresAt: { $gt: new Date() },
+    }, { projection: { _id: 1 } });
+    if (!row) throw messageRequestConflict("MESSAGE_REQUEST_LEASE_LOST", "The message retry is no longer active.");
+  }
+
+  async markUserMessageRequestRetryable(userMessageId: string, requestId: string, leaseId: string): Promise<void> {
+    await this.messagesCollection.updateOne({
+      _id: new ObjectId(userMessageId), requestId, role: "user", requestState: "PROCESSING", requestLeaseId: leaseId,
+      $expr: { $gt: ["$requestLeaseExpiresAt", "$$NOW"] },
+    }, { $set: { requestState: "RETRYABLE" }, $unset: { requestLeaseId: "", requestLeaseExpiresAt: "" } });
+  }
+
+  /**
+   * The assistant row is first written as an invisible attempt artifact. The
+   * single-document CAS on the user row is the publication point: it verifies
+   * the current random fencing token and atomically records the only visible
+   * assistant ID. A stale attempt may leave no visible result and cannot move
+   * this pointer after takeover. This works with the repository's standalone
+   * Mongo deployment, without relying on unsupported multi-document transactions.
+   */
+  async publishAssistantMessage(input: CreateMessageInput & { role: "assistant" }, requestId: string, leaseId: string): Promise<Message> {
+    if (input.status === "incomplete") {
+      throw messageRequestConflict("MESSAGE_RESPONSE_INCOMPLETE", "An incomplete response cannot be published.");
+    }
+    const scope = { ownerId: input.ownerId, workspaceId: input.workspaceId, conversationId: input.conversationId, requestId };
+    const now = new Date();
+    const doc: MessageDocument = {
+      _id: new ObjectId(), conversationId: input.conversationId, workspaceId: input.workspaceId,
+      ownerId: input.ownerId, role: "assistant", content: input.content, createdAt: now,
+      requestId, requestLeaseId: leaseId, publicationState: "STAGED",
+      ...(input.omniCore ? { omniCore: input.omniCore } : {}),
+      ...(input.status ? { status: input.status } : {}),
+      ...(input.knowledge ? { knowledge: input.knowledge } : {}),
+    };
+    await this.messagesCollection.insertOne(doc);
+    const result = await this.messagesCollection.findOneAndUpdate({
+      ...scope, role: "user", requestState: "PROCESSING", requestLeaseId: leaseId,
+      requestLeaseExpiresAt: { $gt: new Date() }, publishedAssistantId: { $exists: false },
+    }, {
+      $set: { requestState: "COMPLETED", publishedAssistantId: doc._id },
+      $unset: { requestLeaseId: "", requestLeaseExpiresAt: "" },
+    }, { returnDocument: "after" });
+    if (!result) {
+      await this.messagesCollection.deleteOne({ _id: doc._id, ...scope, requestLeaseId: leaseId }).catch(() => undefined);
+      throw messageRequestConflict("MESSAGE_REQUEST_LEASE_LOST", "This response attempt is no longer active.");
+    }
+    try {
+      await this.messagesCollection.updateOne({ _id: doc._id, ...scope, requestLeaseId: leaseId }, { $set: { publicationState: "PUBLISHED" } });
+    } catch {
+      // The user-row pointer is already authoritative. A retry repairs this
+      // derived visibility marker before replaying the completed response.
+    }
+    return toMessage(doc);
+  }
+
+  /** Persist partial stream text as a non-visible attempt artifact, then free the request for a retry. */
+  async persistIncompleteAssistantAttempt(input: CreateMessageInput & { role: "assistant" }, requestId: string, leaseId: string): Promise<void> {
+    const doc: MessageDocument = {
+      _id: new ObjectId(), conversationId: input.conversationId, workspaceId: input.workspaceId,
+      ownerId: input.ownerId, role: "assistant", content: input.content, createdAt: new Date(),
+      requestId, requestLeaseId: leaseId, publicationState: "INCOMPLETE", status: "incomplete",
+      ...(input.omniCore ? { omniCore: input.omniCore } : {}),
+      ...(input.knowledge ? { knowledge: input.knowledge } : {}),
+    };
+    await this.messagesCollection.insertOne(doc);
   }
 
   /**
@@ -294,12 +462,21 @@ export class ConversationsRepository implements OnModuleInit {
    * conversation's messages through this method.
    */
   async getLastMessage(ownerId: string, workspaceId: string, conversationId: string): Promise<Message | null> {
-    const rows = await this.messagesCollection
-      .find({ conversationId, ownerId, workspaceId })
-      .sort({ createdAt: -1, _id: -1 })
-      .limit(1)
-      .toArray();
-    return rows[0] ? toMessage(rows[0]) : null;
+    let before: MessageDocument | undefined;
+    for (;;) {
+      const rows = await this.messagesCollection.find({
+        conversationId, ownerId, workspaceId,
+        ...(before ? { $or: [
+          { createdAt: { $lt: before.createdAt } },
+          { createdAt: before.createdAt, _id: { $lt: before._id } },
+        ] } : {}),
+      }).sort({ createdAt: -1, _id: -1 }).limit(32).toArray();
+      if (!rows.length) return null;
+      const visible = await this.visibleMessages(rows, ownerId, workspaceId, conversationId);
+      if (visible.length) return toMessage(visible[0]!);
+      if (rows.length < 32) return null;
+      before = rows[rows.length - 1];
+    }
   }
 
   /**
@@ -353,6 +530,11 @@ export class ConversationsRepository implements OnModuleInit {
       ownerId,
       workspaceId,
     });
+    if (result.deletedCount > 0) {
+      await this.messagesCollection.updateOne({
+        ownerId, workspaceId, conversationId, role: "user", publishedAssistantId: new ObjectId(messageId),
+      }, { $set: { requestState: "RETRYABLE" }, $unset: { publishedAssistantId: "" } });
+    }
     return result.deletedCount > 0 ? "deleted" : "not_found";
   }
 
@@ -372,26 +554,35 @@ export class ConversationsRepository implements OnModuleInit {
   ): Promise<{ messages: Message[]; nextCursor: string | null }> {
     const cursor = params.cursor ? decodeCursor(params.cursor) : null;
 
-    const rows = await this.messagesCollection
-      .find(
-        cursor
-          ? {
-              conversationId,
-              ownerId,
-              workspaceId,
-              $or: [
-                { createdAt: { $gt: new Date(cursor.createdAt) } },
-                { createdAt: new Date(cursor.createdAt), _id: { $gt: new ObjectId(cursor.id) } },
-              ],
-            }
-          : { conversationId, ownerId, workspaceId },
-      )
-      .sort({ createdAt: 1, _id: 1 })
-      .limit(params.limit + 1)
-      .toArray();
-
-    const hasMore = rows.length > params.limit;
-    const page = hasMore ? rows.slice(0, params.limit) : rows;
+    const baseFilter = cursor
+      ? {
+          conversationId, ownerId, workspaceId,
+          $or: [
+            { createdAt: { $gt: new Date(cursor.createdAt) } },
+            { createdAt: new Date(cursor.createdAt), _id: { $gt: new ObjectId(cursor.id) } },
+          ],
+        }
+      : { conversationId, ownerId, workspaceId };
+    const visible: MessageDocument[] = [];
+    let scanCursor: MessageDocument | undefined;
+    while (visible.length <= params.limit) {
+      const filter = scanCursor
+        ? { ...baseFilter, $and: [
+            ...(baseFilter.$or ? [{ $or: baseFilter.$or }] : []),
+            { $or: [
+              { createdAt: { $gt: scanCursor.createdAt } },
+              { createdAt: scanCursor.createdAt, _id: { $gt: scanCursor._id } },
+            ] },
+          ] }
+        : baseFilter;
+      const rows = await this.messagesCollection.find(filter).sort({ createdAt: 1, _id: 1 }).limit(Math.max(params.limit + 1, 32)).toArray();
+      if (!rows.length) break;
+      visible.push(...await this.visibleMessages(rows, ownerId, workspaceId, conversationId));
+      scanCursor = rows[rows.length - 1];
+      if (rows.length < Math.max(params.limit + 1, 32)) break;
+    }
+    const hasMore = visible.length > params.limit;
+    const page = hasMore ? visible.slice(0, params.limit) : visible;
     const last = page[page.length - 1];
 
     return {
@@ -401,6 +592,25 @@ export class ConversationsRepository implements OnModuleInit {
           ? encodeCursor({ createdAt: last.createdAt.toISOString(), id: last._id.toHexString() })
           : null,
     };
+  }
+
+  private async visibleMessages(rows: MessageDocument[], ownerId: string, workspaceId: string, conversationId: string): Promise<MessageDocument[]> {
+    const visible: MessageDocument[] = [];
+    for (const row of rows) {
+      if (row.role !== "assistant" || !row.requestId) {
+        visible.push(row);
+        continue;
+      }
+      const publisher = await this.messagesCollection.findOne({
+        ownerId, workspaceId, conversationId, role: "user", publishedAssistantId: row._id,
+      });
+      if (!publisher) continue;
+      if (row.publicationState !== "PUBLISHED") {
+        await this.messagesCollection.updateOne({ _id: row._id, ownerId, workspaceId, conversationId, requestLeaseId: row.requestLeaseId }, { $set: { publicationState: "PUBLISHED" } });
+      }
+      visible.push(row);
+    }
+    return visible;
   }
 }
 
@@ -422,11 +632,22 @@ function toMessage(doc: MessageDocument): Message {
     content: doc.content,
     createdAt: doc.createdAt.toISOString(),
     ...(doc.omniCore ? { omniCore: doc.omniCore } : {}),
+    ...(doc.knowledge ? { knowledge: doc.knowledge } : {}),
+    ...(doc.knowledgeRequested ? { knowledgeRequested: true } : {}),
+    ...(doc.requestId ? { requestId: doc.requestId } : {}),
     // Legacy documents predating Phase 6 Step 2 have no `status` field
     // at all — normalized to "complete" here, not by migrating those
     // documents, per `MessageStatus`'s doc comment.
     status: doc.status ?? "complete",
   };
+}
+
+function messageRequestConflict(code: string, message: string): ConflictException {
+  return new ConflictException({ code, message });
+}
+
+function isDuplicateKeyError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === 11000;
 }
 
 function encodeCursor(cursor: KeysetCursor): string {

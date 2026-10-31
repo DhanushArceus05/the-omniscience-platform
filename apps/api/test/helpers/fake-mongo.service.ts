@@ -68,6 +68,11 @@ function matches(doc: Doc, filter: Filter): boolean {
       if (!branches.some((branch) => matches(doc, branch))) return false;
       continue;
     }
+    if (key === "$and") {
+      const branches = condition as Filter[];
+      if (!branches.every((branch) => matches(doc, branch))) return false;
+      continue;
+    }
     const value = doc[key];
     if (isOperatorObject(condition)) {
       for (const [op, opValue] of Object.entries(condition)) {
@@ -75,6 +80,9 @@ function matches(doc: Doc, filter: Filter): boolean {
         if (op === "$gt" && !(compare(value, opValue) > 0)) return false;
         if (op === "$lte" && !(compare(value, opValue) <= 0)) return false;
         if (op === "$gte" && !(compare(value, opValue) >= 0)) return false;
+        if (op === "$exists" && Boolean(value !== undefined) !== Boolean(opValue)) return false;
+        if (op === "$in" && !(opValue as unknown[]).some((item) => valueEquals(value, item))) return false;
+        if (op === "$ne" && valueEquals(value, opValue)) return false;
       }
     } else if (!valueEquals(value, condition)) {
       return false;
@@ -133,10 +141,11 @@ class InMemoryCollection<T extends Doc> {
     return cursor;
   }
 
-  async updateOne(filter: Filter, update: { $set: Record<string, unknown> }): Promise<{ matchedCount: number }> {
+  async updateOne(filter: Filter, update: { $set?: Record<string, unknown>; $unset?: Record<string, unknown> }): Promise<{ matchedCount: number }> {
     const doc = this.docs.find((d) => matches(d, filter));
     if (!doc) return { matchedCount: 0 };
-    Object.assign(doc, update.$set);
+    Object.assign(doc, update.$set ?? {});
+    for (const key of Object.keys(update.$unset ?? {})) delete doc[key];
     return { matchedCount: 1 };
   }
 
@@ -150,12 +159,13 @@ class InMemoryCollection<T extends Doc> {
    */
   async findOneAndUpdate(
     filter: Filter,
-    update: { $set: Record<string, unknown> },
+    update: { $set?: Record<string, unknown>; $unset?: Record<string, unknown> },
     _options: { returnDocument: "after" },
   ): Promise<T | null> {
     const doc = this.docs.find((d) => matches(d, filter));
     if (!doc) return null;
-    Object.assign(doc, update.$set);
+    Object.assign(doc, update.$set ?? {});
+    for (const key of Object.keys(update.$unset ?? {})) delete doc[key];
     return doc;
   }
 

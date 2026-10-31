@@ -101,7 +101,7 @@ export class OmniCoreService {
    * additional try/catch of its own (same invariant documented above
    * and in `ExecutionOrchestratorService`).
    */
-  async execute(prompt: string): Promise<OmniCoreExecuteResponse> {
+  async execute(prompt: string, options: { readonly signal?: AbortSignal } = {}): Promise<OmniCoreExecuteResponse> {
     const match = this.fastRules.classify(prompt);
     const plan = this.planBuilder.build(prompt, match);
 
@@ -124,7 +124,9 @@ export class OmniCoreService {
     // vendor-billed provider call.
     const taskPlan = this.taskPlanner.plan(plan);
 
-    const execution = await this.orchestrator.execute(taskPlan);
+    const execution = options.signal
+      ? await this.orchestrator.execute(taskPlan, options)
+      : await this.orchestrator.execute(taskPlan);
 
     // Every `CapabilityPlan`/`TaskPlan` OmniCore builds today has
     // exactly one step, in exactly one stage — the same invariant the

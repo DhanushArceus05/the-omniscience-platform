@@ -78,6 +78,11 @@ export class KnowledgeChunksRepository implements OnModuleInit {
     return this.chunks.find({ workspaceId, fileId, generationId }).sort({ chunkIndex: 1 }).toArray();
   }
 
+  listByIds(workspaceId: string, fileId: string, generationId: string, chunkIds: readonly string[]): Promise<KnowledgeChunkDocument[]> {
+    if (!chunkIds.length) return Promise.resolve([]);
+    return this.chunks.find({ _id: { $in: [...new Set(chunkIds)] }, workspaceId, fileId, generationId }).sort({ chunkIndex: 1 }).toArray();
+  }
+
   async listGenerationIds(workspaceId: string, fileId: string): Promise<string[]> {
     return await this.chunks.distinct("generationId", { workspaceId, fileId }) as string[];
   }

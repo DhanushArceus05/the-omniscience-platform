@@ -3,7 +3,7 @@ import { Button } from "@omniscience/ui";
 import "./chat.css";
 
 export interface ChatComposerProps {
-  onSend: (content: string) => void;
+  onSend: (content: string, useKnowledge: boolean) => void;
   onStop: () => void;
   isStreaming: boolean;
   /** Disables the composer entirely — e.g. while conversation history is still loading. */
@@ -28,6 +28,7 @@ export interface ChatComposerProps {
  */
 export function ChatComposer({ onSend, onStop, isStreaming, disabled = false }: ChatComposerProps): JSX.Element {
   const [value, setValue] = useState("");
+  const [useKnowledge, setUseKnowledge] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const canSend = value.trim().length > 0 && !isStreaming && !disabled;
@@ -47,7 +48,7 @@ export function ChatComposer({ onSend, onStop, isStreaming, disabled = false }: 
 
   function handleSend(): void {
     if (!canSend) return;
-    onSend(value);
+    onSend(value, useKnowledge);
     setValue("");
     // Collapse back to one line immediately rather than waiting for the
     // next render's effect — avoids a one-frame flash of the old
@@ -77,6 +78,10 @@ export function ChatComposer({ onSend, onStop, isStreaming, disabled = false }: 
         onChange={(event) => setValue(event.target.value)}
         onKeyDown={handleKeyDown}
       />
+      <label className="omni-chat-composer__knowledge">
+        <input type="checkbox" checked={useKnowledge} onChange={(event) => setUseKnowledge(event.currentTarget.checked)} disabled={disabled || isStreaming} />
+        Use workspace Knowledge
+      </label>
       {isStreaming ? (
         <Button type="button" variant="secondary" onClick={onStop}>
           Stop

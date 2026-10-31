@@ -114,6 +114,13 @@ describe("OmniCoreService", () => {
     expect(orchestrator.execute).toHaveBeenCalledWith(taskPlan);
   });
 
+  it("forwards an AbortSignal through non-streaming OmniCore execution", async () => {
+    mockHappyPath();
+    const controller = new AbortController();
+    await service.execute("hi there", { signal: controller.signal });
+    expect(orchestrator.execute).toHaveBeenCalledWith(taskPlan, { signal: controller.signal });
+  });
+
   it("returns the plan id, intent, matched fast-rule id, confidence, text, providerId, modelId, taskPlan, and execution — nothing else", async () => {
     mockHappyPath();
 

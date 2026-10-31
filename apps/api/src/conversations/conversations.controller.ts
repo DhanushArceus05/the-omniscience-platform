@@ -214,6 +214,8 @@ export class ConversationsController {
       workspaceId,
       conversationId,
       body.content,
+      body.useKnowledge === true,
+      body.requestId,
     );
     return { success: true, data };
   }
@@ -300,6 +302,8 @@ export class ConversationsController {
         conversationId,
         body.content,
         controller.signal,
+        body.useKnowledge === true,
+        body.requestId,
       );
 
       // This first `.next()` runs everything up to and including

@@ -657,6 +657,30 @@ describe("Conversations & Messages (e2e, Phase 6 Step 1, Step 2, Step 4 & Step 5
       await app.close();
     });
 
+    it("accepts explicit Knowledge mode and returns non-fabricated empty-result grounding metadata", async () => {
+      const fakeClient = makeFakeAnthropicClient();
+      fakeClient.messages.create.mockResolvedValue(successfulAnthropicResponse("I could not find that in the workspace documents."));
+      const { app, mail } = await buildApp({ anthropicApiKey: "test-key", anthropicClient: fakeClient });
+      const accessToken = await registerVerifyAndLogin(app, mail, "knowledge-mode@example.com", password, "Chatter");
+      const workspaceId = await createWorkspace(app, accessToken);
+      const conversation = await request(app.getHttpServer())
+        .post(`/workspaces/${workspaceId}/conversations`).set("Authorization", `Bearer ${accessToken}`).send({}).expect(201);
+      const conversationId = conversation.body.data.id as string;
+
+      const response = await request(app.getHttpServer())
+        .post(`/workspaces/${workspaceId}/conversations/${conversationId}/messages`)
+        .set("Authorization", `Bearer ${accessToken}`)
+        .send({ content: "What does the handbook say?", useKnowledge: true })
+        .expect(201);
+
+      expect(response.body.data.userMessage.knowledgeRequested).toBe(true);
+      expect(response.body.data.assistantMessage.knowledge).toEqual({ grounding: "NOT_GROUNDED", citations: [] });
+      expect(fakeClient.messages.create).toHaveBeenCalledTimes(1);
+      const modelInput = fakeClient.messages.create.mock.calls[0]?.[0] as { messages: Array<{ content: string }> };
+      expect(modelInput.messages[0]?.content).toBe("What does the handbook say?");
+      await app.close();
+    });
+
     it("paginates messages chronologically with a bounded limit and a usable nextCursor", async () => {
       const fakeClient = makeFakeAnthropicClient();
       fakeClient.messages.create.mockResolvedValue(successfulAnthropicResponse("ok"));

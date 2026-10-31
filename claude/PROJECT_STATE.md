@@ -757,12 +757,14 @@ engineering-complete, both explicitly not blockers) into one canonical record in
 Human-Only Deferred Verification" and "Phase 6 — Formal Closure" sections for the full record.
 
 **Phase 6 is formally CLOSED.** Steps 1–6, Phase B, and the post-Phase-B bugfix pass are all
-complete. **Phase 7 — OmniKnowledge is active:** Steps 1–2 are complete and pushed; Steps 3–5 are
-locally implemented and undergoing a focused concurrency/data-consistency repair after final audit.
-The repair adds PostgreSQL attempt fencing, deletion coordination, generation-scoped MongoDB/Qdrant
-artifacts, and atomic `activeGenerationId` publication. Verification is in progress. Steps 3–5
-remain uncommitted/unpushed; Step 6 and later Phase 7 steps have not started. See
-`docs/10_OmniKnowledge_Processing.md` for the target lifecycle.
+complete. **Phase 7 — OmniKnowledge is active:** Steps 1–5 are complete and pushed; Steps 6–8
+(workspace-filtered retrieval, opt-in RAG on the existing assistant pipeline, and citations that
+record validated source references without claiming claim-level entailment) are implemented locally
+and undergoing a targeted repair/verification pass. Retrieval uses durable PostgreSQL generation
+leases; deletion and generation publication wait for active readers. Message retries reuse a stable
+request UUID and the persisted user turn. Steps 9–12 and Phase 8 OmniMemory have not started. See
+`docs/10_OmniKnowledge_Processing.md` for current processing, retrieval, prompt-boundary, citation,
+lease, and recovery contracts.
 
 ## Repository Rule
 

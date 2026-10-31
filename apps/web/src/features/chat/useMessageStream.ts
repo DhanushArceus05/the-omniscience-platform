@@ -28,6 +28,9 @@ export interface ChatMessage {
   content: string;
   createdAt: string;
   status: MessageStatus;
+  knowledgeRequested?: boolean;
+  knowledge?: Message["knowledge"];
+  requestId?: string;
   isOptimistic?: boolean;
   isStreaming?: boolean;
 }
@@ -40,6 +43,9 @@ function toChatMessage(message: Message): ChatMessage {
     content: message.content,
     createdAt: message.createdAt,
     status: message.status,
+    ...(message.knowledgeRequested ? { knowledgeRequested: true } : {}),
+    ...(message.knowledge ? { knowledge: message.knowledge } : {}),
+    ...(message.requestId ? { requestId: message.requestId } : {}),
   };
 }
 
@@ -56,11 +62,12 @@ const INITIAL_STATE: State = { messages: [], pendingUserId: null, streamingAssis
 type Action =
   | { type: "reset" }
   | { type: "hydrate"; messages: Message[] }
-  | { type: "send_start"; tempId: string; conversationId: string; content: string; createdAt: string }
-  | { type: "stream_start"; tempId: string; userMessage: Message; streamingId: string }
+  | { type: "send_start"; tempId: string; conversationId: string; content: string; createdAt: string; useKnowledge: boolean; requestId: string; reuseUserId?: string }
+  | { type: "stream_start"; tempId: string; userMessage: Message; streamingId: string; assistantExpected: boolean }
   | { type: "stream_delta"; text: string }
   | { type: "stream_done"; assistantMessage: Message }
   | { type: "stream_error" }
+  | { type: "stream_retryable_error" }
   | { type: "stream_aborted" }
   | { type: "send_failed"; tempId: string }
   | { type: "remove_trailing"; ids: string[] };
@@ -74,6 +81,7 @@ function reducer(state: State, action: Action): State {
       return { messages: action.messages.map(toChatMessage), pendingUserId: null, streamingAssistantId: null };
 
     case "send_start":
+      if (action.reuseUserId) return { ...state, pendingUserId: null };
       return {
         ...state,
         messages: [
@@ -85,6 +93,8 @@ function reducer(state: State, action: Action): State {
             content: action.content,
             createdAt: action.createdAt,
             status: "complete",
+            ...(action.useKnowledge ? { knowledgeRequested: true } : {}),
+            requestId: action.requestId,
             isOptimistic: true,
           },
         ],
@@ -95,10 +105,9 @@ function reducer(state: State, action: Action): State {
       return {
         ...state,
         messages: [
-          ...state.messages.map((message) =>
-            message.id === action.tempId ? toChatMessage(action.userMessage) : message,
-          ),
-          {
+          ...state.messages.map((message) => message.id === action.tempId || message.id === action.userMessage.id ||
+            (message.requestId && message.requestId === action.userMessage.requestId) ? toChatMessage(action.userMessage) : message),
+          ...(action.assistantExpected ? [{
             id: action.streamingId,
             conversationId: action.userMessage.conversationId,
             role: "assistant",
@@ -106,10 +115,10 @@ function reducer(state: State, action: Action): State {
             createdAt: action.userMessage.createdAt,
             status: "incomplete",
             isStreaming: true,
-          },
+          } as ChatMessage] : []),
         ],
         pendingUserId: null,
-        streamingAssistantId: action.streamingId,
+        streamingAssistantId: action.assistantExpected ? action.streamingId : null,
       };
 
     case "stream_delta":
@@ -123,6 +132,11 @@ function reducer(state: State, action: Action): State {
       };
 
     case "stream_done":
+      if (!state.streamingAssistantId) {
+        const assistant = toChatMessage(action.assistantMessage);
+        const existing = state.messages.findIndex((message) => message.id === assistant.id);
+        return { ...state, messages: existing < 0 ? [...state.messages, assistant] : state.messages.map((message, i) => i === existing ? assistant : message) };
+      }
       return {
         ...state,
         messages: state.messages.map((message) =>
@@ -140,6 +154,13 @@ function reducer(state: State, action: Action): State {
             ? { ...message, isStreaming: false, status: "incomplete" }
             : message,
         ),
+        streamingAssistantId: null,
+      };
+
+    case "stream_retryable_error":
+      return {
+        ...state,
+        messages: state.messages.filter((message) => message.id !== state.streamingAssistantId),
         streamingAssistantId: null,
       };
 
@@ -193,7 +214,7 @@ export interface UseMessageStreamResult {
   /** Clears the message list — used when switching to a conversation whose history hasn't loaded yet. */
   reset: () => void;
   /** Sends `content` and streams the assistant's reply. A no-op while already streaming. */
-  sendMessage: (content: string) => void;
+  sendMessage: (content: string, useKnowledge?: boolean) => void;
   /** Re-sends the last message that was sent through this hook, if any. A no-op while already streaming or if nothing has been sent yet. */
   retry: () => void;
   /** Aborts the in-flight stream, if any. The partial assistant text remains visible, marked incomplete. */
@@ -250,6 +271,9 @@ export function useMessageStream(options: UseMessageStreamOptions): UseMessageSt
   const abortControllerRef = useRef<AbortController | null>(null);
   const idCounterRef = useRef(0);
   const lastSentContentRef = useRef<string | null>(null);
+  const lastSentKnowledgeRef = useRef(false);
+  const lastRequestIdRef = useRef<string | null>(null);
+  const lastPersistedUserIdRef = useRef<string | null>(null);
   // Bumped on every unmount/conversation-or-workspace change and
   // compared inside the streaming loop below, so an event or error from
   // a stream that's no longer "current" (the user switched conversations,
@@ -294,7 +318,7 @@ export function useMessageStream(options: UseMessageStreamOptions): UseMessageSt
   }, []);
 
   const sendMessage = useCallback(
-    (content: string) => {
+    (content: string, useKnowledge = false, retryRequestId?: string, reuseUserId?: string) => {
       const trimmed = content.trim();
       if (!trimmed || isStreamingRef.current) {
         return;
@@ -305,6 +329,10 @@ export function useMessageStream(options: UseMessageStreamOptions): UseMessageSt
       }
 
       lastSentContentRef.current = trimmed;
+      lastSentKnowledgeRef.current = useKnowledge;
+      const requestId = retryRequestId ?? globalThis.crypto.randomUUID();
+      if (!retryRequestId) lastPersistedUserIdRef.current = null;
+      lastRequestIdRef.current = requestId;
 
       const generation = generationRef.current;
       const controller = new AbortController();
@@ -322,6 +350,9 @@ export function useMessageStream(options: UseMessageStreamOptions): UseMessageSt
         conversationId,
         content: trimmed,
         createdAt: new Date().toISOString(),
+        useKnowledge,
+        requestId,
+        ...(reuseUserId ? { reuseUserId } : {}),
       });
 
       let sawStart = false;
@@ -330,6 +361,8 @@ export function useMessageStream(options: UseMessageStreamOptions): UseMessageSt
         try {
           const events = client.sendMessageStream(accessToken, workspaceId, conversationId, trimmed, {
             signal: controller.signal,
+            ...(useKnowledge ? { useKnowledge: true } : {}),
+            requestId,
           });
 
           for await (const event of events) {
@@ -345,7 +378,8 @@ export function useMessageStream(options: UseMessageStreamOptions): UseMessageSt
             switch (event.event) {
               case "start":
                 sawStart = true;
-                dispatch({ type: "stream_start", tempId, userMessage: event.data.userMessage, streamingId });
+                lastPersistedUserIdRef.current = event.data.userMessage.id;
+                dispatch({ type: "stream_start", tempId, userMessage: event.data.userMessage, streamingId, assistantExpected: event.data.assistantExpected !== false });
                 break;
               case "delta":
                 dispatch({ type: "stream_delta", text: event.data.text });
@@ -357,9 +391,9 @@ export function useMessageStream(options: UseMessageStreamOptions): UseMessageSt
                 setStreamError(
                   event.data.message
                     ? event.data.message
-                    : "The assistant couldn't finish responding. You can try again.",
+                  : "The assistant couldn't finish responding. You can try again.",
                 );
-                dispatch({ type: "stream_error" });
+                dispatch(event.data.assistantMessagePersisted === false ? { type: "stream_retryable_error" } : { type: "stream_error" });
                 break;
             }
           }
@@ -409,7 +443,7 @@ export function useMessageStream(options: UseMessageStreamOptions): UseMessageSt
 
   const retry = useCallback(() => {
     if (lastSentContentRef.current) {
-      sendMessage(lastSentContentRef.current);
+      sendMessage(lastSentContentRef.current, lastSentKnowledgeRef.current, lastRequestIdRef.current ?? undefined, lastPersistedUserIdRef.current ?? undefined);
     }
   }, [sendMessage]);
 
@@ -461,7 +495,7 @@ export function useMessageStream(options: UseMessageStreamOptions): UseMessageSt
         return;
       }
       dispatch({ type: "remove_trailing", ids: [assistantId] });
-      sendMessage(userContent);
+      sendMessage(userContent, precedingUser.knowledgeRequested === true);
     })();
   }, [client, accessToken, workspaceId, conversationId, state.messages, sendMessage]);
 
@@ -530,7 +564,7 @@ export function useMessageStream(options: UseMessageStreamOptions): UseMessageSt
           return;
         }
         dispatch({ type: "remove_trailing", ids: [userMessageId] });
-        sendMessage(trimmed);
+        sendMessage(trimmed, userMessage.knowledgeRequested === true);
       })();
     },
     [client, accessToken, workspaceId, conversationId, state.messages, sendMessage],

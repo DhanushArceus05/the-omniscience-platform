@@ -21,6 +21,30 @@ export interface EmbeddedKnowledgeChunk {
 export class KnowledgeEmbeddingService {
   constructor(private readonly providers: ProviderRegistryService, @Inject(ENV) private readonly env: Env) {}
 
+  async embedQuery(query: string): Promise<readonly number[]> {
+    const provider = this.providers.getById("openai");
+    let vector: readonly number[];
+    let attempt = 0;
+    for (;;) {
+      try {
+        vector = await provider.embed(KNOWLEDGE_EMBEDDING_MODEL, query);
+        break;
+      } catch (error) {
+        if (!isTransientProviderError(error) || ++attempt >= MAX_TRANSIENT_ATTEMPTS) {
+          throw new ServiceUnavailableException({
+            code: "KNOWLEDGE_QUERY_EMBEDDING_FAILED",
+            message: "Knowledge search is temporarily unavailable. Please retry.",
+          });
+        }
+        await delay(100 * 2 ** (attempt - 1));
+      }
+    }
+    if (vector.length !== KNOWLEDGE_EMBEDDING_DIMENSIONS || vector.some((value) => !Number.isFinite(value))) {
+      throw invalidResponse();
+    }
+    return vector;
+  }
+
   async embed(chunks: readonly KnowledgeChunkDocument[]): Promise<EmbeddedKnowledgeChunk[]> {
     const output: EmbeddedKnowledgeChunk[] = [];
     for await (const batch of this.embedBatches(chunks)) output.push(...batch);

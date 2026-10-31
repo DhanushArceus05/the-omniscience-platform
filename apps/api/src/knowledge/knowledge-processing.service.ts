@@ -12,6 +12,7 @@ import { KnowledgeChunksRepository } from "./knowledge-chunks.repository";
 import { KnowledgeEmbeddingService } from "./knowledge-embedding.service";
 import { KnowledgeStorageService } from "./knowledge-storage.service";
 import { deterministicPointId, KnowledgeVectorsService } from "./knowledge-vectors.service";
+import { KnowledgeReadLeaseService } from "./knowledge-read-lease.service";
 
 const STALE_PROCESSING_LEASE_MS = 30 * 60 * 1000;
 const ACTIVE_PROCESSING_STATUSES = ["PROCESSING", "EXTRACTED", "EMBEDDING_PENDING"] as const;
@@ -48,6 +49,7 @@ export class KnowledgeProcessingService {
     private readonly embeddings: KnowledgeEmbeddingService,
     private readonly vectors: KnowledgeVectorsService,
     @Inject(ENV) private readonly env: Env,
+    private readonly readLeases: KnowledgeReadLeaseService,
   ) {}
 
   async process(ownerId: string, workspaceId: string, fileId: string): Promise<{ fileId: string; status: "READY"; chunkCount: number }> {
@@ -95,6 +97,12 @@ export class KnowledgeProcessingService {
       const desired = new Set(persisted.map((chunk) => deterministicPointId(workspaceId, fileId, generationId, chunk.chunkIndex)));
       await this.withAttemptWriteLock(ownerId, workspaceId, fileId, attemptId,
         () => this.vectors.reconcileGeneration(workspaceId, fileId, generationId, desired));
+
+      // Existing readers stay pinned to the old generation. Publication waits
+      // for those leases to finish so they can renew safely until completion.
+      if (file.activeGenerationId && file.activeGenerationId !== generationId) {
+        await this.readLeases.waitForGenerationDrain(workspaceId, fileId, file.activeGenerationId);
+      }
 
       const published = await this.prisma.knowledgeFile.updateMany({
         where: { id: fileId, workspaceId, ownerId, status: "EMBEDDING_PENDING", processingAttemptId: attemptId },
